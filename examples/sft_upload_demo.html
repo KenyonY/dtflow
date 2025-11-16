@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SFT 数据集上传示例 - DataTransformer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+            font-size: 14px;
+        }
+
+        input[type="text"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .upload-area {
+            border: 3px dashed #d0d0d0;
+            border-radius: 12px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #fafafa;
+        }
+
+        .upload-area:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .upload-area.drag-over {
+            border-color: #667eea;
+            background: #e8eeff;
+            transform: scale(1.02);
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 16px;
+        }
+
+        .upload-text {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .upload-hint {
+            font-size: 13px;
+            color: #999;
+        }
+
+        .file-info {
+            display: none;
+            background: #f0f4ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 16px;
+        }
+
+        .file-info.visible {
+            display: block;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .file-size {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #666;
+        }
+
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+
+        .progress {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .progress.visible {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s;
+            width: 0%;
+        }
+
+        .message {
+            padding: 16px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .message.visible {
+            display: block;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .example-section {
+            background: #f9f9f9;
+            padding: 24px;
+            border-radius: 8px;
+            margin-top: 30px;
+        }
+
+        .example-section h3 {
+            margin-bottom: 16px;
+            color: #333;
+        }
+
+        .code-block {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .info-box {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .info-box strong {
+            display: block;
+            margin-bottom: 8px;
+            color: #856404;
+        }
+
+        .info-box ul {
+            margin-left: 20px;
+            color: #856404;
+        }
+
+        .info-box li {
+            margin: 4px 0;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 SFT 数据集上传</h1>
+            <p>DataTransformer 标注平台</p>
+        </div>
+
+        <div class="content">
+            <div id="message" class="message"></div>
+
+            <div class="info-box">
+                <strong>💡 数据格式要求：</strong>
+                <ul>
+                    <li>文件格式：JSONL（每行一个 JSON 对象）</li>
+                    <li>必需字段：messages（对话数组）</li>
+                    <li>支持角色：system、user、assistant</li>
+                    <li>支持多模态：文本 + 图片</li>
+                </ul>
+            </div>
+
+            <form id="uploadForm">
+                <div class="form-group">
+                    <label for="datasetName">数据集名称 *</label>
+                    <input
+                        type="text"
+                        id="datasetName"
+                        name="datasetName"
+                        placeholder="例如：医疗问答数据集 V1"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="description">数据集描述（可选）</label>
+                    <textarea
+                        id="description"
+                        name="description"
+                        placeholder="描述数据集的用途、来源或其他相关信息..."
+                    ></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label>上传数据文件 *</label>
+                    <div id="uploadArea" class="upload-area">
+                        <div class="upload-icon">📁</div>
+                        <div class="upload-text">点击或拖拽文件到此处上传</div>
+                        <div class="upload-hint">支持 .jsonl, .json, .csv 格式</div>
+                    </div>
+                    <input type="file" id="fileInput" accept=".jsonl,.json,.csv" required>
+
+                    <div id="fileInfo" class="file-info">
+                        <div class="file-name" id="fileName"></div>
+                        <div class="file-size" id="fileSize"></div>
+                    </div>
+                </div>
+
+                <div id="progress" class="progress">
+                    <div>上传进度：<span id="progressText">0%</span></div>
+                    <div class="progress-bar">
+                        <div id="progressFill" class="progress-fill"></div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="submitBtn">
+                    🚀 创建并上传数据集
+                </button>
+
+                <button type="button" class="btn btn-secondary" onclick="resetForm()">
+                    🔄 重置
+                </button>
+            </form>
+
+            <!-- 示例代码 -->
+            <div class="example-section">
+                <h3>📝 数据格式示例</h3>
+                <div class="code-block">{
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个专业的AI助手。"
+    },
+    {
+      "role": "user",
+      "content": "什么是机器学习？"
+    },
+    {
+      "role": "assistant",
+      "content": "机器学习是人工智能的一个分支..."
+    }
+  ]
+}</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API 配置
+        const API_BASE = 'http://localhost:8000';
+
+        // DOM 元素
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const uploadForm = document.getElementById('uploadForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const message = document.getElementById('message');
+
+        let selectedFile = null;
+
+        // 点击上传区域
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // 文件选择
+        fileInput.addEventListener('change', (e) => {
+            handleFileSelect(e.target.files[0]);
+        });
+
+        // 拖拽事件
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('drag-over');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('drag-over');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('drag-over');
+            handleFileSelect(e.dataTransfer.files[0]);
+        });
+
+        // 处理文件选择
+        function handleFileSelect(file) {
+            if (!file) return;
+
+            // 检查文件类型
+            const validExtensions = ['.jsonl', '.json', '.csv'];
+            const fileExtension = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+
+            if (!validExtensions.includes(fileExtension)) {
+                showMessage('请上传 .jsonl, .json 或 .csv 格式的文件', 'error');
+                return;
+            }
+
+            selectedFile = file;
+
+            // 显示文件信息
+            fileName.textContent = `📄 ${file.name}`;
+            fileSize.textContent = `大小: ${formatFileSize(file.size)}`;
+            fileInfo.classList.add('visible');
+
+            hideMessage();
+        }
+
+        // 格式化文件大小
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        // 表单提交
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!selectedFile) {
+                showMessage('请选择要上传的文件', 'error');
+                return;
+            }
+
+            const datasetName = document.getElementById('datasetName').value;
+            const description = document.getElementById('description').value;
+
+            // 禁用提交按钮
+            submitBtn.disabled = true;
+            submitBtn.textContent = '⏳ 处理中...';
+
+            try {
+                // 步骤 1: 创建数据集
+                showMessage('正在创建数据集...', 'success');
+                const dataset = await createDataset(datasetName, description);
+
+                // 步骤 2: 上传文件
+                showMessage('正在上传文件...', 'success');
+                progress.classList.add('visible');
+                await uploadFile(dataset.id, selectedFile);
+
+                // 成功
+                showMessage(
+                    `✅ 数据集创建成功！<br>` +
+                    `<a href="http://localhost:5173/annotate/sft/${dataset.id}" target="_blank" style="color: #155724; text-decoration: underline;">点击这里开始标注</a>`,
+                    'success'
+                );
+
+                // 重置表单
+                setTimeout(() => {
+                    resetForm();
+                }, 3000);
+
+            } catch (error) {
+                showMessage(`❌ 上传失败: ${error.message}`, 'error');
+                submitBtn.disabled = false;
+                submitBtn.textContent = '🚀 创建并上传数据集';
+            }
+        });
+
+        // 创建数据集
+        async function createDataset(name, description) {
+            const response = await fetch(`${API_BASE}/api/datasets`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    name: name,
+                    type: 'sft',
+                    description: description
+                })
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || '创建数据集失败');
+            }
+
+            return await response.json();
+        }
+
+        // 上传文件
+        async function uploadFile(datasetId, file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const xhr = new XMLHttpRequest();
+
+            return new Promise((resolve, reject) => {
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = Math.round((e.loaded / e.total) * 100);
+                        updateProgress(percentComplete);
+                    }
+                });
+
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        const response = JSON.parse(xhr.responseText);
+                        resolve(response);
+                    } else {
+                        const error = JSON.parse(xhr.responseText);
+                        reject(new Error(error.detail || '上传失败'));
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    reject(new Error('网络错误'));
+                });
+
+                xhr.open('POST', `${API_BASE}/api/datasets/${datasetId}/upload`);
+                xhr.send(formData);
+            });
+        }
+
+        // 更新进度
+        function updateProgress(percent) {
+            progressFill.style.width = percent + '%';
+            progressText.textContent = percent + '%';
+        }
+
+        // 显示消息
+        function showMessage(text, type) {
+            message.innerHTML = text;
+            message.className = `message ${type} visible`;
+        }
+
+        // 隐藏消息
+        function hideMessage() {
+            message.classList.remove('visible');
+        }
+
+        // 重置表单
+        function resetForm() {
+            uploadForm.reset();
+            selectedFile = null;
+            fileInfo.classList.remove('visible');
+            progress.classList.remove('visible');
+            updateProgress(0);
+            submitBtn.disabled = false;
+            submitBtn.textContent = '🚀 创建并上传数据集';
+            hideMessage();
+        }
+
+        // 检查 API 连接
+        async function checkAPIConnection() {
+            try {
+                const response = await fetch(`${API_BASE}/api/datasets`);
+                if (!response.ok) {
+                    showMessage('⚠️ 无法连接到后端服务，请确保服务已启动', 'error');
+                }
+            } catch (error) {
+                showMessage('⚠️ 无法连接到后端服务 (http://localhost:8000)，请先启动后端', 'error');
+            }
+        }
+
+        // 页面加载时检查连接
+        checkAPIConnection();
+    </script>
+</body>
+</html>
