@@ -440,33 +440,33 @@ class QualityEvaluator:
         scores.append(length_score)
         weights.append(0.2)
 
-        # 多样性（权重30%）
+        # 多样性（权重30%）- 归一化到0-100
         diversity_score = (
             diversity_scores.get('vocabulary_diversity', 0) * 30 +
             diversity_scores.get('bigram_diversity', 0) * 30 +
             diversity_scores.get('template_diversity', 0) * 40
-        ) * 100
+        )  # 已经是0-100范围，不需要再乘100
         scores.append(diversity_score)
         weights.append(0.3)
 
-        # 复杂度（权重15%）
+        # 复杂度（权重15%）- 归一化到0-100
         complexity_score = min(100, (
             min(complexity_scores['avg_sentence_length'] / 15, 1) * 50 +
             min(complexity_scores['avg_word_length'] / 6, 1) * 50
-        ) * 100)
+        ))  # 已经是0-100范围，不需要再乘100
         scores.append(complexity_score)
         weights.append(0.15)
 
-        # 去重质量（权重25%）
+        # 去重质量（权重25%）- 归一化到0-100
         dedup_score = (
             duplication_stats['unique_sample_ratio'] * 60 +
             (1 - duplication_stats['duplicate_instruction_ratio']) * 20 +
             (1 - duplication_stats['duplicate_output_ratio']) * 20
-        ) * 100
+        )  # 已经是0-100范围，不需要再乘100
         scores.append(dedup_score)
         weights.append(0.25)
 
-        # 格式质量（权重10%）
+        # 格式质量（权重10%）- 归一化到0-100
         format_score = format_quality['complete_samples'] * 100
         scores.append(format_score)
         weights.append(0.1)

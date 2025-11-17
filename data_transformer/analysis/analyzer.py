@@ -398,38 +398,45 @@ class SFTDataAnalyzer:
             save_path=str(self.output_dir / "wordcloud.png")
         )
 
+    def _convert_to_serializable(self, obj):
+        """递归转换对象为JSON可序列化格式"""
+        from dataclasses import is_dataclass, asdict
+
+        if isinstance(obj, dict):
+            return {k: self._convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._convert_to_serializable(item) for item in obj]
+        elif isinstance(obj, set):
+            return list(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        elif is_dataclass(obj):
+            return asdict(obj)
+        elif hasattr(obj, '__dict__') and not isinstance(obj, type):
+            # 处理自定义类对象
+            return {k: self._convert_to_serializable(v)
+                   for k, v in obj.__dict__.items()
+                   if not k.startswith('_')}
+        else:
+            return obj
+
     def _save_results(self):
         """保存分析结果"""
         results_file = self.output_dir / "analysis_results.json"
 
-        # 处理不能JSON序列化的对象
-        save_results = {}
-        for key, value in self.results.items():
-            if key in ['clustering']:
-                # 聚类结果特殊处理
-                if isinstance(value, dict):
-                    save_results[key] = {
-                        k: {
-                            'n_clusters': v.n_clusters,
-                            'scores': v.scores,
-                            'metadata': v.metadata
-                        } for k, v in value.items()
-                    }
-                else:
-                    save_results[key] = {
-                        'n_clusters': value.n_clusters,
-                        'scores': value.scores,
-                        'metadata': value.metadata
-                    }
-            elif isinstance(value, np.ndarray):
-                save_results[key] = value.tolist()
-            else:
-                save_results[key] = value
+        try:
+            # 转换为可序列化格式
+            save_results = self._convert_to_serializable(self.results)
 
-        with open(results_file, 'w', encoding='utf-8') as f:
-            json.dump(save_results, f, ensure_ascii=False, indent=2)
+            with open(results_file, 'w', encoding='utf-8') as f:
+                json.dump(save_results, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"结果已保存到：{results_file}")
+            logger.info(f"结果已保存到：{results_file}")
+        except Exception as e:
+            logger.error(f"保存结果失败: {e}")
+            # 不抛出异常，允许程序继续运行
 
     def _print_summary(self):
         """打印分析摘要"""

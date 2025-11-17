@@ -1,0 +1,41 @@
+[
+  {
+    "dataset_name": "small_100",
+    "data_size": 100,
+    "total_time": 5.25,
+    "memory_used_mb": 346.42,
+    "throughput": 19.04,
+    "n_clusters": 10,
+    "overall_score": 82.05,
+    "silhouette_score": 0.13978775760269851,
+    "n_topics": 10,
+    "success": true,
+    "error": null
+  },
+  {
+    "dataset_name": "medium_500",
+    "data_size": 500,
+    "total_time": 1.31,
+    "memory_used_mb": 59.66,
+    "throughput": 380.28,
+    "n_clusters": 10,
+    "overall_score": 67.33,
+    "silhouette_score": 0.12046827124310668,
+    "n_topics": 10,
+    "success": true,
+    "error": null
+  },
+  {
+    "dataset_name": "large_1000",
+    "data_size": 1000,
+    "total_time": 2.34,
+    "memory_used_mb": 36.12,
+    "throughput": 427.85,
+    "n_clusters": 10,
+    "overall_score": 62.08,
+    "silhouette_score": 0.11773413132925237,
+    "n_topics": 10,
+    "success": true,
+    "error": null
+  }
+]

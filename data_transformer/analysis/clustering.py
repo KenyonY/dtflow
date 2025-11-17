@@ -116,9 +116,9 @@ class KMeansClusterer:
         elapsed_time = time.time() - start_time
         logger.info(f"K-Means聚类完成，用时：{elapsed_time:.2f}秒")
 
-        # 统计每个簇的大小
+        # 统计每个簇的大小（转换为Python原生类型以支持JSON序列化）
         unique_labels, counts = np.unique(self.labels_, return_counts=True)
-        cluster_sizes = dict(zip(unique_labels, counts))
+        cluster_sizes = {int(label): int(count) for label, count in zip(unique_labels, counts)}
 
         return ClusteringResult(
             labels=self.labels_,
@@ -246,11 +246,11 @@ class HDBSCANClusterer:
         elapsed_time = time.time() - start_time
         logger.info(f"HDBSCAN聚类完成，发现{n_clusters}个聚类，噪声点比例：{noise_ratio:.2%}，用时：{elapsed_time:.2f}秒")
 
-        # 统计每个簇的大小
+        # 统计每个簇的大小（转换为Python原生类型以支持JSON序列化）
         cluster_sizes = {}
         for label in unique_labels:
             if label >= 0:
-                cluster_sizes[label] = np.sum(self.labels_ == label)
+                cluster_sizes[int(label)] = int(np.sum(self.labels_ == label))
 
         return ClusteringResult(
             labels=self.labels_,

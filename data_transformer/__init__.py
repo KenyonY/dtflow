@@ -6,9 +6,6 @@ from .formats import SFTFormatter, RLHFFormatter, PretrainFormatter
 from .utils import calculate_similarity, display_data, print_stats
 from .storage import save_data, load_data
 
-# Import annotator module for CLI access
-from . import annotator
-
 __version__ = '0.1.0'
 
 __all__ = [
@@ -21,5 +18,4 @@ __all__ = [
     'print_stats',
     'save_data',
     'load_data',
-    'annotator',
 ]

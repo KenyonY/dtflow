@@ -7,6 +7,7 @@
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple, Union
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import seaborn as sns
 from wordcloud import WordCloud
 import logging
@@ -18,8 +19,47 @@ import json
 
 logger = logging.getLogger(__name__)
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+
+def _find_chinese_font() -> Optional[str]:
+    """
+    查找系统中可用的中文字体
+
+    Returns:
+        字体路径，如果没有找到则返回None
+    """
+    # 常见的中文字体列表（按优先级排序）
+    chinese_fonts = [
+        'SimHei',           # 黑体
+        'Microsoft YaHei',  # 微软雅黑
+        'PingFang SC',      # 苹果苹方
+        'Heiti SC',         # 黑体-简
+        'STHeiti',          # 华文黑体
+        'WenQuanYi Micro Hei',  # 文泉驿微米黑
+        'Noto Sans CJK SC', # 思源黑体
+        'Arial Unicode MS'  # Arial Unicode（包含中文）
+    ]
+
+    # 尝试查找字体
+    for font_name in chinese_fonts:
+        try:
+            font_path = fm.findfont(fm.FontProperties(family=font_name))
+            # 验证找到的不是默认字体
+            if font_path and 'DejaVu' not in font_path:
+                logger.info(f"找到中文字体: {font_name} at {font_path}")
+                return font_path
+        except Exception:
+            continue
+
+    logger.warning("未找到中文字体，将使用系统默认字体（可能无法正确显示中文）")
+    return None
+
+
+# 查找并设置中文字体
+_chinese_font_path = _find_chinese_font()
+if _chinese_font_path:
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'PingFang SC', 'DejaVu Sans']
+else:
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 sns.set_style("whitegrid")
 
@@ -73,8 +113,18 @@ class DataVisualizer:
         """
         logger.info(f"生成聚类可视化，降维方法：{method}")
 
+        # 检查数据量
+        if len(embeddings) < 3:
+            logger.warning(f"数据量太小({len(embeddings)}条)，跳过聚类可视化")
+            return None
+
         # 降维到2D
         embeddings_2d = self._reduce_dimensions(embeddings, method, n_components=2)
+
+        # 检查降维结果
+        if embeddings_2d.shape[1] < 2:
+            logger.warning(f"降维后维度不足({embeddings_2d.shape[1]}维)，跳过聚类可视化")
+            return None
 
         if self.interactive:
             return self._create_interactive_cluster_plot(embeddings_2d, labels, topics, save_path)
@@ -385,23 +435,21 @@ class DataVisualizer:
         logger.info("生成词云图")
 
         # 处理输入数据
+        # 使用自动查找的中文字体，如果没有找到则使用None（系统默认）
+        wordcloud_kwargs = {
+            'width': 800,
+            'height': 400,
+            'background_color': 'white',
+            'max_words': 100
+        }
+        if _chinese_font_path:
+            wordcloud_kwargs['font_path'] = _chinese_font_path
+
         if isinstance(text_data, list):
             text = ' '.join(text_data)
-            wordcloud = WordCloud(
-                width=800,
-                height=400,
-                background_color='white',
-                font_path='SimHei.ttf',  # 中文字体路径
-                max_words=100
-            ).generate(text)
+            wordcloud = WordCloud(**wordcloud_kwargs).generate(text)
         else:
-            wordcloud = WordCloud(
-                width=800,
-                height=400,
-                background_color='white',
-                font_path='SimHei.ttf',
-                max_words=100
-            ).generate_from_frequencies(text_data)
+            wordcloud = WordCloud(**wordcloud_kwargs).generate_from_frequencies(text_data)
 
         # 创建图表
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))

@@ -4,6 +4,70 @@
 
 ## 📁 文件列表
 
+### basic_usage.py
+
+DataTransformer 核心功能的基本使用示例，演示如何加载、处理和保存通用格式的数据。
+
+**功能演示：**
+- 📂 加载 JSONL 格式数据
+- 📊 查看数据统计信息
+- 🔍 数据过滤和条件查询
+- 🔄 数据转换和映射
+- 🔗 链式操作
+- ✂️ 数据分割（训练集/测试集）
+- 💾 保存处理后的数据
+- 📏 相似度计算和查找
+
+**使用方法：**
+```bash
+# 直接运行
+python examples/basic_usage.py
+
+# 或从项目根目录运行
+python -m examples.basic_usage
+```
+
+**输出示例：**
+```
+============================================================
+DataTransformer 基本使用示例
+============================================================
+
+1. 加载数据
+----------------------------------------
+✓ 成功加载 10 条数据
+
+2. 数据统计
+----------------------------------------
+  总数: 10
+  字段: text, category, score, language
+  中文数据: 5 条
+  英文数据: 5 条
+
+...
+```
+
+**相关文件：**
+- 数据文件: [data/data.jsonl](../data/data.jsonl)
+- 数据格式说明: [data/README.md](../data/README.md)
+- API 文档: [docs/api/core.md](../docs/api/core.md)
+
+### analyze_sft_dataset.py
+
+SFT 数据集分析工具，提供详细的数据集质量评估和可视化。
+
+**功能特性：**
+- 📈 数据集统计分析
+- 🎯 质量评估
+- 📊 可视化报告生成
+
+**使用方法：**
+```bash
+python examples/analyze_sft_dataset.py \
+  --input data/sft_dataset_example.jsonl \
+  --output analysis_results/
+```
+
 ### sft_upload_demo.html
 
 一个完整的独立 HTML 页面，展示如何创建和上传 SFT 数据集。

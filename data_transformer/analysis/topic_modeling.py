@@ -91,8 +91,8 @@ class TopicModeler:
             else:
                 raise ValueError(f"不支持的方法：{method}")
 
-            # 生成主题描述
-            topics[label] = {
+            # 生成主题描述（转换label为Python原生int以支持JSON序列化）
+            topics[int(label)] = {
                 'keywords': keywords[:self.n_words_per_topic],
                 'size': len(cluster_docs),
                 'sample_docs': cluster_docs[:3],  # 保存样例文档
