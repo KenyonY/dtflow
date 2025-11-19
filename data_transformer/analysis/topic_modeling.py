@@ -74,9 +74,10 @@ class TopicModeler:
             if label == -1:  # 跳过噪声点
                 continue
 
-            # 获取该聚类的文档
+            # 获取该聚类的文档和索引
             cluster_mask = cluster_labels == label
-            cluster_docs = [documents[i] for i, mask in enumerate(cluster_mask) if mask]
+            cluster_indices = [i for i, mask in enumerate(cluster_mask) if mask]
+            cluster_docs = [documents[i] for i in cluster_indices]
 
             if not cluster_docs:
                 continue
@@ -95,7 +96,8 @@ class TopicModeler:
             topics[int(label)] = {
                 'keywords': keywords[:self.n_words_per_topic],
                 'size': len(cluster_docs),
-                'sample_docs': cluster_docs[:3],  # 保存样例文档
+                'sample_indices': cluster_indices,  # 保存所有样本索引
+                'sample_docs': cluster_docs[:5],  # 保存前5个样例文档用于预览
                 'topic_summary': self._generate_topic_summary(keywords[:5])
             }
 

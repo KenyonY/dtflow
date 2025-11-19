@@ -434,6 +434,14 @@ class DataVisualizer:
         """
         logger.info("生成词云图")
 
+        # 检查数据是否为空
+        if isinstance(text_data, dict) and len(text_data) == 0:
+            logger.warning("词频数据为空，跳过词云生成")
+            return None
+        if isinstance(text_data, list) and (len(text_data) == 0 or all(not t.strip() for t in text_data)):
+            logger.warning("文本数据为空，跳过词云生成")
+            return None
+
         # 处理输入数据
         # 使用自动查找的中文字体，如果没有找到则使用None（系统默认）
         wordcloud_kwargs = {
@@ -445,11 +453,21 @@ class DataVisualizer:
         if _chinese_font_path:
             wordcloud_kwargs['font_path'] = _chinese_font_path
 
-        if isinstance(text_data, list):
-            text = ' '.join(text_data)
-            wordcloud = WordCloud(**wordcloud_kwargs).generate(text)
-        else:
-            wordcloud = WordCloud(**wordcloud_kwargs).generate_from_frequencies(text_data)
+        try:
+            if isinstance(text_data, list):
+                text = ' '.join(text_data)
+                if not text.strip():
+                    logger.warning("文本内容为空，跳过词云生成")
+                    return None
+                wordcloud = WordCloud(**wordcloud_kwargs).generate(text)
+            else:
+                if not text_data:
+                    logger.warning("词频字典为空，跳过词云生成")
+                    return None
+                wordcloud = WordCloud(**wordcloud_kwargs).generate_from_frequencies(text_data)
+        except ValueError as e:
+            logger.warning(f"词云生成失败：{e}")
+            return None
 
         # 创建图表
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))
@@ -472,7 +490,7 @@ class DataVisualizer:
         save_path: Optional[str] = None
     ) -> go.Figure:
         """
-        可视化质量指标
+        可视化质量指标（简洁清晰版本）
 
         Args:
             quality_metrics: 质量评估结果
@@ -483,88 +501,85 @@ class DataVisualizer:
         """
         logger.info("生成质量指标可视化")
 
-        # 创建子图
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=(
-                "长度分布",
-                "多样性指标",
-                "重复率统计",
-                "总体质量评分"
-            ),
-            specs=[[{"type": "box"}, {"type": "bar"}],
-                  [{"type": "bar"}, {"type": "indicator"}]]
-        )
+        # 提取关键指标并转换为百分制
+        metrics = []
+        values = []
+        colors = []
 
-        # 1. 长度分布箱线图
-        length_data = quality_metrics.get('length_stats', {})
-        fig.add_trace(
-            go.Box(
-                y=[length_data.get('instruction_mean', 0),
-                   length_data.get('output_mean', 0),
-                   length_data.get('total_mean', 0)],
-                x=['指令长度', '输出长度', '总长度'],
-                name="长度分布"
-            ),
-            row=1, col=1
-        )
-
-        # 2. 多样性指标条形图
-        diversity_data = quality_metrics.get('diversity_scores', {})
-        fig.add_trace(
-            go.Bar(
-                x=list(diversity_data.keys()),
-                y=list(diversity_data.values()),
-                name="多样性分数",
-                marker_color='lightgreen'
-            ),
-            row=1, col=2
-        )
-
-        # 3. 重复率统计
-        dup_data = quality_metrics.get('duplication_stats', {})
-        fig.add_trace(
-            go.Bar(
-                x=list(dup_data.keys()),
-                y=list(dup_data.values()),
-                name="重复率",
-                marker_color='coral'
-            ),
-            row=2, col=1
-        )
-
-        # 4. 总体质量评分仪表盘
+        # 1. 总体质量分数
         overall_score = quality_metrics.get('overall_score', 0)
-        fig.add_trace(
-            go.Indicator(
-                mode="gauge+number+delta",
-                value=overall_score,
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': "总体质量分数"},
-                delta={'reference': 80},
-                gauge={
-                    'axis': {'range': [None, 100]},
-                    'bar': {'color': "darkblue"},
-                    'steps': [
-                        {'range': [0, 50], 'color': "lightgray"},
-                        {'range': [50, 80], 'color': "gray"}
-                    ],
-                    'threshold': {
-                        'line': {'color': "red", 'width': 4},
-                        'thickness': 0.75,
-                        'value': 90
-                    }
-                }
+        metrics.append('总体质量分数')
+        values.append(overall_score)
+        colors.append(self._get_score_color(overall_score))
+
+        # 2. 词汇多样性（转换为百分制）
+        diversity_scores = quality_metrics.get('diversity_scores', {})
+        vocab_diversity = diversity_scores.get('vocabulary_diversity', 0) * 100
+        metrics.append('词汇多样性')
+        values.append(vocab_diversity)
+        colors.append(self._get_score_color(vocab_diversity))
+
+        # 3. 唯一样本比例（转换为百分制）
+        dup_stats = quality_metrics.get('duplication_stats', {})
+        unique_ratio = dup_stats.get('unique_ratio', 1.0) * 100
+        metrics.append('样本唯一性')
+        values.append(unique_ratio)
+        colors.append(self._get_score_color(unique_ratio))
+
+        # 4. 内容复杂度（句子复杂度转为百分制）
+        complexity_scores = quality_metrics.get('complexity_scores', {})
+        sentence_complexity = complexity_scores.get('sentence_complexity', 0)
+        # 假设复杂度在0-5之间，转换为0-100
+        complexity_score = min(100, sentence_complexity * 20)
+        metrics.append('内容复杂度')
+        values.append(complexity_score)
+        colors.append(self._get_score_color(complexity_score))
+
+        # 创建水平条形图
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            y=metrics,
+            x=values,
+            orientation='h',
+            text=[f'{v:.1f}' for v in values],
+            textposition='outside',
+            marker=dict(
+                color=colors,
+                line=dict(color='rgba(0,0,0,0.3)', width=1)
             ),
-            row=2, col=2
-        )
+            hovertemplate='%{y}: <b>%{x:.1f}</b>/100<extra></extra>'
+        ))
+
+        # 添加参考线
+        fig.add_vline(x=80, line_dash="dash", line_color="gray",
+                     annotation_text="优秀线(80分)", annotation_position="top")
+        fig.add_vline(x=60, line_dash="dot", line_color="lightgray",
+                     annotation_text="及格线(60分)", annotation_position="top")
 
         # 更新布局
         fig.update_layout(
-            title="数据集质量评估报告",
-            template=self.theme,
+            title={
+                'text': "数据集质量评估",
+                'x': 0.5,
+                'xanchor': 'center',
+                'font': {'size': 20}
+            },
+            xaxis=dict(
+                title="得分（0-100）",
+                range=[0, 105],
+                dtick=20,
+                gridcolor='lightgray',
+                showgrid=True
+            ),
+            yaxis=dict(
+                title="",
+                tickfont=dict(size=14)
+            ),
+            template='plotly_white',
             showlegend=False,
-            height=700
+            height=400,
+            margin=dict(l=150, r=100, t=80, b=80)
         )
 
         # 保存图表
@@ -573,6 +588,23 @@ class DataVisualizer:
             logger.info(f"质量指标图已保存到：{save_path}")
 
         return fig
+
+    def _get_score_color(self, score: float) -> str:
+        """
+        根据分数返回颜色
+
+        Args:
+            score: 分数（0-100）
+
+        Returns:
+            颜色代码
+        """
+        if score >= 80:
+            return '#4CAF50'  # 绿色 - 优秀
+        elif score >= 60:
+            return '#FFC107'  # 黄色 - 良好
+        else:
+            return '#F44336'  # 红色 - 需改进
 
     def generate_analysis_report(
         self,

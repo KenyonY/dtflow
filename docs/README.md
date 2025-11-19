@@ -4,9 +4,18 @@
 
 ## 📚 文档目录树
 
+### 快速开始
+- [5分钟快速开始](../QUICKSTART.md) ⭐ - 最快上手方式，推荐新手阅读
+- [零门槛使用指南](lowering_barrier_guide.md) - 面向非技术用户的完整教程
+
 ### 使用指南 (guides/)
 - [SFT 数据集上传指南](guides/sft-upload-guide.md) - 详细的 SFT 格式数据上传教程
 - [MLLM 客户端快速开始](guides/mllm-quickstart.md) - 多模态大语言模型客户端使用指南
+
+### 技术报告
+- [性能测试报告](performance_test_report.md) - 大规模数据集性能基准测试
+- [分析模块测试报告](analysis_module_test_report.md) - 数据分析功能测试
+- [SFT 数据集分析](sft_dataset_analysis.md) - SFT 数据集分析示例
 
 ### API 文档 (api/)
 - [核心 API](api/core.md) - DataTransformer 核心类 API 参考

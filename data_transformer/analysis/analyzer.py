@@ -423,19 +423,61 @@ class SFTDataAnalyzer:
             return obj
 
     def _save_results(self):
-        """保存分析结果"""
+        """保存分析结果（只保存关键信息，不保存大型数据）"""
         results_file = self.output_dir / "analysis_results.json"
 
         try:
-            # 转换为可序列化格式
-            save_results = self._convert_to_serializable(self.results)
+            # 提取关键结果，排除大型中间数据
+            save_results = {
+                'n_samples': self.results.get('n_samples', 0),
+                'analysis_time': self.results.get('analysis_time', 0)
+            }
 
+            # 保存聚类结果摘要
+            if 'clustering' in self.results:
+                clustering = self.results['clustering']
+                if isinstance(clustering, dict):
+                    # 分层聚类
+                    save_results['clustering'] = {
+                        'method': 'hierarchical',
+                        'coarse_clusters': clustering['coarse'].n_clusters if 'coarse' in clustering and hasattr(clustering['coarse'], 'n_clusters') else 0,
+                        'fine_clusters': clustering['fine'].n_clusters if 'fine' in clustering and hasattr(clustering['fine'], 'n_clusters') else 0,
+                        'duplicate_ratio': clustering['dedup'].scores.get('duplicate_ratio', 0) if 'dedup' in clustering and hasattr(clustering['dedup'], 'scores') else 0
+                    }
+                else:
+                    # 单一聚类
+                    save_results['clustering'] = {
+                        'method': 'single',
+                        'n_clusters': clustering.n_clusters if hasattr(clustering, 'n_clusters') else 0,
+                        'scores': self._convert_to_serializable(clustering.scores) if hasattr(clustering, 'scores') else {}
+                    }
+
+            # 保存主题摘要
+            if 'topics' in self.results:
+                topics = self.results['topics']
+                save_results['topics'] = {}
+                # 保存所有主题（不限制数量，方便查看）
+                for topic_id, topic_info in topics.items():
+                    save_results['topics'][str(topic_id)] = {
+                        'size': topic_info.get('size', 0),
+                        'keywords': topic_info.get('keywords', [])[:10],  # 只保存前10个关键词
+                        'summary': topic_info.get('topic_summary', ''),
+                        'sample_indices': topic_info.get('sample_indices', [])  # 保存样本索引！
+                    }
+
+            # 保存质量评估（完整）
+            if 'quality' in self.results:
+                save_results['quality'] = self._convert_to_serializable(self.results['quality'])
+
+            # 写入文件
             with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(save_results, f, ensure_ascii=False, indent=2)
 
             logger.info(f"结果已保存到：{results_file}")
         except Exception as e:
             logger.error(f"保存结果失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # 不抛出异常，允许程序继续运行
 
     def _print_summary(self):
