@@ -50,13 +50,16 @@ def list_topics(results: Dict):
     print("\n" + "="*80)
     print("主题列表")
     print("="*80)
-    print(f"{'ID':<6} {'样本数':<10} {'关键词':<60}")
+    print(f"{'ID':<6} {'样本数':<10} {'LLM主题名称':<30} {'关键词':<30}")
     print("-"*80)
 
     for topic_id, topic_info in sorted(topics.items(), key=lambda x: int(x[0])):
         keywords = [kw[0] if isinstance(kw, list) else kw for kw in topic_info['keywords'][:5]]
         keywords_str = ', '.join(keywords)
-        print(f"{topic_id:<6} {topic_info['size']:<10} {keywords_str:<60}")
+        llm_name = topic_info.get('llm_topic_name', '')
+        if len(llm_name) > 28:
+            llm_name = llm_name[:28] + ".."
+        print(f"{topic_id:<6} {topic_info['size']:<10} {llm_name:<30} {keywords_str:<30}")
 
     print("="*80)
     print(f"总计: {len(topics)} 个主题")
@@ -88,6 +91,14 @@ def view_topic_samples(
     print("\n" + "="*80)
     print(f"主题 {topic_id} 详情")
     print("="*80)
+
+    # 显示LLM生成的主题名称和描述(如果有)
+    llm_name = topic_info.get('llm_topic_name', '')
+    llm_desc = topic_info.get('llm_topic_description', '')
+    if llm_name:
+        print(f"主题名称 (LLM): {llm_name}")
+    if llm_desc:
+        print(f"主题描述 (LLM): {llm_desc}")
 
     keywords = [kw[0] if isinstance(kw, list) else kw for kw in topic_info['keywords'][:8]]
     print(f"关键词: {', '.join(keywords)}")

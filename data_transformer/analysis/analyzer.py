@@ -13,7 +13,7 @@ import time
 from tqdm import tqdm
 import pickle
 
-from .embedding import BM25Vectorizer, HybridVectorizer
+from .embedding import BM25Vectorizer, HybridVectorizer, OllamaEmbeddingVectorizer
 from .clustering import (
     KMeansClusterer,
     HDBSCANClusterer,
@@ -24,6 +24,7 @@ from .clustering import (
 from .topic_modeling import TopicModeler, TopicEvolution
 from .quality import QualityEvaluator, QualityMetrics
 from .visualization import DataVisualizer
+from .llm_topic_namer import LLMTopicNamer
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,11 @@ class SFTDataAnalyzer:
         min_cluster_size: int = 50,
         use_jieba: bool = True,
         output_dir: str = "./analysis_output",
-        cache_dir: Optional[str] = "./cache"
+        cache_dir: Optional[str] = "./cache",
+        use_ollama_embedding: bool = False,
+        ollama_embed_model: str = "bge-m3:latest",
+        ollama_llm_model: str = "gemma3:4b",
+        ollama_base_url: str = "http://localhost:11434"
     ):
         """
         初始化分析器
@@ -52,10 +57,19 @@ class SFTDataAnalyzer:
             use_jieba: 是否使用jieba分词
             output_dir: 输出目录
             cache_dir: 缓存目录（None表示不缓存）
+            use_ollama_embedding: 是否使用Ollama embedding模型
+            ollama_embed_model: Ollama embedding模型名称
+            ollama_llm_model: Ollama LLM模型名称(用于主题命名)
+            ollama_base_url: Ollama服务地址
         """
         self.n_clusters = n_clusters
         self.min_cluster_size = min_cluster_size
         self.use_jieba = use_jieba
+        self.use_ollama_embedding = use_ollama_embedding
+        self.ollama_embed_model = ollama_embed_model
+        self.ollama_llm_model = ollama_llm_model
+        self.ollama_base_url = ollama_base_url
+
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -63,8 +77,18 @@ class SFTDataAnalyzer:
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # 初始化各个组件
-        self.vectorizer = BM25Vectorizer(use_jieba=use_jieba, max_features=10000)
+        # 初始化向量化器
+        if use_ollama_embedding:
+            logger.info(f"使用Ollama embedding模型: {ollama_embed_model}")
+            self.vectorizer = OllamaEmbeddingVectorizer(
+                model=ollama_embed_model,
+                base_url=ollama_base_url
+            )
+        else:
+            logger.info("使用BM25向量化")
+            self.vectorizer = BM25Vectorizer(use_jieba=use_jieba, max_features=10000)
+
+        # 初始化聚类器
         self.kmeans_clusterer = KMeansClusterer(n_clusters=n_clusters)
         self.hdbscan_clusterer = HDBSCANClusterer(min_cluster_size=min_cluster_size)
         self.lsh_clusterer = LSHClusterer()
@@ -73,7 +97,17 @@ class SFTDataAnalyzer:
             fine_clusterer=self.hdbscan_clusterer,
             dedup_clusterer=self.lsh_clusterer
         )
+
+        # 初始化主题建模器
         self.topic_modeler = TopicModeler(use_jieba=use_jieba)
+
+        # 初始化LLM主题命名器
+        self.llm_topic_namer = LLMTopicNamer(
+            model=ollama_llm_model,
+            base_url=ollama_base_url
+        )
+
+        # 初始化质量评估器和可视化器
         self.quality_evaluator = QualityEvaluator()
         self.visualizer = DataVisualizer(output_dir=output_dir)
 
@@ -87,7 +121,9 @@ class SFTDataAnalyzer:
         clustering_method: str = 'hierarchical',
         topic_method: str = 'tfidf',
         generate_report: bool = True,
-        cache_embeddings: bool = True
+        cache_embeddings: bool = True,
+        use_llm_topic_naming: bool = True,
+        analyze_by_role: bool = False
     ) -> Dict[str, Any]:
         """
         执行完整的数据分析流程
@@ -99,6 +135,8 @@ class SFTDataAnalyzer:
             topic_method: 主题提取方法 ('tfidf', 'textrank', 'lda')
             generate_report: 是否生成分析报告
             cache_embeddings: 是否缓存向量化结果
+            use_llm_topic_naming: 是否使用LLM生成主题名称(需要Ollama服务)
+            analyze_by_role: 是否分别对user和assistant进行聚类分析
 
         Returns:
             完整的分析结果字典
@@ -121,9 +159,17 @@ class SFTDataAnalyzer:
         self.results['n_samples'] = len(data)
         logger.info(f"数据加载完成，样本数：{len(data)}")
 
+        # 如果启用分角色分析
+        if analyze_by_role:
+            return self._analyze_by_role(
+                data, clustering_method, topic_method,
+                cache_embeddings, use_llm_topic_naming, generate_report
+            )
+
+        # 标准分析流程
         # 2. 准备文本数据
         logger.info("\n步骤2: 准备文本数据...")
-        texts = self._prepare_texts(data)
+        texts = self._prepare_texts(data, role_filter='both')  # user+assistant
 
         # 3. 文本向量化
         logger.info("\n步骤3: 文本向量化...")
@@ -144,6 +190,24 @@ class SFTDataAnalyzer:
         # 5. 主题建模
         logger.info(f"\n步骤5: 主题建模（方法：{topic_method}）...")
         topics = self._extract_topics(texts, cluster_labels, method=topic_method)
+
+        # 5.5. 使用LLM生成语义化主题名称
+        if use_llm_topic_naming:
+            logger.info("\n步骤5.5: 使用LLM生成语义化主题名称...")
+            try:
+                # 传递embeddings和cluster_labels以支持智能样本选择
+                topics = self.llm_topic_namer.generate_topic_names(
+                    topics,
+                    sample_data=data,
+                    embeddings=embeddings,
+                    cluster_labels=cluster_labels
+                )
+                logger.info("LLM主题命名完成")
+            except Exception as e:
+                logger.warning(f"LLM主题命名失败，将使用原始主题摘要: {e}")
+                import traceback
+                logger.warning(traceback.format_exc())
+
         self.results['topics'] = topics
 
         # 6. 质量评估
@@ -205,40 +269,104 @@ class SFTDataAnalyzer:
                 raise ValueError(f"不支持的文件格式：{file_path.suffix}")
 
         # 验证数据格式
+        has_messages = False
+        has_instruction = False
+
         for item in data[:10]:  # 检查前10个样本
             if not isinstance(item, dict):
                 raise ValueError("数据格式错误：每个样本应该是字典")
-            if 'instruction' not in item or 'output' not in item:
-                logger.warning("数据缺少instruction或output字段")
+            if 'messages' in item:
+                has_messages = True
+            elif 'instruction' in item or 'output' in item:
+                has_instruction = True
+
+        if not has_messages and not has_instruction:
+            logger.warning("数据格式未知,可能缺少messages或instruction/output字段")
 
         return data
 
-    def _prepare_texts(self, data: List[Dict[str, str]]) -> List[str]:
+    def _prepare_texts(
+        self,
+        data: List[Dict[str, str]],
+        role_filter: Optional[str] = None
+    ) -> List[str]:
         """
         准备文本数据
 
         Args:
             data: 原始数据
+            role_filter: 角色过滤 ('user', 'assistant', 'both', None)
+                        - 'user': 只提取user消息
+                        - 'assistant': 只提取assistant消息
+                        - 'both': user+assistant拼接
+                        - None: 所有消息(兼容旧行为)
 
         Returns:
-            合并后的文本列表
+            文本列表
         """
         texts = []
         for item in data:
-            instruction = item.get('instruction', '')
-            output = item.get('output', '')
-            input_text = item.get('input', '')
+            # 支持messages格式(ShareGPT)
+            if 'messages' in item:
+                user_content = []
+                assistant_content = []
 
-            # 合并文本
-            combined = f"{instruction} {input_text} {output}".strip()
-            texts.append(combined)
+                for msg in item['messages']:
+                    role = msg.get('role', '')
+                    content = msg.get('content', '').strip()
+
+                    if not content:
+                        continue
+
+                    if role == 'user':
+                        user_content.append(content)
+                    elif role == 'assistant':
+                        assistant_content.append(content)
+
+                # 根据role_filter决定使用哪些内容
+                if role_filter == 'user':
+                    combined = ' '.join(user_content)
+                elif role_filter == 'assistant':
+                    combined = ' '.join(assistant_content)
+                elif role_filter == 'both':
+                    combined = ' '.join(user_content + assistant_content)
+                else:  # None - 兼容旧行为(包含system)
+                    text_parts = []
+                    for msg in item['messages']:
+                        content = msg.get('content', '')
+                        if content:
+                            text_parts.append(content)
+                    combined = ' '.join(text_parts)
+
+            # 支持instruction/output格式
+            elif 'instruction' in item or 'output' in item:
+                instruction = item.get('instruction', '')
+                output = item.get('output', '')
+                input_text = item.get('input', '')
+
+                if role_filter == 'user':
+                    combined = f"{instruction} {input_text}".strip()
+                elif role_filter == 'assistant':
+                    combined = output
+                else:
+                    combined = f"{instruction} {input_text} {output}".strip()
+
+            # 支持纯文本格式
+            elif 'text' in item:
+                combined = item['text']
+            else:
+                # 其他格式,尝试合并所有字段
+                combined = ' '.join(str(v) for v in item.values() if v)
+
+            texts.append(combined if combined else "")
 
         return texts
 
     def _vectorize_texts(
         self,
         texts: List[str],
-        use_cache: bool = True
+        use_cache: bool = True,
+        cache_suffix: str = ''
     ) -> np.ndarray:
         """
         文本向量化
@@ -246,20 +374,29 @@ class SFTDataAnalyzer:
         Args:
             texts: 文本列表
             use_cache: 是否使用缓存
+            cache_suffix: 缓存文件后缀(用于区分user/assistant)
 
         Returns:
             向量矩阵
         """
         cache_file = None
         if use_cache and self.cache_dir:
-            cache_file = self.cache_dir / f"embeddings_{len(texts)}.pkl"
+            cache_file = self.cache_dir / f"embeddings_{len(texts)}{cache_suffix}.pkl"
             if cache_file.exists():
                 logger.info(f"从缓存加载向量：{cache_file}")
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
 
         # 执行向量化
-        embeddings = self.vectorizer.fit_transform(texts, batch_size=1000)
+        if hasattr(self.vectorizer, 'fit_transform'):
+            if self.use_ollama_embedding:
+                # OllamaEmbeddingVectorizer不需要batch_size参数
+                embeddings = self.vectorizer.fit_transform(texts)
+            else:
+                # BM25Vectorizer需要batch_size参数
+                embeddings = self.vectorizer.fit_transform(texts, batch_size=1000)
+        else:
+            raise ValueError("向量化器没有fit_transform方法")
 
         # 保存到缓存
         if cache_file:
@@ -462,7 +599,9 @@ class SFTDataAnalyzer:
                         'size': topic_info.get('size', 0),
                         'keywords': topic_info.get('keywords', [])[:10],  # 只保存前10个关键词
                         'summary': topic_info.get('topic_summary', ''),
-                        'sample_indices': topic_info.get('sample_indices', [])  # 保存样本索引！
+                        'sample_indices': topic_info.get('sample_indices', []),  # 保存样本索引！
+                        'llm_topic_name': topic_info.get('llm_topic_name', ''),  # LLM生成的主题名称
+                        'llm_topic_description': topic_info.get('llm_topic_description', '')  # LLM生成的主题描述
                     }
 
             # 保存质量评估（完整）
@@ -521,6 +660,138 @@ class SFTDataAnalyzer:
 
         print(f"\n⏱️ 分析用时：{self.results['analysis_time']:.2f}秒")
         print(f"📁 结果保存在：{self.output_dir}")
+        print("="*60)
+
+    def _analyze_by_role(
+        self,
+        data: List[Dict],
+        clustering_method: str,
+        topic_method: str,
+        cache_embeddings: bool,
+        use_llm_topic_naming: bool,
+        generate_report: bool
+    ) -> Dict[str, Any]:
+        """
+        分别对user和assistant进行聚类分析
+
+        Returns:
+            包含user和assistant两个分析结果的字典
+        """
+        logger.info("\n" + "="*50)
+        logger.info("分角色分析模式：分别分析User和Assistant")
+        logger.info("="*50)
+
+        results = {
+            'n_samples': len(data),
+            'analysis_mode': 'by_role'
+        }
+
+        # 分析User消息
+        logger.info("\n" + "🔵 "*25)
+        logger.info("分析 USER 消息（用户问题/意图）")
+        logger.info("🔵 "*25)
+
+        user_texts = self._prepare_texts(data, role_filter='user')
+        user_embeddings = self._vectorize_texts(user_texts, cache_embeddings, cache_suffix='_user')
+
+        logger.info(f"User向量化完成，维度：{user_embeddings.shape}")
+
+        user_clustering = self._perform_clustering(user_embeddings, method=clustering_method)
+        user_labels = user_clustering['fine'].labels if clustering_method == 'hierarchical' else user_clustering.labels
+
+        user_topics = self._extract_topics(user_texts, user_labels, method=topic_method)
+
+        if use_llm_topic_naming:
+            logger.info("为User主题生成LLM名称...")
+            try:
+                user_topics = self.llm_topic_namer.generate_topic_names(
+                    user_topics,
+                    sample_data=data,
+                    embeddings=user_embeddings,
+                    cluster_labels=user_labels
+                )
+            except Exception as e:
+                logger.warning(f"User主题命名失败: {e}")
+
+        results['user_analysis'] = {
+            'clustering': user_clustering,
+            'topics': user_topics
+        }
+
+        # 分析Assistant消息
+        logger.info("\n" + "🟢 "*25)
+        logger.info("分析 ASSISTANT 消息（AI回答/风格）")
+        logger.info("🟢 "*25)
+
+        assistant_texts = self._prepare_texts(data, role_filter='assistant')
+        assistant_embeddings = self._vectorize_texts(assistant_texts, cache_embeddings, cache_suffix='_assistant')
+
+        logger.info(f"Assistant向量化完成，维度：{assistant_embeddings.shape}")
+
+        assistant_clustering = self._perform_clustering(assistant_embeddings, method=clustering_method)
+        assistant_labels = assistant_clustering['fine'].labels if clustering_method == 'hierarchical' else assistant_clustering.labels
+
+        assistant_topics = self._extract_topics(assistant_texts, assistant_labels, method=topic_method)
+
+        if use_llm_topic_naming:
+            logger.info("为Assistant主题生成LLM名称...")
+            try:
+                assistant_topics = self.llm_topic_namer.generate_topic_names(
+                    assistant_topics,
+                    sample_data=data,
+                    embeddings=assistant_embeddings,
+                    cluster_labels=assistant_labels
+                )
+            except Exception as e:
+                logger.warning(f"Assistant主题命名失败: {e}")
+
+        results['assistant_analysis'] = {
+            'clustering': assistant_clustering,
+            'topics': assistant_topics
+        }
+
+        # 保存结果
+        self.results = results
+        self._save_results()
+
+        # 打印摘要
+        self._print_role_summary()
+
+        logger.info("\n" + "="*50)
+        logger.info("分角色分析完成！")
+        logger.info(f"User主题数: {len(user_topics)}")
+        logger.info(f"Assistant主题数: {len(assistant_topics)}")
+        logger.info(f"结果保存在：{self.output_dir}")
+        logger.info("="*50)
+
+        return results
+
+    def _print_role_summary(self):
+        """打印分角色分析摘要"""
+        print("\n" + "="*60)
+        print("分角色分析摘要")
+        print("="*60)
+
+        print(f"\n📊 样本总数：{self.results['n_samples']}")
+
+        if 'user_analysis' in self.results:
+            user_topics = self.results['user_analysis']['topics']
+            print(f"\n🔵 USER分析（用户问题/意图）：")
+            print(f"  • 主题数量：{len(user_topics)}")
+            print(f"  • 示例主题：")
+            for topic_id, info in list(user_topics.items())[:3]:
+                name = info.get('llm_topic_name', info.get('topic_summary', f'主题{topic_id}'))
+                print(f"    - {name} ({info['size']}个样本)")
+
+        if 'assistant_analysis' in self.results:
+            assistant_topics = self.results['assistant_analysis']['topics']
+            print(f"\n🟢 ASSISTANT分析（AI回答/风格）：")
+            print(f"  • 主题数量：{len(assistant_topics)}")
+            print(f"  • 示例主题：")
+            for topic_id, info in list(assistant_topics.items())[:3]:
+                name = info.get('llm_topic_name', info.get('topic_summary', f'主题{topic_id}'))
+                print(f"    - {name} ({info['size']}个样本)")
+
         print("="*60)
 
     def load_results(self, results_file: str) -> Dict[str, Any]:

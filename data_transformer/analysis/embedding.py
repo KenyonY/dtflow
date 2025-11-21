@@ -1,7 +1,8 @@
 """
-文本向量化模块 - 使用BM25算法进行文本向量化
+文本向量化模块 - 支持BM25和Ollama嵌入向量
 
 BM25是一种基于概率的信息检索模型，考虑了词频、逆文档频率和文档长度
+同时支持Ollama的深度学习嵌入模型
 """
 
 import numpy as np
@@ -27,8 +28,8 @@ class BM25Vectorizer:
         self,
         k1: float = 1.2,
         b: float = 0.75,
-        min_df: int = 2,
-        max_df: float = 0.95,
+        min_df: int = 1,
+        max_df: float = 0.98,
         max_features: Optional[int] = 10000,
         use_jieba: bool = True,
         stop_words: Optional[List[str]] = None
@@ -332,3 +333,159 @@ class HybridVectorizer:
         )
 
         return combined_matrix
+
+
+class OllamaEmbeddingVectorizer:
+    """
+    Ollama嵌入向量化器
+
+    使用Ollama服务的embedding API进行文本向量化
+    """
+
+    def __init__(
+        self,
+        model: str = "bge-m3:latest",
+        base_url: str = "http://localhost:11434",
+        batch_size: int = 32
+    ):
+        """
+        初始化Ollama嵌入向量化器
+
+        Args:
+            model: 嵌入模型名称
+            base_url: Ollama服务地址
+            batch_size: 批处理大小
+        """
+        self.model = model
+        self.base_url = base_url.rstrip('/')
+        self.batch_size = batch_size
+        self.embed_url = f"{self.base_url}/api/embeddings"
+
+    def _get_embedding(self, text: str, max_retries: int = 3, expected_dim: Optional[int] = None) -> Optional[np.ndarray]:
+        """
+        获取单个文本的嵌入向量（带重试机制）
+
+        Args:
+            text: 输入文本
+            max_retries: 最大重试次数
+            expected_dim: 期望的向量维度（用于验证）
+
+        Returns:
+            嵌入向量，失败返回None
+        """
+        import requests
+        import time
+
+        payload = {
+            "model": self.model,
+            "prompt": text
+        }
+
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    self.embed_url,
+                    json=payload,
+                    timeout=30
+                )
+                response.raise_for_status()
+                data = response.json()
+                embedding = data.get("embedding", [])
+
+                # 验证嵌入向量
+                if not embedding:
+                    logger.warning(f"第{attempt + 1}次尝试：返回空向量")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5 * (attempt + 1))  # 指数退避
+                        continue
+                    else:
+                        return None
+
+                embedding_array = np.array(embedding)
+
+                # 验证维度
+                if expected_dim is not None and len(embedding_array) != expected_dim:
+                    logger.warning(f"第{attempt + 1}次尝试：向量维度不匹配 (期望{expected_dim}, 实际{len(embedding_array)})")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    else:
+                        return None
+
+                # 成功返回
+                return embedding_array
+
+            except Exception as e:
+                logger.warning(f"第{attempt + 1}次尝试失败: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))  # 指数退避
+                else:
+                    logger.error(f"获取嵌入向量失败（已重试{max_retries}次）")
+                    return None
+
+        return None
+
+    def fit_transform(self, documents: List[str]) -> np.ndarray:
+        """
+        将文档转换为嵌入向量矩阵
+
+        Args:
+            documents: 文档列表
+
+        Returns:
+            嵌入向量矩阵 (n_documents, embedding_dim)
+        """
+        logger.info(f"开始使用Ollama模型 {self.model} 生成嵌入向量")
+
+        embeddings = []
+        n_docs = len(documents)
+        expected_dim = None
+        failed_count = 0
+
+        for i in range(0, n_docs, self.batch_size):
+            batch_docs = documents[i:min(i + self.batch_size, n_docs)]
+
+            for doc_idx, doc in enumerate(batch_docs):
+                # 获取嵌入向量（带重试）
+                embedding = self._get_embedding(doc, max_retries=3, expected_dim=expected_dim)
+
+                if embedding is None:
+                    # 重试3次后仍然失败
+                    failed_count += 1
+                    if expected_dim is not None:
+                        # 使用零向量作为占位符
+                        embedding = np.zeros(expected_dim)
+                        logger.warning(f"文档 {i + doc_idx} 嵌入失败，使用零向量")
+                    else:
+                        # 首个文档失败，无法确定维度
+                        logger.error("首个文档嵌入失败，无法确定向量维度")
+                        raise ValueError("首个文档嵌入失败，无法确定向量维度")
+                else:
+                    # 成功获取嵌入
+                    if expected_dim is None:
+                        expected_dim = len(embedding)
+                        logger.info(f"检测到嵌入向量维度: {expected_dim}")
+
+                embeddings.append(embedding)
+
+            logger.info(f"已处理 {min(i + self.batch_size, n_docs)}/{n_docs} 文档 (失败: {failed_count})")
+
+        embedding_matrix = np.array(embeddings)
+        logger.info(f"嵌入向量生成完成,形状: {embedding_matrix.shape}")
+
+        if failed_count > 0:
+            logger.warning(f"共有 {failed_count}/{n_docs} 个文档嵌入失败 (成功率: {(n_docs - failed_count) / n_docs * 100:.2f}%)")
+
+        return embedding_matrix
+
+    def transform(self, documents: List[str]) -> np.ndarray:
+        """
+        转换文档为嵌入向量(与fit_transform相同)
+
+        Args:
+            documents: 文档列表
+
+        Returns:
+            嵌入向量矩阵
+        """
+        return self.fit_transform(documents)
