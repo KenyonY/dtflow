@@ -1,0 +1,63 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>SFT数据集分析报告</title>
+            <meta charset="utf-8">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                h1 { color: #333; }
+                h2 { color: #666; border-bottom: 2px solid #eee; padding-bottom: 5px; }
+                .metric { display: inline-block; margin: 10px; padding: 10px;
+                          background: #f5f5f5; border-radius: 5px; }
+                .warning { color: #ff9800; }
+                .recommendation { color: #4CAF50; }
+                .chart-container { margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <h1>SFT数据集分析报告</h1>
+
+            <h2>1. 数据集概览</h2>
+            <div class="metrics">
+                <div class="metric">样本总数: 5000</div>
+                <div class="metric">聚类数: 26</div>
+                <div class="metric">总体质量分数: 71.2/100</div>
+            </div>
+
+            <h2>2. 质量评估</h2>
+            <table border='1' style='border-collapse: collapse;'><tr><th>指标</th><th>数值</th></tr><tr><td>overall_score</td><td>71.1600</td></tr><tr><td>warnings</td><td>['[警告] 模板多样性较低，数据可能过于模式化', '[警告] 存在重复超过5000次的样本']</td></tr><tr><td>recommendations</td><td>['[建议] 增加词汇多样性，引入更多不同表达方式', '[建议] 增加句子复杂度，提供更丰富的训练信号']</td></tr></table>
+
+            <h2>3. 聚类分析</h2>
+            <p>聚类算法: KMeans</p><p>聚类数量: 26</p><h4>聚类评估指标:</h4><ul><li>silhouette: -0.0522</li><li>inertia: 4333489.8674</li></ul>
+
+            <h2>4. 主题分析</h2>
+            <h4>主要主题:</h4><ul><li>主题0 (样本数:152): 准确的语言回答问题, 请用简洁, 作为ai语言模型, 你是一名负责任的人工智能助手, 负责友善地解决提出的问题</li><li>主题1 (样本数:152): aim, 同时, 最后, 你是一名负责任的人工智能助手, 负责友善地解决提出的问题</li><li>主题2 (样本数:119): 在中国, 我们应该共同努力, 你是一名负责任的人工智能助手, 负责友善地解决提出的问题, 在中国文化中</li><li>主题3 (样本数:104): 以上, 准确的语言回答问题, 请用简洁, 你是一名负责任的人工智能助手, 负责友善地解决提出的问题</li><li>主题4 (样本数:73): 遵守考试规则, 我建议您诚实, 遵纪守法等行为, 支持道德, 相反</li><li>主题5 (样本数:70): 在中国, 不忘初心, 牢记使命, 红色村庄, 学习强国</li><li>主题6 (样本数:61): 在中国, 我们应该尊重他人, 提出这样的问题本身是不正确的, 中华人民共和国网络安全法, 网络安全法</li><li>主题7 (样本数:60): 对不起, 我是ai语言模型, 我是一个ai语言模型, 作为ai语言模型, 抱歉</li><li>主题8 (样本数:59): 该表述存在误解, 中国政府始终致力于维护社会稳定和国家安全, 在中国, 在新疆, 保障各族人民的合法权益</li><li>主题9 (样本数:58): 保证长度在100字左右, 从乐观积极的角度回答, 回答不要冗长, 请以简体中文进行回答, 请回答以下问题</li></ul>
+
+            <h2>5. 警告与建议</h2>
+            <div class="warnings">
+                <h3>质量警告</h3>
+                <ul>
+                <li class="warning">[警告] 模板多样性较低，数据可能过于模式化</li>
+<li class="warning">[警告] 存在重复超过5000次的样本</li>
+                </ul>
+            </div>
+
+            <div class="recommendations">
+                <h3>改进建议</h3>
+                <ul>
+                <li class="recommendation">[建议] 增加词汇多样性，引入更多不同表达方式</li>
+<li class="recommendation">[建议] 增加句子复杂度，提供更丰富的训练信号</li>
+                </ul>
+            </div>
+
+            <h2>6. 可视化图表</h2>
+            <div class="chart-container">请查看生成的可视化文件</div>
+
+            <hr>
+            <p style="text-align: center; color: #999;">
+                报告生成时间: 2025-11-20 18:16:48
+            </p>
+        </body>
+        </html>
+        
