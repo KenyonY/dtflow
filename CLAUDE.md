@@ -288,6 +288,8 @@ processor = registry.create("my_processor", config={"param": "value"})
 - `docs/guides/`: 使用指南
   - `sft-upload-guide.md`: SFT 数据集上传指南
   - `mllm-quickstart.md`: MLLM 处理器快速开始
+- `docs/llm_topic_naming_quickstart.md`: LLM 主题命名快速开始
+- `docs/ADVANCED_ANALYSIS_GUIDE.md`: 高级分析指南
 - `docs/api/`: API 文档
   - `core.md`: 核心 API
   - `formats.md`: 格式转换 API
@@ -305,7 +307,7 @@ processor = registry.create("my_processor", config={"param": "value"})
 ## 关键文件位置
 
 - 核心类: `data_transformer/core.py:15` (DataTransformer 类)
-- 格式转换基类: `data_transformer/formats/base.py:6` (BaseFormatter)
+- 格式转换基类: `data_transformer/formats/base.py:8` (BaseFormatter)
 - 存储管理器: `label-app/backend/app/core/storage_flaxkv.py:12` (FlaxKVStorageManager)
 - 处理器基类: `next-gen-designer/light_transformer/core/base.py:11` (BaseProcessor)
 - FastAPI 主应用: `label-app/backend/app/main.py`
