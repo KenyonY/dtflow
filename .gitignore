@@ -8,6 +8,9 @@ build/
 develop-eggs/
 dist/
 downloads/
+/data
+/analysis*
+
 
 eggs/
 .eggs/
