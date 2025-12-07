@@ -4,7 +4,14 @@ Tests for DataTransformer core functionality.
 import pytest
 import tempfile
 from pathlib import Path
-from data_transformer import DataTransformer, DictWrapper, get_preset, list_presets
+from data_transformer import (
+    DataTransformer,
+    DictWrapper,
+    TransformError,
+    TransformErrors,
+    get_preset,
+    list_presets,
+)
 
 
 class TestDataTransformer:
@@ -185,6 +192,196 @@ class TestDictWrapper:
         w = DictWrapper({"name": "test"})
         with pytest.raises(AttributeError):
             _ = w.missing_field
+
+
+class TestErrorHandling:
+    """Test cases for error handling in transformations."""
+
+    def test_to_default_skip_on_error(self, capsys):
+        """Test default behavior skips errors and prints warning."""
+        dt = DataTransformer([
+            {"q": "问题1", "a": "回答1"},
+            {"q": "问题2"},  # 缺少 'a' 字段
+            {"q": "问题3", "a": "回答3"},
+        ])
+
+        results = dt.to(lambda x: {"instruction": x.q, "output": x.a})
+
+        assert len(results) == 2
+        assert results[0]["instruction"] == "问题1"
+        assert results[1]["instruction"] == "问题3"
+
+        # 检查打印了警告
+        captured = capsys.readouterr()
+        assert "2/3 成功" in captured.err
+        assert "1 失败" in captured.err
+
+    def test_to_raise_on_error(self):
+        """Test raise strategy stops on first error."""
+        dt = DataTransformer([
+            {"q": "问题1", "a": "回答1"},
+            {"q": "问题2"},  # 缺少 'a' 字段
+            {"q": "问题3", "a": "回答3"},
+        ])
+
+        with pytest.raises(TransformErrors) as exc_info:
+            dt.to(lambda x: {"instruction": x.q, "output": x.a}, on_error="raise")
+
+        errors = exc_info.value
+        assert len(errors) == 1
+        assert errors.errors[0].index == 1
+
+    def test_to_skip_on_error(self, capsys):
+        """Test skip strategy continues processing."""
+        dt = DataTransformer([
+            {"q": "问题1", "a": "回答1"},
+            {"q": "问题2"},  # 缺少 'a' 字段
+            {"q": "问题3", "a": "回答3"},
+        ])
+
+        results = dt.to(lambda x: {"instruction": x.q, "output": x.a}, on_error="skip")
+
+        assert len(results) == 2
+        assert results[0]["instruction"] == "问题1"
+        assert results[1]["instruction"] == "问题3"
+
+    def test_to_null_on_error(self):
+        """Test null strategy returns None for errors."""
+        dt = DataTransformer([
+            {"q": "问题1", "a": "回答1"},
+            {"q": "问题2"},  # 缺少 'a' 字段
+            {"q": "问题3", "a": "回答3"},
+        ])
+
+        results = dt.to(lambda x: {"instruction": x.q, "output": x.a}, on_error="null")
+
+        assert len(results) == 3
+        assert results[0]["instruction"] == "问题1"
+        assert results[1] is None
+        assert results[2]["instruction"] == "问题3"
+
+    def test_to_return_errors(self):
+        """Test return_errors flag returns error details."""
+        dt = DataTransformer([
+            {"q": "问题1", "a": "回答1"},
+            {"q": "问题2"},  # 缺少 'a' 字段
+            {"q": "问题3"},  # 缺少 'a' 字段
+            {"q": "问题4", "a": "回答4"},
+        ])
+
+        results, errors = dt.to(
+            lambda x: {"instruction": x.q, "output": x.a},
+            on_error="skip",
+            return_errors=True
+        )
+
+        assert len(results) == 2
+        assert len(errors) == 2
+        assert errors[0].index == 1
+        assert errors[1].index == 2
+        assert isinstance(errors[0].error, AttributeError)
+
+    def test_transform_skip_on_error(self):
+        """Test transform with skip strategy."""
+        dt = DataTransformer([
+            {"q": "问题1", "a": "回答1"},
+            {"q": "问题2"},  # 缺少 'a' 字段
+        ])
+
+        result = dt.transform(lambda x: {"q": x.q, "a": x.a}, on_error="skip")
+
+        assert isinstance(result, DataTransformer)
+        assert len(result) == 1
+
+    def test_filter_default_skip_on_error(self, capsys):
+        """Test filter default skips errors and prints warning."""
+        dt = DataTransformer([
+            {"score": 0.8},
+            {"value": 0.5},  # 缺少 'score' 字段
+            {"score": 0.9},
+        ])
+
+        result = dt.filter(lambda x: x.score > 0.5)
+
+        assert len(result) == 2
+
+        # 检查打印了警告
+        captured = capsys.readouterr()
+        assert "1 失败" in captured.err
+
+    def test_filter_raise_on_error(self):
+        """Test filter raise strategy."""
+        dt = DataTransformer([
+            {"score": 0.8},
+            {"value": 0.5},  # 缺少 'score' 字段
+            {"score": 0.9},
+        ])
+
+        with pytest.raises(TransformErrors):
+            dt.filter(lambda x: x.score > 0.5, on_error="raise")
+
+    def test_filter_skip_on_error(self, capsys):
+        """Test filter skip strategy."""
+        dt = DataTransformer([
+            {"score": 0.8},
+            {"value": 0.5},  # 缺少 'score' 字段
+            {"score": 0.9},
+        ])
+
+        result = dt.filter(lambda x: x.score > 0.5, on_error="skip")
+
+        assert len(result) == 2
+
+    def test_filter_keep_on_error(self):
+        """Test filter keep strategy preserves error rows."""
+        dt = DataTransformer([
+            {"score": 0.8},
+            {"value": 0.5},  # 缺少 'score' 字段
+            {"score": 0.3},
+        ])
+
+        result = dt.filter(lambda x: x.score > 0.5, on_error="keep")
+
+        # 保留: score=0.8 通过, value=0.5 错误保留, score=0.3 不通过
+        assert len(result) == 2
+        assert result[0]["score"] == 0.8
+        assert result[1]["value"] == 0.5
+
+    def test_transform_error_info(self):
+        """Test TransformError contains useful info."""
+        dt = DataTransformer([{"q": "问题"}])
+
+        with pytest.raises(TransformErrors) as exc_info:
+            dt.to(lambda x: {"a": x.missing_field}, on_error="raise")
+
+        err = exc_info.value.errors[0]
+        assert err.index == 0
+        assert err.item == {"q": "问题"}
+        assert "missing_field" in str(err.error)
+
+    def test_transform_errors_message(self):
+        """Test TransformErrors provides clear message."""
+        dt = DataTransformer([
+            {"q": "问题1"},
+            {"q": "问题2"},
+        ])
+
+        with pytest.raises(TransformErrors) as exc_info:
+            dt.to(lambda x: {"a": x.missing}, on_error="raise")
+
+        msg = str(exc_info.value)
+        assert "第 0 行" in msg or "[0]" in msg
+
+    def test_no_error_no_side_effects(self):
+        """Test normal operation unchanged when no errors."""
+        dt = DataTransformer([{"q": "问题", "a": "回答"}])
+
+        # All strategies should produce same result when no errors
+        result1 = dt.to(lambda x: {"q": x.q}, on_error="raise")
+        result2 = dt.to(lambda x: {"q": x.q}, on_error="skip")
+        result3 = dt.to(lambda x: {"q": x.q}, on_error="null")
+
+        assert result1 == result2 == result3 == [{"q": "问题"}]
 
 
 class TestPresets:

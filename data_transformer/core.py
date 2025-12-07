@@ -3,10 +3,71 @@ DataTransformer 核心模块
 
 专注于数据格式转换，提供简洁的 API。
 """
-from typing import List, Dict, Any, Optional, Callable, Union
+from typing import List, Dict, Any, Optional, Callable, Union, Tuple, Literal
 from copy import deepcopy
+from dataclasses import dataclass
 
 from .storage.io import save_data, load_data
+
+
+# ============ 错误处理 ============
+
+@dataclass
+class TransformError:
+    """转换错误信息"""
+    index: int          # 原始数据索引
+    item: Dict          # 原始数据项
+    error: Exception    # 异常对象
+
+    def __repr__(self) -> str:
+        return f"TransformError(index={self.index}, error={self.error!r})"
+
+    def __str__(self) -> str:
+        # 截断过长的数据展示
+        item_str = str(self.item)
+        if len(item_str) > 100:
+            item_str = item_str[:100] + "..."
+        return f"第 {self.index} 行转换失败: {self.error}\n  数据: {item_str}"
+
+
+class TransformErrors(Exception):
+    """批量转换错误，包含所有失败的记录"""
+
+    def __init__(self, errors: List[TransformError]):
+        self.errors = errors
+        super().__init__(self._build_message())
+
+    def _build_message(self) -> str:
+        if len(self.errors) == 1:
+            return str(self.errors[0])
+        return f"转换失败 {len(self.errors)} 条记录:\n" + "\n".join(
+            f"  [{e.index}] {e.error}" for e in self.errors[:5]
+        ) + (f"\n  ... 还有 {len(self.errors) - 5} 条错误" if len(self.errors) > 5 else "")
+
+    def __iter__(self):
+        return iter(self.errors)
+
+    def __len__(self):
+        return len(self.errors)
+
+
+def _print_error_summary(errors: List[TransformError], total: int) -> None:
+    """打印错误摘要到 stderr"""
+    import sys
+
+    error_count = len(errors)
+    success_count = total - error_count
+
+    # 简洁的警告信息
+    print(f"⚠ 转换完成: {success_count}/{total} 成功, {error_count} 失败", file=sys.stderr)
+
+    # 显示前几条错误详情
+    show_count = min(3, error_count)
+    for err in errors[:show_count]:
+        print(f"  [{err.index}] {err.error}", file=sys.stderr)
+
+    if error_count > show_count:
+        print(f"  ... 还有 {error_count - show_count} 条错误", file=sys.stderr)
 
 
 class DataTransformer:
@@ -59,45 +120,127 @@ class DataTransformer:
 
     # ============ 核心转换 ============
 
-    def to(self, func: Callable[[Any], Any]) -> List[Any]:
+    def to(
+        self,
+        func: Callable[[Any], Any],
+        on_error: Literal["skip", "raise", "null"] = "skip",
+        return_errors: bool = False,
+    ) -> Union[List[Any], Tuple[List[Any], List[TransformError]]]:
         """
         使用函数转换数据格式。
 
         Args:
             func: 转换函数，参数支持属性访问 (item.field)
+            on_error: 错误处理策略
+                - "skip": 跳过错误行，打印警告（默认）
+                - "raise": 遇到错误立即抛出异常
+                - "null": 错误行返回 None
+            return_errors: 是否返回错误列表（仅当 on_error != "raise" 时有效）
 
         Returns:
-            转换后的数据列表
+            - 默认返回转换后的数据列表
+            - 如果 return_errors=True，返回 (结果列表, 错误列表)
+
+        Raises:
+            TransformErrors: 当 on_error="raise" 且有转换失败时
 
         Examples:
             >>> dt = DataTransformer([{"q": "问题", "a": "回答"}])
             >>> dt.to(lambda x: {"instruction": x.q, "output": x.a})
             [{"instruction": "问题", "output": "回答"}]
-        """
-        return [func(DictWrapper(item)) for item in self._data]
 
-    def transform(self, func: Callable[[Any], Any]) -> 'DataTransformer':
+            >>> # 严格模式：遇错即停
+            >>> results = dt.to(transform_func, on_error="raise")
+
+            >>> # 获取错误详情
+            >>> results, errors = dt.to(transform_func, return_errors=True)
+        """
+        results = []
+        errors = []
+
+        for i, item in enumerate(self._data):
+            try:
+                result = func(DictWrapper(item))
+                results.append(result)
+            except Exception as e:
+                err = TransformError(index=i, item=item, error=e)
+
+                if on_error == "raise":
+                    raise TransformErrors([err]) from e
+                elif on_error == "skip":
+                    errors.append(err)
+                elif on_error == "null":
+                    results.append(None)
+                    errors.append(err)
+
+        # 打印错误摘要
+        if errors and not return_errors:
+            _print_error_summary(errors, len(self._data))
+
+        if return_errors:
+            return results, errors
+        return results
+
+    def transform(
+        self,
+        func: Callable[[Any], Any],
+        on_error: Literal["skip", "raise", "null"] = "skip",
+    ) -> 'DataTransformer':
         """
         转换数据并返回新的 DataTransformer（支持链式调用）。
 
+        Args:
+            func: 转换函数
+            on_error: 错误处理策略（同 to() 方法）
+
         Examples:
             >>> dt.transform(lambda x: {"q": x.q}).save("output.jsonl")
+            >>> dt.transform(transform_func, on_error="raise").save("output.jsonl")
         """
-        return DataTransformer(self.to(func))
+        return DataTransformer(self.to(func, on_error=on_error))
 
     # ============ 数据筛选 ============
 
-    def filter(self, func: Callable[[Any], bool]) -> 'DataTransformer':
+    def filter(
+        self,
+        func: Callable[[Any], bool],
+        on_error: Literal["skip", "raise", "keep"] = "skip",
+    ) -> 'DataTransformer':
         """
         筛选数据。
 
         Args:
             func: 筛选函数，返回 True 保留，参数支持属性访问
+            on_error: 错误处理策略
+                - "skip": 跳过错误行，打印警告（默认，不保留错误行）
+                - "raise": 遇到错误立即抛出异常
+                - "keep": 保留错误行
 
         Examples:
             >>> dt.filter(lambda x: len(x.text) > 10)
+            >>> dt.filter(lambda x: x.score > 0.5, on_error="raise")
         """
-        filtered = [item for item in self._data if func(DictWrapper(item))]
+        filtered = []
+        errors = []
+
+        for i, item in enumerate(self._data):
+            try:
+                if func(DictWrapper(item)):
+                    filtered.append(item)
+            except Exception as e:
+                err = TransformError(index=i, item=item, error=e)
+                if on_error == "raise":
+                    raise TransformErrors([err]) from e
+                elif on_error == "keep":
+                    filtered.append(item)
+                    errors.append(err)
+                else:  # skip
+                    errors.append(err)
+
+        # 打印错误摘要
+        if errors:
+            _print_error_summary(errors, len(self._data))
+
         return DataTransformer(filtered)
 
     def sample(self, n: int, seed: Optional[int] = None) -> 'DataTransformer':

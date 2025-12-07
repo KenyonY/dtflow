@@ -18,6 +18,9 @@ DataTransformer 是一个专业的数据标注和转换平台,支持多种机器
 - `storage/io.py`: 文件存储抽象(支持 JSONL、JSON、CSV、Parquet)
 - `utils/`: 工具模块(相似度计算、数据展示)
 - `analysis/`: SFT数据集分析模块(嵌入、聚类、主题建模、质量评估、可视化)
+- `presets.py`: 预设转换模板(openai_chat、alpaca、sharegpt、dpo_pair、simple_qa)
+- `cli/`: 命令行工具(sample、transform 命令)
+- `mcp/`: MCP 服务，提供 AI 工具集成支持
 
 **Web 标注平台** (`label-app/`)
 - **Backend** (`label-app/backend/`): FastAPI 应用,使用 FlaxKV2 存储
@@ -175,6 +178,40 @@ npm run preview
 npm run lint
 ```
 
+### CLI 命令（dt）
+
+```bash
+# 数据采样
+dt sample data.jsonl --num=10                    # 随机采样 10 条
+dt sample data.csv --num=100 --sample_type=head  # 取前 100 条
+dt sample data.xlsx --output=sampled.jsonl       # 采样并保存
+
+# 数据转换 - 预设模式（推荐）
+dt transform data.jsonl --preset=openai_chat     # 转换为 OpenAI Chat 格式
+dt transform data.jsonl --preset=alpaca          # 转换为 Alpaca 格式
+dt transform data.jsonl --preset=sharegpt        # 转换为 ShareGPT 格式
+dt transform data.jsonl --preset=dpo_pair        # 转换为 DPO 格式
+dt transform data.jsonl --preset=simple_qa       # 转换为简单问答格式
+
+# 数据转换 - 配置文件模式
+dt transform data.jsonl                          # 首次运行生成配置文件 .dt/data.py
+# 编辑配置文件后再次运行
+dt transform data.jsonl                          # 执行转换
+dt transform data.jsonl --num=100                # 只转换前 100 条
+```
+
+### MCP 服务
+
+DataTransformer 提供 MCP (Model Context Protocol) 服务，可集成到支持 MCP 的 AI 工具中：
+
+```bash
+# 安装 MCP 依赖
+pip install -e ".[mcp]"
+
+# 启动 MCP 服务（由 AI 工具自动调用）
+python -m data_transformer.mcp
+```
+
 ### 数据集操作
 
 ```bash
@@ -275,7 +312,7 @@ processor = registry.create("my_processor", config={"param": "value"})
 - **后端技术栈**: FastAPI + Pydantic v2 + FlaxKV2
 - **测试框架**: pytest,配置在 `pyproject.toml` 和 `label-app/backend/pytest.ini`
 - **代码风格**: Black (行长度 100) + isort + flake8 + mypy
-- **Python 版本支持**: >= 3.7
+- **Python 版本支持**: >= 3.8
 
 ## 文档结构
 
@@ -308,6 +345,9 @@ processor = registry.create("my_processor", config={"param": "value"})
 
 - 核心类: `data_transformer/core.py:15` (DataTransformer 类)
 - 格式转换基类: `data_transformer/formats/base.py:8` (BaseFormatter)
+- 预设模板: `data_transformer/presets.py` (openai_chat、alpaca 等)
+- CLI 命令: `data_transformer/cli/commands.py` (sample、transform)
+- MCP 服务: `data_transformer/mcp/server.py`
 - 存储管理器: `label-app/backend/app/core/storage_flaxkv.py:12` (FlaxKVStorageManager)
 - 处理器基类: `next-gen-designer/light_transformer/core/base.py:11` (BaseProcessor)
 - FastAPI 主应用: `label-app/backend/app/main.py`

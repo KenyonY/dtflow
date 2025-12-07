@@ -11,6 +11,20 @@ from ..presets import get_preset, list_presets
 from ..storage.io import load_data, save_data, sample_file
 
 
+# 支持的文件格式
+SUPPORTED_FORMATS = {".csv", ".jsonl", ".json", ".xlsx", ".xls", ".parquet", ".arrow", ".feather"}
+
+
+def _check_file_format(filepath: Path) -> bool:
+    """检查文件格式是否支持，不支持则打印错误信息并返回 False"""
+    ext = filepath.suffix.lower()
+    if ext not in SUPPORTED_FORMATS:
+        print(f"错误: 不支持的文件格式 - {ext}")
+        print(f"支持的格式: {', '.join(sorted(SUPPORTED_FORMATS))}")
+        return False
+    return True
+
+
 def sample(
     filename: str,
     num: int = 10,
@@ -29,9 +43,9 @@ def sample(
         seed: 随机种子（仅在 sample_type=random 时有效）
 
     Examples:
-        dt sample data.jsonl --num=5
-        dt sample data.csv --num=100 --sample_type=head
-        dt sample data.xlsx --num=50 --sample_type=random --output=sampled.jsonl
+        dt sample data.jsonl 5
+        dt sample data.csv 100 --sample_type=head
+        dt sample data.xlsx 50 --output=sampled.jsonl
     """
     filepath = Path(filename)
 
@@ -39,12 +53,7 @@ def sample(
         print(f"错误: 文件不存在 - {filename}")
         return
 
-    # 检测文件格式是否支持
-    ext = filepath.suffix.lower()
-    supported_formats = {".csv", ".jsonl", ".json", ".xlsx", ".xls", ".parquet", ".arrow", ".feather"}
-    if ext not in supported_formats:
-        print(f"错误: 不支持的文件格式 - {ext}")
-        print(f"支持的格式: {', '.join(sorted(supported_formats))}")
+    if not _check_file_format(filepath):
         return
 
     # 调用核心实现
@@ -128,10 +137,10 @@ def _get_config_path(input_path: Path, config_override: Optional[str] = None) ->
 
 def transform(
     filename: str,
-    config: Optional[str] = None,
-    output: Optional[str] = None,
     num: Optional[int] = None,
     preset: Optional[str] = None,
+    config: Optional[str] = None,
+    output: Optional[str] = None,
 ) -> None:
     """
     转换数据格式。
@@ -141,24 +150,24 @@ def transform(
     2. 预设模式：使用 --preset 直接转换
 
     Args:
-        filename: 输入文件路径
+        filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        num: 只转换前 N 条数据（可选）
+        preset: 使用预设模板（openai_chat, alpaca, sharegpt, dpo_pair, simple_qa）
         config: 配置文件路径（可选，默认 .dt/<filename>.py）
         output: 输出文件路径
-        num: 只转换前 N 条数据
-        preset: 使用预设模板（openai_chat, alpaca, sharegpt, dpo_pair, simple_qa）
 
     Examples:
-        # 配置文件模式
-        dt transform data.jsonl              # 首次生成配置
-        dt transform data.jsonl              # 编辑后执行转换
-
-        # 预设模式
-        dt transform data.jsonl --preset=openai_chat
-        dt transform data.jsonl --preset=alpaca --output=alpaca.jsonl
+        dt transform data.jsonl                        # 首次生成配置
+        dt transform data.jsonl 10                     # 只转换前 10 条
+        dt transform data.jsonl --preset=openai_chat   # 使用预设
+        dt transform data.jsonl 100 --preset=alpaca    # 预设 + 限制数量
     """
     filepath = Path(filename)
     if not filepath.exists():
         print(f"错误: 文件不存在 - {filename}")
+        return
+
+    if not _check_file_format(filepath):
         return
 
     # 预设模式：直接使用预设转换
