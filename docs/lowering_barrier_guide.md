@@ -175,7 +175,7 @@ python scripts/analyze --formats
 **使用示例**:
 
 ```python
-from data_transformer.analysis.analyzer import SFTDataAnalyzer
+from datatron.analysis.analyzer import SFTDataAnalyzer
 import json
 
 # 1. 加载数据
@@ -286,7 +286,7 @@ python scripts/generate_summary_report.py reports/*
 
 ```python
 # data_pipeline.py
-from data_transformer.analysis.analyzer import SFTDataAnalyzer
+from datatron.analysis.analyzer import SFTDataAnalyzer
 from pathlib import Path
 
 def analyze_batch(data_files, output_base='results'):

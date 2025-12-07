@@ -3,7 +3,7 @@
 避免Windows控制台编码问题
 """
 
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 
 def test_basic_usage():
@@ -57,48 +57,6 @@ def test_sft_data():
     print("[OK] SFT数据测试通过\n")
 
 
-def test_analysis():
-    """测试分析功能(不生成报告)"""
-    print("=" * 60)
-    print("测试 3: 数据分析功能")
-    print("=" * 60)
-
-    try:
-        from data_transformer.analysis import SFTDataAnalyzer
-
-        # 创建分析器
-        analyzer = SFTDataAnalyzer(
-            n_clusters=3,
-            use_jieba=True,
-            output_dir="./test_analysis_output"
-        )
-
-        # 使用小样本数据测试
-        data = "data/sft_data.jsonl"
-
-        print("开始分析...")
-        # 不打印摘要,避免编码问题
-        results = analyzer.analyze(
-            data=data,
-            clustering_method='kmeans',
-            topic_method='tfidf',
-            generate_report=False,
-            cache_embeddings=False,
-            print_summary=False  # 禁用打印
-        )
-
-        print(f"分析完成: 处理了 {results['n_samples']} 条数据")
-        if 'quality' in results:
-            print(f"质量分数: {results['quality']['overall_score']:.1f}/100")
-
-        print("[OK] 分析功能测试通过\n")
-
-    except ImportError as e:
-        print(f"[SKIP] 分析模块未安装: {e}\n")
-    except Exception as e:
-        print(f"[WARN] 分析功能遇到问题(可能是编码相关): {type(e).__name__}\n")
-
-
 def main():
     """运行所有测试"""
     print("\n开始测试示例脚本...\n")
@@ -112,11 +70,6 @@ def main():
         test_sft_data()
     except Exception as e:
         print(f"[ERROR] SFT数据测试失败: {e}\n")
-
-    try:
-        test_analysis()
-    except Exception as e:
-        print(f"[ERROR] 分析功能测试失败: {e}\n")
 
     print("=" * 60)
     print("所有测试完成!")

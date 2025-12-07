@@ -1,6 +1,6 @@
-"""DataTransformer MCP 文档内容
+"""Datatron MCP 文档内容
 
-提供 DataTransformer 的用法文档，供 MCP 服务使用。
+提供 Datatron 的用法文档，供 MCP 服务使用。
 """
 
 # 可用的文档主题
@@ -15,9 +15,9 @@ TOPICS = [
 
 # 文档内容
 DOCS = {
-    "overview": """# DataTransformer 概述
+    "overview": """# Datatron 概述
 
-DataTransformer 是一个专业的数据格式转换工具，专注于机器学习训练数据的格式转换。
+Datatron 是一个专业的数据格式转换工具，专注于机器学习训练数据的格式转换。
 
 ## 核心特点
 
@@ -29,16 +29,16 @@ DataTransformer 是一个专业的数据格式转换工具，专注于机器学�
 ## 安装
 
 ```bash
-pip install data-transformer
+pip install datatron
 
 # 完整安装（含存储、显示等）
-pip install data-transformer[full]
+pip install datatron[full]
 ```
 
 ## 快速开始
 
 ```python
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载数据
 dt = DataTransformer.load("data.jsonl")
@@ -75,12 +75,12 @@ dt sample data.jsonl --num=10
 ```
 """,
 
-    "basic_usage": """# DataTransformer 基本用法
+    "basic_usage": """# Datatron 基本用法
 
 ## 加载与保存
 
 ```python
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载（支持 jsonl, json, csv, parquet）
 dt = DataTransformer.load("data.jsonl")
@@ -153,7 +153,7 @@ train, test = dt.split(ratio=0.8)
 
     "presets": """# 预设转换模板
 
-DataTransformer 提供常用的格式转换预设，可直接用于 CLI 或 Python API。
+Datatron 提供常用的格式转换预设，可直接用于 CLI 或 Python API。
 
 ## 可用预设
 
@@ -176,7 +176,7 @@ dt transform data.jsonl --preset=alpaca --output=alpaca.jsonl
 ## Python API 使用
 
 ```python
-from data_transformer.presets import get_preset, list_presets
+from datatron.presets import get_preset, list_presets
 
 # 列出所有预设
 print(list_presets())
@@ -236,7 +236,7 @@ result = dt.to(transform_fn)
 
     "cli": """# CLI 命令行工具
 
-DataTransformer 提供 `dt` 命令行工具。
+Datatron 提供 `dt` 命令行工具。
 
 ## transform 命令 - 数据转换
 
@@ -298,7 +298,7 @@ dt sample data.jsonl --num=50 --seed=42
 
     "storage": """# 存储格式支持
 
-DataTransformer 支持多种常用数据格式。
+Datatron 支持多种常用数据格式。
 
 ## 支持的格式
 
@@ -313,7 +313,7 @@ DataTransformer 支持多种常用数据格式。
 ## 使用示例
 
 ```python
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载不同格式（自动检测）
 dt1 = DataTransformer.load("data.jsonl")
@@ -329,7 +329,7 @@ dt.save("output.parquet")
 ## 直接使用 IO 函数
 
 ```python
-from data_transformer.storage import load_data, save_data
+from datatron.storage import load_data, save_data
 
 # 加载
 data = load_data("input.jsonl")
@@ -342,21 +342,21 @@ save_data(data, "output.jsonl")
 
 ```bash
 # 完整安装（含所有格式支持）
-pip install data-transformer[full]
+pip install datatron[full]
 
 # 仅存储格式支持
-pip install data-transformer[storage]
+pip install datatron[storage]
 ```
 """,
 
     "chain_api": """# 链式 API 设计
 
-DataTransformer 支持流畅的链式调用。
+Datatron 支持流畅的链式调用。
 
 ## 链式调用示例
 
 ```python
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载 -> 筛选 -> 采样 -> 转换 -> 保存
 DataTransformer.load("input.jsonl") \\

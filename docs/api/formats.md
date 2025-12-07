@@ -102,7 +102,7 @@ dt = DataTransformer.load("data.jsonl", source_format="pretrain")
 ### BaseFormatter
 
 ```python
-from data_transformer.formats.base import BaseFormatter
+from datatron.formats.base import BaseFormatter
 
 class CustomFormatter(BaseFormatter):
     def format(self, item: Dict) -> Dict:
@@ -117,7 +117,7 @@ class CustomFormatter(BaseFormatter):
 ### 实现自定义格式转换器
 
 ```python
-from data_transformer.formats.base import BaseFormatter
+from datatron.formats.base import BaseFormatter
 
 class MyCustomFormatter(BaseFormatter):
     def format(self, item: Dict) -> Dict:

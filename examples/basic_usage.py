@@ -4,7 +4,7 @@ DataTransformer 基本使用示例
 本示例演示如何加载、处理和保存通用格式的数据。
 """
 
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 def main():
     print("=" * 60)

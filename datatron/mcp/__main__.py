@@ -1,7 +1,7 @@
-"""DataTransformer MCP 服务入口
+"""Datatron MCP 服务入口
 
 使用方式:
-    python -m data_transformer.mcp
+    python -m datatron.mcp
 """
 
 from .server import main

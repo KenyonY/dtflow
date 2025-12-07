@@ -1,4 +1,4 @@
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载 SFT 数据
 # dt = DataTransformer.load("data/sft_dataset_example.jsonl")

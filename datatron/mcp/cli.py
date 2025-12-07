@@ -1,4 +1,4 @@
-"""DataTransformer MCP CLI 命令
+"""Datatron MCP CLI 命令
 
 提供 MCP 服务的安装和管理命令。
 """
@@ -47,7 +47,7 @@ def get_dt_mcp_command() -> list[str]:
 
     使用 python -m 形式，更通用
     """
-    return ["python", "-m", "data_transformer.mcp"]
+    return ["python", "-m", "datatron.mcp"]
 
 
 def _install_to_config(config_path: Path, name: str, target_name: str) -> bool:
@@ -78,7 +78,7 @@ def _install_to_config(config_path: Path, name: str, target_name: str) -> bool:
     # 获取命令
     command = get_dt_mcp_command()
 
-    # 添加 data-transformer MCP 服务配置
+    # 添加 datatron MCP 服务配置
     config["mcpServers"][name] = {
         "type": "stdio",
         "command": command[0],
@@ -170,12 +170,12 @@ def _show_config_status(config_path: Path, target_name: str):
 class MCPCommands:
     """MCP 服务管理命令"""
 
-    def install(self, name: str = "data-transformer", target: str = "code"):
+    def install(self, name: str = "datatron", target: str = "code"):
         """
-        安装 DataTransformer MCP 服务
+        安装 Datatron MCP 服务
 
         Args:
-            name: MCP 服务名称（默认: data-transformer）
+            name: MCP 服务名称（默认: datatron）
             target: 安装目标 - 'desktop'(Claude Desktop), 'code'(Claude Code), 'all'(两者)
 
         示例:
@@ -222,7 +222,7 @@ class MCPCommands:
             return
 
         if console:
-            console.print(f"\n[bold green]DataTransformer MCP 服务安装成功[/bold green]\n")
+            console.print(f"\n[bold green]Datatron MCP 服务安装成功[/bold green]\n")
             console.print(f"服务名称: [bold blue]{name}[/bold blue]")
             console.print(f"命令: [bold blue]{' '.join(command)}[/bold blue]")
             console.print(f"\n已安装到:")
@@ -230,7 +230,7 @@ class MCPCommands:
                 console.print(f"  - {target_name}: [dim]{config_path}[/dim]")
             console.print(f"\n[dim]请重启 Claude Desktop/Code 以使配置生效[/dim]")
         else:
-            print(f"\nDataTransformer MCP 服务安装成功\n")
+            print(f"\nDatatron MCP 服务安装成功\n")
             print(f"服务名称: {name}")
             print(f"命令: {' '.join(command)}")
             print(f"\n已安装到:")
@@ -238,12 +238,12 @@ class MCPCommands:
                 print(f"  - {target_name}: {config_path}")
             print(f"\n请重启 Claude Desktop/Code 以使配置生效")
 
-    def uninstall(self, name: str = "data-transformer", target: str = "all"):
+    def uninstall(self, name: str = "datatron", target: str = "all"):
         """
-        移除 DataTransformer MCP 服务
+        移除 Datatron MCP 服务
 
         Args:
-            name: MCP 服务名称（默认: data-transformer）
+            name: MCP 服务名称（默认: datatron）
             target: 移除目标 - 'desktop', 'code', 'all'
 
         示例:
@@ -269,11 +269,11 @@ class MCPCommands:
 
         if removed_targets:
             if console:
-                console.print(f"\n[bold green]DataTransformer MCP 服务已移除[/bold green]")
+                console.print(f"\n[bold green]Datatron MCP 服务已移除[/bold green]")
                 console.print(f"从以下位置移除: {', '.join(removed_targets)}")
                 console.print(f"\n[dim]请重启 Claude Desktop/Code 以使配置生效[/dim]")
             else:
-                print(f"\nDataTransformer MCP 服务已移除")
+                print(f"\nDatatron MCP 服务已移除")
                 print(f"从以下位置移除: {', '.join(removed_targets)}")
                 print(f"\n请重启 Claude Desktop/Code 以使配置生效")
         else:
@@ -284,7 +284,7 @@ class MCPCommands:
 
     def status(self):
         """
-        查看 DataTransformer MCP 服务安装状态
+        查看 Datatron MCP 服务安装状态
 
         示例:
             dt mcp status
@@ -314,25 +314,25 @@ class MCPCommands:
                 print(f"  mcp: 已安装")
         except ImportError:
             if console:
-                console.print(f"  mcp: [red]未安装[/red] (运行 'pip install data-transformer[mcp]')")
+                console.print(f"  mcp: [red]未安装[/red] (运行 'pip install datatron[mcp]')")
             else:
-                print(f"  mcp: 未安装 (运行 'pip install data-transformer[mcp]')")
+                print(f"  mcp: 未安装 (运行 'pip install datatron[mcp]')")
 
     def test(self):
         """
-        测试 DataTransformer MCP 服务是否正常工作
+        测试 Datatron MCP 服务是否正常工作
 
         示例:
             dt mcp test
         """
         if console:
-            console.print("\n[bold]测试 DataTransformer MCP 服务...[/bold]\n")
+            console.print("\n[bold]测试 Datatron MCP 服务...[/bold]\n")
         else:
-            print("\n测试 DataTransformer MCP 服务...\n")
+            print("\n测试 Datatron MCP 服务...\n")
 
         # 检查依赖
         try:
-            from data_transformer.mcp import mcp
+            from datatron.mcp import mcp
             if console:
                 console.print("[green]OK[/green] MCP 模块导入成功")
             else:
@@ -340,15 +340,15 @@ class MCPCommands:
         except ImportError as e:
             if console:
                 console.print(f"[red]FAIL[/red] MCP 模块导入失败: {e}")
-                console.print("\n请安装 mcp 依赖: pip install data-transformer[mcp]")
+                console.print("\n请安装 mcp 依赖: pip install datatron[mcp]")
             else:
                 print(f"FAIL MCP 模块导入失败: {e}")
-                print("\n请安装 mcp 依赖: pip install data-transformer[mcp]")
+                print("\n请安装 mcp 依赖: pip install datatron[mcp]")
             return
 
         # 检查文档
         try:
-            from data_transformer.mcp.docs import DOCS, TOPICS
+            from datatron.mcp.docs import DOCS, TOPICS
             if console:
                 console.print(f"[green]OK[/green] 文档加载成功 ({len(TOPICS)} 个主题)")
             else:

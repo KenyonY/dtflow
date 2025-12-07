@@ -134,7 +134,7 @@ python scripts/analyze_wizard.py
 **特点**：完全控制，灵活定制
 
 ```python
-from data_transformer.analysis.analyzer import SFTDataAnalyzer
+from datatron.analysis.analyzer import SFTDataAnalyzer
 import json
 
 # 1. 加载数据
@@ -384,7 +384,7 @@ done
 ### 只分析部分数据（采样）
 
 ```python
-from data_transformer.analysis.analyzer import SFTDataAnalyzer
+from datatron.analysis.analyzer import SFTDataAnalyzer
 
 analyzer = SFTDataAnalyzer(n_clusters=10, output_dir='results')
 
@@ -399,7 +399,7 @@ results = analyzer.analyze(
 ### 自定义质量评估阈值
 
 ```python
-from data_transformer.analysis.quality import QualityEvaluator
+from datatron.analysis.quality import QualityEvaluator
 
 evaluator = QualityEvaluator(
     min_length=10,         # 最小长度
@@ -477,7 +477,7 @@ python scripts/analyze data.jsonl -o results/ -c 20 --no-report
 
 ```python
 # 导入
-from data_transformer.analysis.analyzer import SFTDataAnalyzer
+from datatron.analysis.analyzer import SFTDataAnalyzer
 
 # 创建
 analyzer = SFTDataAnalyzer(n_clusters=10, output_dir='results')

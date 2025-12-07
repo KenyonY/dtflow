@@ -4,20 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-DataTransformer 是一个专业的数据标注和转换平台,支持多种机器学习训练格式(SFT、RLHF、Pretrain),集成 FlaxKV2 高性能存储后端。
+Datatron 是一个专业的数据标注和转换平台,支持多种机器学习训练格式(SFT、RLHF、Pretrain),集成 FlaxKV2 高性能存储后端。
 
 ## 核心架构
 
 ### 1. 三层架构设计
 
-**数据转换核心层** (`data_transformer/`)
+**数据转换核心层** (`datatron/`)
 - `core.py`: DataTransformer 核心类,提供链式 API 和格式转换
 - `formats/`: 格式解析器(SFT、RLHF、Pretrain),继承自 `BaseFormatter`
   - `base.py`: BaseFormatter 抽象基类,定义 `format()` 和 `parse()` 方法
   - `sft.py`, `rlhf.py`, `pretrain.py`: 具体格式实现
 - `storage/io.py`: 文件存储抽象(支持 JSONL、JSON、CSV、Parquet)
 - `utils/`: 工具模块(相似度计算、数据展示)
-- `analysis/`: SFT数据集分析模块(嵌入、聚类、主题建模、质量评估、可视化)
 - `presets.py`: 预设转换模板(openai_chat、alpaca、sharegpt、dpo_pair、simple_qa)
 - `cli/`: 命令行工具(sample、transform 命令)
 - `mcp/`: MCP 服务，提供 AI 工具集成支持
@@ -113,7 +112,7 @@ cd label-app/backend && pytest
 cd next-gen-designer && pytest
 
 # 运行带覆盖率的测试
-pytest --cov=data_transformer --cov-report=html
+pytest --cov=datatron --cov-report=html
 
 # 使用 hatch 运行测试(推荐,无需手动切换目录)
 hatch test                    # 运行所有测试
@@ -202,14 +201,14 @@ dt transform data.jsonl --num=100                # 只转换前 100 条
 
 ### MCP 服务
 
-DataTransformer 提供 MCP (Model Context Protocol) 服务，可集成到支持 MCP 的 AI 工具中：
+Datatron 提供 MCP (Model Context Protocol) 服务，可集成到支持 MCP 的 AI 工具中：
 
 ```bash
 # 安装 MCP 依赖
 pip install -e ".[mcp]"
 
 # 启动 MCP 服务（由 AI 工具自动调用）
-python -m data_transformer.mcp
+python -m datatron.mcp
 ```
 
 ### 数据集操作
@@ -219,14 +218,6 @@ python -m data_transformer.mcp
 python scripts/upload_sft_dataset.py \
   --file data/sft_dataset_example.jsonl \
   --name "我的数据集"
-
-# SFT 数据集分析
-python -m data_transformer.analysis.analyzer \
-  --input data/sft_dataset_example.jsonl \
-  --output analysis_results/
-
-# 查看分析报告
-open analysis_results/sft_analysis_report.html
 ```
 
 ## 关键约定
@@ -325,13 +316,10 @@ processor = registry.create("my_processor", config={"param": "value"})
 - `docs/guides/`: 使用指南
   - `sft-upload-guide.md`: SFT 数据集上传指南
   - `mllm-quickstart.md`: MLLM 处理器快速开始
-- `docs/llm_topic_naming_quickstart.md`: LLM 主题命名快速开始
-- `docs/ADVANCED_ANALYSIS_GUIDE.md`: 高级分析指南
 - `docs/api/`: API 文档
   - `core.md`: 核心 API
   - `formats.md`: 格式转换 API
   - `storage.md`: 存储 API
-- `docs/sft_dataset_analysis.md`: SFT 数据集分析功能文档
 
 其他文档:
 - `label-app/backend/README.md`: 后端 API 文档
@@ -343,11 +331,11 @@ processor = registry.create("my_processor", config={"param": "value"})
 
 ## 关键文件位置
 
-- 核心类: `data_transformer/core.py:15` (DataTransformer 类)
-- 格式转换基类: `data_transformer/formats/base.py:8` (BaseFormatter)
-- 预设模板: `data_transformer/presets.py` (openai_chat、alpaca 等)
-- CLI 命令: `data_transformer/cli/commands.py` (sample、transform)
-- MCP 服务: `data_transformer/mcp/server.py`
+- 核心类: `datatron/core.py:15` (DataTransformer 类)
+- 格式转换基类: `datatron/formats/base.py:8` (BaseFormatter)
+- 预设模板: `datatron/presets.py` (openai_chat、alpaca 等)
+- CLI 命令: `datatron/cli/commands.py` (sample、transform)
+- MCP 服务: `datatron/mcp/server.py`
 - 存储管理器: `label-app/backend/app/core/storage_flaxkv.py:12` (FlaxKVStorageManager)
 - 处理器基类: `next-gen-designer/light_transformer/core/base.py:11` (BaseProcessor)
 - FastAPI 主应用: `label-app/backend/app/main.py`
@@ -356,9 +344,9 @@ processor = registry.create("my_processor", config={"param": "value"})
 ## 开发工作流
 
 ### 添加新的格式转换器
-1. 在 `data_transformer/formats/` 下创建新文件
+1. 在 `datatron/formats/` 下创建新文件
 2. 继承 `BaseFormatter` 并实现 `format()` 和 `parse()` 方法
-3. 在 `data_transformer/core.py` 的 `_formatters` 字典中注册
+3. 在 `datatron/core.py` 的 `_formatters` 字典中注册
 4. 在 `tests/` 下添加测试
 5. 更新 `docs/api/formats.md` 文档
 

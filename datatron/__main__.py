@@ -1,8 +1,8 @@
 """
-DataTransformer CLI entry point.
+Datatron CLI entry point.
 
 Usage:
-    python -m data_transformer <command> [options]
+    python -m datatron <command> [options]
     dt <command> [options]
 
 Commands:
@@ -17,7 +17,7 @@ from .mcp.cli import MCPCommands
 
 
 class Cli:
-    """DataTransformer CLI - 数据转换工具命令行接口"""
+    """Datatron CLI - 数据转换工具命令行接口"""
 
     def __init__(self):
         self.mcp = MCPCommands()

@@ -42,7 +42,7 @@ pip install -e ".[full]"
 ### 基本使用
 
 ```python
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载数据
 dt = DataTransformer.load("data.jsonl")

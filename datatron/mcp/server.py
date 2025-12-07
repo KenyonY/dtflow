@@ -1,6 +1,6 @@
-"""DataTransformer MCP 服务
+"""Datatron MCP 服务
 
-提供 DataTransformer 用法查询的 MCP (Model Context Protocol) 服务。
+提供 Datatron 用法查询的 MCP (Model Context Protocol) 服务。
 """
 
 from mcp.server import Server
@@ -10,7 +10,7 @@ from mcp.types import TextContent, Tool
 from .docs import DOCS, TOPICS, get_doc
 
 # 创建 MCP 服务实例
-mcp = Server("data-transformer")
+mcp = Server("datatron")
 
 
 @mcp.list_tools()
@@ -19,7 +19,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="dt_usage",
-            description="查询 DataTransformer 的用法文档。DataTransformer 是一个专业的数据格式转换工具，用于机器学习训练数据的格式转换（SFT、RLHF等）。可查询的主题包括: overview(概述), basic_usage(基本用法), presets(预设模板), cli(命令行), storage(存储格式), chain_api(链式API)",
+            description="查询 Datatron 的用法文档。Datatron 是一个专业的数据格式转换工具，用于机器学习训练数据的格式转换（SFT、RLHF等）。可查询的主题包括: overview(概述), basic_usage(基本用法), presets(预设模板), cli(命令行), storage(存储格式), chain_api(链式API)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -34,7 +34,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="dt_list_topics",
-            description="列出所有可用的 DataTransformer 文档主题",
+            description="列出所有可用的 Datatron 文档主题",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -42,7 +42,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="dt_quick_start",
-            description="获取 DataTransformer 快速入门指南，包含最常用的用法示例",
+            description="获取 Datatron 快速入门指南，包含最常用的用法示例",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -60,7 +60,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=content)]
 
     elif name == "dt_list_topics":
-        topics_info = """# DataTransformer 文档主题
+        topics_info = """# Datatron 文档主题
 
 可用主题列表:
 
@@ -78,18 +78,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=topics_info)]
 
     elif name == "dt_quick_start":
-        quick_start = """# DataTransformer 快速入门
+        quick_start = """# Datatron 快速入门
 
 ## 安装
 ```bash
-pip install data-transformer
+pip install datatron
 ```
 
 ## 最常用的用法
 
 ### 1. Python API
 ```python
-from data_transformer import DataTransformer
+from datatron import DataTransformer
 
 # 加载数据
 dt = DataTransformer.load("data.jsonl")
