@@ -7,7 +7,7 @@ name = "data-transformer"
 version = "0.1.0"
 description = "A flexible data transformation tool for ML training formats (SFT, RLHF, Pretrain)"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 license = "MIT"
 authors = [
     {name = "Your Name", email = "your.email@example.com"},
@@ -47,7 +47,11 @@ dependencies = [
     "numpy>=1.20.0",
     "tqdm>=4.60.0",
     "pyyaml>=5.4.0",
+    "fire>=0.4.0",
 ]
+
+[project.scripts]
+dt = "data_transformer.__main__:main"
 
 [project.optional-dependencies]
 full = [
@@ -103,6 +107,10 @@ analysis-advanced = [
     "bertopic>=0.15.0",
     "sentence-transformers>=2.2.0",
     "gensim>=4.0.0",  # for LDA
+]
+
+mcp = [
+    "mcp>=1.0.0",
 ]
 
 dev = [

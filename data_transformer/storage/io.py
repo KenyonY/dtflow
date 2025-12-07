@@ -29,6 +29,10 @@ def save_data(data: List[Dict[str, Any]],
         _save_csv(data, filepath)
     elif file_format == 'parquet':
         _save_parquet(data, filepath)
+    elif file_format == 'arrow':
+        _save_arrow(data, filepath)
+    elif file_format == 'excel':
+        _save_excel(data, filepath)
     elif file_format == 'flaxkv':
         _save_flaxkv(data, filepath)
     else:
@@ -63,6 +67,10 @@ def load_data(filepath: str, file_format: Optional[str] = None) -> List[Dict[str
         return _load_csv(filepath)
     elif file_format == 'parquet':
         return _load_parquet(filepath)
+    elif file_format == 'arrow':
+        return _load_arrow(filepath)
+    elif file_format == 'excel':
+        return _load_excel(filepath)
     elif file_format == 'flaxkv':
         return _load_flaxkv(filepath)
     else:
@@ -80,6 +88,10 @@ def _detect_format(filepath: Path) -> str:
         return 'csv'
     elif ext == '.parquet':
         return 'parquet'
+    elif ext in ('.arrow', '.feather'):
+        return 'arrow'
+    elif ext in ('.xlsx', '.xls'):
+        return 'excel'
     elif ext == '.flaxkv' or ext == '':
         # For FlaxKV, filepath is typically a directory
         return 'flaxkv'
@@ -153,6 +165,30 @@ def _load_csv(filepath: Path) -> List[Dict[str, Any]]:
     return df.to_dict('records')
 
 
+# ============ Excel Format ============
+
+def _save_excel(data: List[Dict[str, Any]], filepath: Path) -> None:
+    """Save data in Excel format."""
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("pandas and openpyxl are required for Excel support. Install with: pip install pandas openpyxl")
+
+    df = pd.DataFrame(data)
+    df.to_excel(filepath, index=False)
+
+
+def _load_excel(filepath: Path) -> List[Dict[str, Any]]:
+    """Load data from Excel format."""
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("pandas and openpyxl are required for Excel support. Install with: pip install pandas openpyxl")
+
+    df = pd.read_excel(filepath)
+    return df.to_dict('records')
+
+
 # ============ Parquet Format ============
 
 def _save_parquet(data: List[Dict[str, Any]], filepath: Path) -> None:
@@ -177,7 +213,147 @@ def _load_parquet(filepath: Path) -> List[Dict[str, Any]]:
     return df.to_dict('records')
 
 
+# ============ Arrow Format ============
+
+def _save_arrow(data: List[Dict[str, Any]], filepath: Path) -> None:
+    """Save data in Arrow IPC format (also known as Feather v2).
+
+    Note: Complex nested structures (like list of dicts) are serialized as JSON strings.
+    """
+    try:
+        import pyarrow as pa
+        import pyarrow.feather as feather
+    except ImportError:
+        raise ImportError("pyarrow is required for Arrow support. Install with: pip install pyarrow")
+
+    # Serialize complex fields to JSON strings for Arrow compatibility
+    serialized_data = []
+    for item in data:
+        new_item = {}
+        for k, v in item.items():
+            if isinstance(v, (list, dict)):
+                new_item[k] = json.dumps(v, ensure_ascii=False)
+            else:
+                new_item[k] = v
+        serialized_data.append(new_item)
+
+    table = pa.Table.from_pylist(serialized_data)
+
+    # Use Feather format (simpler and more portable)
+    feather.write_feather(table, filepath)
+
+
+def _load_arrow(filepath: Path) -> List[Dict[str, Any]]:
+    """Load data from Arrow IPC format (also known as Feather v2).
+
+    Note: JSON-serialized fields are automatically deserialized.
+    """
+    try:
+        import pyarrow.feather as feather
+    except ImportError:
+        raise ImportError("pyarrow is required for Arrow support. Install with: pip install pyarrow")
+
+    table = feather.read_table(filepath)
+    data = table.to_pylist()
+
+    # Deserialize JSON strings back to complex objects
+    result = []
+    for item in data:
+        new_item = {}
+        for k, v in item.items():
+            if isinstance(v, str) and v.startswith(('[', '{')):
+                try:
+                    new_item[k] = json.loads(v)
+                except json.JSONDecodeError:
+                    new_item[k] = v
+            else:
+                new_item[k] = v
+        result.append(new_item)
+
+    return result
+
+
 # ============ Additional Utilities ============
+
+def sample_data(
+    data: List[Dict[str, Any]],
+    num: int = 10,
+    sample_type: str = "random",
+    seed: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Sample data from a list.
+
+    Args:
+        data: List of data items
+        num: Number of items to sample
+        sample_type: Sampling method - "random", "head", or "tail"
+        seed: Random seed for reproducibility (only for random sampling)
+
+    Returns:
+        Sampled data list
+
+    Examples:
+        >>> data = [{"id": i} for i in range(100)]
+        >>> sample_data(data, num=5, sample_type="head")
+        [{'id': 0}, {'id': 1}, {'id': 2}, {'id': 3}, {'id': 4}]
+        >>> sample_data(data, num=3, sample_type="tail")
+        [{'id': 97}, {'id': 98}, {'id': 99}]
+    """
+    import random as rand_module
+
+    if not data:
+        return []
+
+    total = len(data)
+    actual_num = min(num, total)
+
+    if sample_type == "head":
+        return data[:actual_num]
+    elif sample_type == "tail":
+        return data[-actual_num:]
+    else:  # random
+        if seed is not None:
+            rand_module.seed(seed)
+        return rand_module.sample(data, actual_num)
+
+
+def sample_file(
+    filepath: str,
+    num: int = 10,
+    sample_type: str = "random",
+    seed: Optional[int] = None,
+    output: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Sample data from a file.
+
+    Args:
+        filepath: Input file path (supports csv, xlsx, jsonl, json, parquet, arrow, feather)
+        num: Number of items to sample
+        sample_type: Sampling method - "random", "head", or "tail"
+        seed: Random seed for reproducibility (only for random sampling)
+        output: Output file path (optional, if provided, saves sampled data)
+
+    Returns:
+        Sampled data list
+
+    Examples:
+        >>> sampled = sample_file("data.jsonl", num=100, sample_type="random")
+        >>> sample_file("data.csv", num=50, output="sampled.jsonl")
+    """
+    # Load data
+    data = load_data(filepath)
+
+    # Sample
+    sampled = sample_data(data, num=num, sample_type=sample_type, seed=seed)
+
+    # Save if output specified
+    if output:
+        save_data(sampled, output)
+
+    return sampled
+
 
 def append_to_file(data: List[Dict[str, Any]],
                    filepath: str,

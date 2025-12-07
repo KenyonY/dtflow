@@ -1,11 +1,10 @@
 """
-Basic tests for DataTransformer.
+Tests for DataTransformer core functionality.
 """
 import pytest
 import tempfile
-import os
 from pathlib import Path
-from data_transformer import DataTransformer
+from data_transformer import DataTransformer, DictWrapper, get_preset, list_presets
 
 
 class TestDataTransformer:
@@ -15,7 +14,6 @@ class TestDataTransformer:
         """Test initialization with no data."""
         dt = DataTransformer()
         assert len(dt) == 0
-        assert dt.count() == 0
 
     def test_init_with_data(self):
         """Test initialization with data."""
@@ -23,133 +21,106 @@ class TestDataTransformer:
         dt = DataTransformer(data)
         assert len(dt) == 2
 
-    def test_add_single_item(self):
-        """Test adding a single item."""
-        dt = DataTransformer()
-        dt.add({"text": "test"})
-        assert len(dt) == 1
-        assert dt[0]["text"] == "test"
-
-    def test_add_multiple_items(self):
-        """Test adding multiple items."""
-        dt = DataTransformer()
-        dt.add([{"text": "test1"}, {"text": "test2"}])
-        assert len(dt) == 2
-
-    def test_modify_by_index(self):
-        """Test modifying item by index."""
-        dt = DataTransformer([{"text": "hello"}])
-        dt.modify(index=0, updates={"label": "positive"})
-        assert dt[0]["label"] == "positive"
-
-    def test_modify_by_condition(self):
-        """Test modifying items by condition."""
-        dt = DataTransformer([
-            {"score": 0.8},
-            {"score": 0.3},
-            {"score": 0.9}
-        ])
-        dt.modify(
-            condition=lambda x: x["score"] > 0.5,
-            updates={"label": "high"}
-        )
-        assert dt[0]["label"] == "high"
-        assert "label" not in dt[1]
-        assert dt[2]["label"] == "high"
-
-    def test_delete_by_index(self):
-        """Test deleting item by index."""
+    def test_getitem(self):
+        """Test indexing."""
         dt = DataTransformer([{"text": "a"}, {"text": "b"}])
-        dt.delete(index=0)
-        assert len(dt) == 1
-        assert dt[0]["text"] == "b"
+        assert dt[0]["text"] == "a"
+        assert dt[1]["text"] == "b"
 
-    def test_delete_by_condition(self):
-        """Test deleting items by condition."""
+    def test_to_transform(self):
+        """Test to() method with attribute access."""
+        dt = DataTransformer([{"q": "问题", "a": "回答"}])
+        result = dt.to(lambda x: {"instruction": x.q, "output": x.a})
+        assert result[0]["instruction"] == "问题"
+        assert result[0]["output"] == "回答"
+
+    def test_transform_chained(self):
+        """Test transform() returns DataTransformer for chaining."""
+        dt = DataTransformer([{"q": "问题", "a": "回答"}])
+        result = dt.transform(lambda x: {"instruction": x.q})
+        assert isinstance(result, DataTransformer)
+        assert result[0]["instruction"] == "问题"
+
+    def test_filter_with_attribute_access(self):
+        """Test filtering with attribute access."""
         dt = DataTransformer([
-            {"score": 0.8},
-            {"score": 0.3},
-            {"score": 0.9}
+            {"score": 0.8, "text": "high"},
+            {"score": 0.3, "text": "low"},
+            {"score": 0.9, "text": "highest"}
         ])
-        dt.delete(condition=lambda x: x["score"] < 0.5)
-        assert len(dt) == 2
+        filtered = dt.filter(lambda x: x.score > 0.5)
+        assert len(filtered) == 2
+        assert all(item["score"] > 0.5 for item in filtered.data)
 
-    def test_filter(self):
-        """Test filtering data."""
+    def test_sample(self):
+        """Test sampling."""
+        dt = DataTransformer([{"id": i} for i in range(100)])
+        sampled = dt.sample(10, seed=42)
+        assert len(sampled) == 10
+
+    def test_head(self):
+        """Test head()."""
+        dt = DataTransformer([{"id": i} for i in range(100)])
+        result = dt.head(5)
+        assert len(result) == 5
+        assert result[0]["id"] == 0
+
+    def test_tail(self):
+        """Test tail()."""
+        dt = DataTransformer([{"id": i} for i in range(100)])
+        result = dt.tail(5)
+        assert len(result) == 5
+        assert result[-1]["id"] == 99
+
+    def test_fields(self):
+        """Test fields extraction."""
+        dt = DataTransformer([{"a": 1, "b": 2, "c": 3}])
+        fields = dt.fields()
+        assert "a" in fields
+        assert "b" in fields
+        assert "c" in fields
+
+    def test_stats(self):
+        """Test statistics."""
         dt = DataTransformer([
-            {"score": 0.8},
-            {"score": 0.3},
-            {"score": 0.9}
+            {"text": "hello", "label": "positive"},
+            {"text": "world", "label": "negative"}
         ])
-        dt.filter(lambda x: x["score"] > 0.5)
-        assert len(dt) == 2
+        stats = dt.stats()
+        assert stats["total"] == 2
+        assert "text" in stats["fields"]
+        assert "label" in stats["fields"]
 
-    def test_map(self):
-        """Test mapping transformation."""
+    def test_copy(self):
+        """Test deep copy."""
         dt = DataTransformer([{"text": "hello"}])
-        dt.map(lambda x: {**x, "processed": True})
-        assert dt[0]["processed"] is True
+        dt_copy = dt.copy()
+        dt_copy.data.append({"text": "world"})
+        assert len(dt) == 1
+        assert len(dt_copy) == 2
 
-    def test_count(self):
-        """Test counting items."""
-        dt = DataTransformer([
-            {"label": "positive"},
-            {"label": "negative"},
-            {"label": "positive"}
-        ])
-        assert dt.count() == 3
-        assert dt.count(lambda x: x["label"] == "positive") == 2
+    def test_shuffle(self):
+        """Test shuffle returns new instance."""
+        dt = DataTransformer([{"id": i} for i in range(10)])
+        shuffled = dt.shuffle(seed=42)
+        # Should be a new instance
+        assert shuffled is not dt
+        # Same elements
+        assert sorted([x["id"] for x in shuffled.data]) == list(range(10))
 
-    def test_to_sft_messages(self):
-        """Test SFT conversion to messages format."""
-        dt = DataTransformer([{
-            "instruction": "Translate to French",
-            "input": "Hello",
-            "output": "Bonjour"
-        }])
-        sft_data = dt.to_sft(style='messages')
-        assert "messages" in sft_data[0]
-        assert len(sft_data[0]["messages"]) > 0
-
-    def test_to_sft_simple(self):
-        """Test SFT conversion to simple format."""
-        dt = DataTransformer([{
-            "question": "What is AI?",
-            "answer": "AI is artificial intelligence"
-        }])
-        sft_data = dt.to_sft(style='simple')
-        assert "instruction" in sft_data[0]
-        assert "output" in sft_data[0]
-
-    def test_to_rlhf_pair(self):
-        """Test RLHF conversion to pair format."""
-        dt = DataTransformer([{
-            "prompt": "What is ML?",
-            "chosen": "Machine Learning is...",
-            "rejected": "I don't know"
-        }])
-        rlhf_data = dt.to_rlhf(style='pair')
-        assert "prompt" in rlhf_data[0]
-        assert "chosen" in rlhf_data[0]
-        assert "rejected" in rlhf_data[0]
-
-    def test_to_pretrain(self):
-        """Test pre-training format conversion."""
-        dt = DataTransformer([{
-            "instruction": "Test",
-            "output": "Result"
-        }])
-        pretrain_data = dt.to_pretrain()
-        assert "text" in pretrain_data[0]
-        assert len(pretrain_data[0]["text"]) > 0
+    def test_split(self):
+        """Test splitting dataset."""
+        dt = DataTransformer([{"id": i} for i in range(100)])
+        train, val = dt.split(ratio=0.8, seed=42)
+        assert len(train) == 80
+        assert len(val) == 20
 
     def test_save_load_jsonl(self):
         """Test saving and loading JSONL format."""
         with tempfile.TemporaryDirectory() as tmpdir:
             filepath = Path(tmpdir) / "test.jsonl"
-
             dt = DataTransformer([{"text": "hello"}, {"text": "world"}])
-            dt.save(str(filepath), file_format='jsonl')
+            dt.save(str(filepath))
 
             dt_loaded = DataTransformer.load(str(filepath))
             assert len(dt_loaded) == 2
@@ -159,94 +130,146 @@ class TestDataTransformer:
         """Test saving and loading JSON format."""
         with tempfile.TemporaryDirectory() as tmpdir:
             filepath = Path(tmpdir) / "test.json"
-
             dt = DataTransformer([{"text": "test"}])
-            dt.save(str(filepath), file_format='json')
+            dt.save(str(filepath))
 
             dt_loaded = DataTransformer.load(str(filepath))
             assert len(dt_loaded) == 1
 
-    def test_copy(self):
-        """Test copying DataTransformer."""
-        dt = DataTransformer([{"text": "hello"}])
-        dt_copy = dt.copy()
+    def test_nested_attribute_access(self):
+        """Test nested dict attribute access."""
+        dt = DataTransformer([{"meta": {"author": "test", "date": "2024"}}])
+        result = dt.to(lambda x: {"author": x.meta.author})
+        assert result[0]["author"] == "test"
 
-        dt_copy.add({"text": "world"})
 
-        assert len(dt) == 1
-        assert len(dt_copy) == 2
+class TestDictWrapper:
+    """Test cases for DictWrapper class."""
 
-    def test_shuffle(self):
-        """Test shuffling data."""
-        dt = DataTransformer([{"id": i} for i in range(10)])
-        original_order = [item["id"] for item in dt.data]
+    def test_attribute_access(self):
+        """Test attribute access."""
+        w = DictWrapper({"name": "test", "value": 123})
+        assert w.name == "test"
+        assert w.value == 123
 
-        dt.shuffle(seed=42)
-        shuffled_order = [item["id"] for item in dt.data]
+    def test_nested_attribute_access(self):
+        """Test nested dict access."""
+        w = DictWrapper({"a": {"b": {"c": "deep"}}})
+        assert w.a.b.c == "deep"
 
-        # Should have same elements but potentially different order
-        assert sorted(original_order) == sorted(shuffled_order)
+    def test_dict_access(self):
+        """Test dict-style access."""
+        w = DictWrapper({"name": "test"})
+        assert w["name"] == "test"
 
-    def test_split(self):
-        """Test splitting dataset."""
-        dt = DataTransformer([{"id": i} for i in range(100)])
-        train, val = dt.split(ratio=0.8, shuffle=False)
+    def test_get_method(self):
+        """Test get() with default."""
+        w = DictWrapper({"name": "test"})
+        assert w.get("name") == "test"
+        assert w.get("missing", "default") == "default"
 
-        assert len(train) == 80
-        assert len(val) == 20
-        assert len(train) + len(val) == len(dt)
+    def test_contains(self):
+        """Test __contains__."""
+        w = DictWrapper({"name": "test"})
+        assert "name" in w
+        assert "missing" not in w
 
-    def test_stats(self):
-        """Test dataset statistics."""
-        dt = DataTransformer([
-            {"text": "hello", "label": "positive"},
-            {"text": "world", "label": "negative"}
-        ])
-        stats = dt.stats()
+    def test_to_dict(self):
+        """Test to_dict()."""
+        data = {"name": "test", "value": 123}
+        w = DictWrapper(data)
+        assert w.to_dict() == data
 
-        assert stats["total"] == 2
-        assert "text" in stats["fields"]
-        assert "label" in stats["fields"]
+    def test_missing_attribute_error(self):
+        """Test AttributeError for missing keys."""
+        w = DictWrapper({"name": "test"})
+        with pytest.raises(AttributeError):
+            _ = w.missing_field
 
-    def test_similarity_cosine(self):
-        """Test cosine similarity calculation."""
-        dt = DataTransformer([
-            {"text": "the quick brown fox"},
-            {"text": "the fast brown fox"},
-            {"text": "python programming"}
-        ])
 
-        sim_01 = dt.similarity(0, 1, method='cosine', text_field='text')
-        sim_02 = dt.similarity(0, 2, method='cosine', text_field='text')
+class TestPresets:
+    """Test cases for preset transformations."""
 
-        # Items 0 and 1 should be more similar than 0 and 2
-        assert sim_01 > sim_02
+    def test_list_presets(self):
+        """Test listing available presets."""
+        presets = list_presets()
+        assert "openai_chat" in presets
+        assert "alpaca" in presets
+        assert "sharegpt" in presets
+        assert "dpo_pair" in presets
+        assert "simple_qa" in presets
 
-    def test_find_similar(self):
-        """Test finding similar items."""
-        dt = DataTransformer([
-            {"text": "the quick brown fox"},
-            {"text": "the fast brown fox"},
-            {"text": "a lazy dog"},
-            {"text": "the speedy brown fox"}
-        ])
+    def test_openai_chat_preset(self):
+        """Test OpenAI Chat preset."""
+        dt = DataTransformer([{"q": "问题", "a": "回答"}])
+        transform_func = get_preset("openai_chat", user_field="q", assistant_field="a")
+        result = dt.to(transform_func)
 
-        similar = dt.find_similar(reference=0, top_k=2, method='cosine', text_field='text')
+        assert "messages" in result[0]
+        messages = result[0]["messages"]
+        assert len(messages) == 2
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "问题"
+        assert messages[1]["role"] == "assistant"
 
-        assert len(similar) == 2
-        assert all(isinstance(item, tuple) for item in similar)
-        assert all(len(item) == 2 for item in similar)
+    def test_openai_chat_with_system(self):
+        """Test OpenAI Chat preset with system prompt."""
+        dt = DataTransformer([{"q": "问题", "a": "回答"}])
+        transform_func = get_preset(
+            "openai_chat",
+            user_field="q",
+            assistant_field="a",
+            system_prompt="你是一个助手"
+        )
+        result = dt.to(transform_func)
 
-    def test_chain_operations(self):
-        """Test chaining multiple operations."""
-        result = (DataTransformer()
-                  .add([{"score": i * 0.1} for i in range(20)])
-                  .filter(lambda x: x["score"] > 0.5)
-                  .map(lambda x: {**x, "category": "high"})
-                  .shuffle(seed=42))
+        messages = result[0]["messages"]
+        assert len(messages) == 3
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "你是一个助手"
 
-        assert len(result) == 14  # 0.6 to 1.9
-        assert all(item["category"] == "high" for item in result.data)
+    def test_alpaca_preset(self):
+        """Test Alpaca preset."""
+        dt = DataTransformer([{"q": "问题", "input": "", "a": "回答"}])
+        transform_func = get_preset(
+            "alpaca",
+            instruction_field="q",
+            input_field="input",
+            output_field="a"
+        )
+        result = dt.to(transform_func)
+
+        assert result[0]["instruction"] == "问题"
+        assert result[0]["input"] == ""
+        assert result[0]["output"] == "回答"
+
+    def test_dpo_pair_preset(self):
+        """Test DPO pair preset."""
+        dt = DataTransformer([{
+            "prompt": "问题",
+            "chosen": "好回答",
+            "rejected": "差回答"
+        }])
+        transform_func = get_preset("dpo_pair")
+        result = dt.to(transform_func)
+
+        assert result[0]["prompt"] == "问题"
+        assert result[0]["chosen"] == "好回答"
+        assert result[0]["rejected"] == "差回答"
+
+    def test_simple_qa_preset(self):
+        """Test simple QA preset."""
+        dt = DataTransformer([{"q": "问题", "a": "回答"}])
+        transform_func = get_preset("simple_qa", question_field="q", answer_field="a")
+        result = dt.to(transform_func)
+
+        assert result[0]["question"] == "问题"
+        assert result[0]["answer"] == "回答"
+
+    def test_invalid_preset(self):
+        """Test error for invalid preset name."""
+        with pytest.raises(ValueError):
+            get_preset("invalid_preset_name")
 
 
 if __name__ == "__main__":
