@@ -1,100 +1,128 @@
-# DataTransformer
+# Datatron
 
-一个专业的数据标注、分析和转换平台，支持 SFT（Supervised Fine-Tuning）和 DPO（Direct Preference Optimization）等多种格式，集成 FlaxKV2 存储后端。
+简洁的数据格式转换工具，专为机器学习训练数据设计。
 
-## ✨ 主要功能
-
-- 🎯 **数据标注平台** - Web 界面的交互式数据标注工具
-- 📊 **智能数据分析** - 自动化的数据质量评估、聚类分析和主题建模
-- 🔄 **格式转换** - 支持 CSV、Excel、JSON 等多种格式互转
-- 💾 **高性能存储** - FlaxKV2 键值存储，读写性能提升 10-500 倍
-
-## 🚀 5 分钟快速开始
-
-### 数据分析（推荐新手使用）
-
-不需要编程经验，三种方式任选其一：
-
-**方式1: 交互式向导（最简单）**
-```bash
-python scripts/analyze_wizard.py
-# 按提示操作即可，全程引导
-```
-
-**方式2: 一键分析**
-```bash
-# 分析任意 JSONL 格式数据集
-python scripts/analyze your_dataset.jsonl
-
-# 查看支持的数据格式
-python scripts/analyze --formats
-```
-
-**方式3: 先转换再分析**
-```bash
-# CSV → JSONL
-python scripts/convert_to_jsonl.py \
-  -i data.csv -o data.jsonl \
-  --question-col "问题" --answer-col "答案"
-
-# 然后分析
-python scripts/analyze data.jsonl
-```
-
-> 📖 详细教程请看：[5分钟快速开始](QUICKSTART.md) | [零门槛使用指南](docs/lowering_barrier_guide.md)
-
-### 数据标注平台
-
-启动 Web 标注平台：
+## 安装
 
 ```bash
-# 启动后端
-cd label-app/backend
-python run.py
-
-# 启动前端（新终端）
-cd label-app/frontend
-npm install && npm run dev
-
-# 访问 http://localhost:5173
+pip install datatron
 ```
 
-### SFT 数据集上传
+## 快速开始
+
+```python
+from datatron import DataTransformer
+
+# 加载数据
+dt = DataTransformer.load("data.jsonl")
+
+# 链式操作：过滤 -> 转换 -> 保存
+(dt.filter(lambda x: x.score > 0.8)
+   .to(lambda x: {"q": x.question, "a": x.answer})
+   .save("output.jsonl"))
+```
+
+## 核心功能
+
+### 数据加载与保存
+
+```python
+# 支持 JSONL、JSON、CSV、Parquet
+dt = DataTransformer.load("data.jsonl")
+dt.save("output.jsonl")
+
+# 从列表创建
+dt = DataTransformer([{"q": "问题", "a": "答案"}])
+```
+
+### 数据过滤
+
+```python
+# Lambda 过滤
+dt.filter(lambda x: x.score > 0.8)
+
+# 支持属性访问
+dt.filter(lambda x: x.language == "zh")
+```
+
+### 数据转换
+
+```python
+# 自定义转换
+dt.to(lambda x: {"question": x.q, "answer": x.a})
+
+# 使用预设模板
+dt.to(preset="openai_chat", user_field="q", assistant_field="a")
+```
+
+### 预设模板
+
+| 预设名称 | 输出格式 |
+|---------|---------|
+| `openai_chat` | `{"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}` |
+| `alpaca` | `{"instruction": ..., "input": ..., "output": ...}` |
+| `sharegpt` | `{"conversations": [{"from": "human", ...}, {"from": "gpt", ...}]}` |
+| `dpo_pair` | `{"prompt": ..., "chosen": ..., "rejected": ...}` |
+| `simple_qa` | `{"question": ..., "answer": ...}` |
+
+### 其他操作
+
+```python
+# 采样
+dt.sample(100)           # 随机采样 100 条
+dt.head(10)              # 前 10 条
+dt.tail(10)              # 后 10 条
+
+# 分割
+train, test = dt.split(ratio=0.8, shuffle=True, seed=42)
+
+# 统计
+stats = dt.stats()       # 总数、字段信息
+count = dt.count(lambda x: x.score > 0.9)
+
+# 打乱
+dt.shuffle(seed=42)
+```
+
+## CLI 命令
 
 ```bash
-# 使用命令行工具上传
-python scripts/upload_sft_dataset.py \
-  --file data/sft_dataset_example.jsonl \
-  --name "我的数据集"
+# 数据采样
+dt sample data.jsonl --num=10
+dt sample data.csv --num=100 --sample_type=head
 
-# 或使用 Web 界面
-# http://localhost:5173/datasets
+# 数据转换 - 预设模式
+dt transform data.jsonl --preset=openai_chat
+dt transform data.jsonl --preset=alpaca
+
+# 数据转换 - 配置文件模式
+dt transform data.jsonl                    # 首次运行生成配置文件
+# 编辑 .dt/data.py 后再次运行
+dt transform data.jsonl --num=100          # 执行转换
 ```
 
-## 📚 完整文档
+## 错误处理
 
-### 核心功能文档
-- 📖 [5分钟快速开始](QUICKSTART.md) - 最快上手方式
-- 🎓 [零门槛使用指南](docs/lowering_barrier_guide.md) - 面向非技术用户
-- 📊 [性能测试报告](docs/performance_test_report.md) - 大规模数据集性能基准
+```python
+# 跳过错误项（默认）
+dt.to(transform_func, on_error="skip")
 
-### 数据格式与转换
-- 📝 [SFT 数据集上传指南](docs/guides/sft-upload-guide.md) - 完整的格式说明
-- 🔄 [格式转换工具](scripts/convert_to_jsonl.py) - CSV/Excel/JSON → JSONL
-- 📁 [示例数据文件](data/examples/) - 各种格式的样例
+# 抛出异常
+dt.to(transform_func, on_error="raise")
 
-### 工具与脚本
-- 🛠️ [分析工具](scripts/analyze) - 一键数据分析
-- 🧙 [交互式向导](scripts/analyze_wizard.py) - 零基础友好
-- 🔧 [工具脚本说明](scripts/README.md) - 所有命令行工具
+# 保留原始数据
+dt.to(transform_func, on_error="keep")
 
-### 开发文档
-- 💡 [示例代码](examples/README.md) - 各种集成示例
-- 🏗️ [架构文档](docs/architecture/) - 系统设计
-- 🔌 [API 文档](docs/api/) - RESTful API 接口
+# 返回错误信息
+result, errors = dt.to(transform_func, return_errors=True)
+```
 
 ## 设计原则
 
-1. 组合大于继承: 永远尽可能少的使用继承
-2. KISS原则: Keep it simple, stupid
+- **KISS**: 简单直接，一个类搞定所有操作
+- **链式 API**: 流畅的函数式编程风格
+- **属性访问**: `x.field` 代替 `x["field"]`
 
+## License
+
+MIT
