@@ -4,7 +4,7 @@ Tests for DataTransformer core functionality.
 import pytest
 import tempfile
 from pathlib import Path
-from datatron import (
+from dtflow import (
     DataTransformer,
     DictWrapper,
     TransformError,

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "datatron"
+name = "dtflow"
 version = "0.1.0"
 description = "A flexible data transformation tool for ML training formats (SFT, RLHF, Pretrain)"
 readme = "README.md"
@@ -51,7 +51,7 @@ dependencies = [
 ]
 
 [project.scripts]
-dt = "datatron.__main__:main"
+dt = "dtflow.__main__:main"
 
 [project.optional-dependencies]
 full = [
@@ -102,11 +102,11 @@ Changelog = "https://github.com/yourusername/DataTransformer/blob/main/CHANGELOG
 
 # Hatchling build configuration
 [tool.hatch.build.targets.wheel]
-packages = ["datatron"]
+packages = ["dtflow"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/datatron",
+    "/dtflow",
     "/tests",
     "/LICENSE",
     "/CHANGELOG.md",
@@ -122,9 +122,9 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 test = "pytest {args:tests}"
-test-cov = "pytest --cov=datatron --cov-report=term-missing {args:tests}"
+test-cov = "pytest --cov=dtflow --cov-report=term-missing {args:tests}"
 cov-report = [
-    "pytest --cov=datatron --cov-report=html {args:tests}",
+    "pytest --cov=dtflow --cov-report=html {args:tests}",
     "python -m webbrowser htmlcov/index.html",
 ]
 
@@ -138,15 +138,15 @@ dependencies = [
 ]
 
 [tool.hatch.envs.lint.scripts]
-typing = "mypy --install-types --non-interactive {args:datatron tests}"
+typing = "mypy --install-types --non-interactive {args:dtflow tests}"
 style = [
-    "flake8 {args:datatron tests}",
-    "black --check --diff {args:datatron tests}",
-    "isort --check-only --diff {args:datatron tests}",
+    "flake8 {args:dtflow tests}",
+    "black --check --diff {args:dtflow tests}",
+    "isort --check-only --diff {args:dtflow tests}",
 ]
 fmt = [
-    "isort {args:datatron tests}",
-    "black {args:datatron tests}",
+    "isort {args:dtflow tests}",
+    "black {args:dtflow tests}",
 ]
 all = [
     "style",
@@ -198,7 +198,7 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 skip_glob = ["*/setup.py"]
-known_first_party = ["datatron"]
+known_first_party = ["dtflow"]
 
 # pytest configuration
 [tool.pytest.ini_options]
@@ -226,7 +226,7 @@ filterwarnings = [
 
 # Coverage configuration
 [tool.coverage.run]
-source = ["datatron"]
+source = ["dtflow"]
 branch = true
 parallel = true
 omit = [
@@ -253,8 +253,8 @@ exclude_lines = [
 ]
 
 [tool.coverage.paths]
-datatron = ["datatron", "*/datatron/datatron"]
-tests = ["tests", "*/datatron/tests"]
+dtflow = ["dtflow", "*/dtflow/dtflow"]
+tests = ["tests", "*/dtflow/tests"]
 
 ignore_missing_imports = true
 
@@ -280,4 +280,4 @@ ignore = [
 "__init__.py" = ["F401"]
 
 [tool.ruff.isort]
-known-first-party = ["datatron"]
+known-first-party = ["dtflow"]

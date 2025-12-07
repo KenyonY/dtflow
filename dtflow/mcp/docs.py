@@ -29,16 +29,16 @@ Datatron 是一个专业的数据格式转换工具，专注于机器学习训�
 ## 安装
 
 ```bash
-pip install datatron
+pip install dtflow
 
 # 完整安装（含存储、显示等）
-pip install datatron[full]
+pip install dtflow[full]
 ```
 
 ## 快速开始
 
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 加载数据
 dt = DataTransformer.load("data.jsonl")
@@ -80,7 +80,7 @@ dt sample data.jsonl --num=10
 ## 加载与保存
 
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 加载（支持 jsonl, json, csv, parquet）
 dt = DataTransformer.load("data.jsonl")
@@ -176,7 +176,7 @@ dt transform data.jsonl --preset=alpaca --output=alpaca.jsonl
 ## Python API 使用
 
 ```python
-from datatron.presets import get_preset, list_presets
+from dtflow.presets import get_preset, list_presets
 
 # 列出所有预设
 print(list_presets())
@@ -313,7 +313,7 @@ Datatron 支持多种常用数据格式。
 ## 使用示例
 
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 加载不同格式（自动检测）
 dt1 = DataTransformer.load("data.jsonl")
@@ -329,7 +329,7 @@ dt.save("output.parquet")
 ## 直接使用 IO 函数
 
 ```python
-from datatron.storage import load_data, save_data
+from dtflow.storage import load_data, save_data
 
 # 加载
 data = load_data("input.jsonl")
@@ -342,10 +342,10 @@ save_data(data, "output.jsonl")
 
 ```bash
 # 完整安装（含所有格式支持）
-pip install datatron[full]
+pip install dtflow[full]
 
 # 仅存储格式支持
-pip install datatron[storage]
+pip install dtflow[storage]
 ```
 """,
 
@@ -356,7 +356,7 @@ Datatron 支持流畅的链式调用。
 ## 链式调用示例
 
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 加载 -> 筛选 -> 采样 -> 转换 -> 保存
 DataTransformer.load("input.jsonl") \\

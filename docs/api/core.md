@@ -7,7 +7,7 @@
 ### 初始化
 
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 创建空实例
 dt = DataTransformer()

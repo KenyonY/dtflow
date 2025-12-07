@@ -10,7 +10,7 @@ from mcp.types import TextContent, Tool
 from .docs import DOCS, TOPICS, get_doc
 
 # 创建 MCP 服务实例
-mcp = Server("datatron")
+mcp = Server("dtflow")
 
 
 @mcp.list_tools()
@@ -82,14 +82,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 ## 安装
 ```bash
-pip install datatron
+pip install dtflow
 ```
 
 ## 最常用的用法
 
 ### 1. Python API
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 加载数据
 dt = DataTransformer.load("data.jsonl")

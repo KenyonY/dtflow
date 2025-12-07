@@ -1,17 +1,17 @@
-# Datatron
+# dtflow
 
 简洁的数据格式转换工具，专为机器学习训练数据设计。
 
 ## 安装
 
 ```bash
-pip install datatron
+pip install dtflow
 ```
 
 ## 快速开始
 
 ```python
-from datatron import DataTransformer
+from dtflow import DataTransformer
 
 # 加载数据
 dt = DataTransformer.load("data.jsonl")

@@ -47,7 +47,7 @@ def get_dt_mcp_command() -> list[str]:
 
     使用 python -m 形式，更通用
     """
-    return ["python", "-m", "datatron.mcp"]
+    return ["python", "-m", "dtflow.mcp"]
 
 
 def _install_to_config(config_path: Path, name: str, target_name: str) -> bool:
@@ -314,9 +314,9 @@ class MCPCommands:
                 print(f"  mcp: 已安装")
         except ImportError:
             if console:
-                console.print(f"  mcp: [red]未安装[/red] (运行 'pip install datatron[mcp]')")
+                console.print(f"  mcp: [red]未安装[/red] (运行 'pip install dtflow[mcp]')")
             else:
-                print(f"  mcp: 未安装 (运行 'pip install datatron[mcp]')")
+                print(f"  mcp: 未安装 (运行 'pip install dtflow[mcp]')")
 
     def test(self):
         """
@@ -332,7 +332,7 @@ class MCPCommands:
 
         # 检查依赖
         try:
-            from datatron.mcp import mcp
+            from dtflow.mcp import mcp
             if console:
                 console.print("[green]OK[/green] MCP 模块导入成功")
             else:
@@ -348,7 +348,7 @@ class MCPCommands:
 
         # 检查文档
         try:
-            from datatron.mcp.docs import DOCS, TOPICS
+            from dtflow.mcp.docs import DOCS, TOPICS
             if console:
                 console.print(f"[green]OK[/green] 文档加载成功 ({len(TOPICS)} 个主题)")
             else:

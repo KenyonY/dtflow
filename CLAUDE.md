@@ -10,7 +10,7 @@ Datatron 是一个专业的数据标注和转换平台,支持多种机器学习�
 
 ### 1. 三层架构设计
 
-**数据转换核心层** (`datatron/`)
+**数据转换核心层** (`dtflow/`)
 - `core.py`: DataTransformer 核心类,提供链式 API 和格式转换
 - `formats/`: 格式解析器(SFT、RLHF、Pretrain),继承自 `BaseFormatter`
   - `base.py`: BaseFormatter 抽象基类,定义 `format()` 和 `parse()` 方法
@@ -331,11 +331,11 @@ processor = registry.create("my_processor", config={"param": "value"})
 
 ## 关键文件位置
 
-- 核心类: `datatron/core.py:15` (DataTransformer 类)
-- 格式转换基类: `datatron/formats/base.py:8` (BaseFormatter)
-- 预设模板: `datatron/presets.py` (openai_chat、alpaca 等)
-- CLI 命令: `datatron/cli/commands.py` (sample、transform)
-- MCP 服务: `datatron/mcp/server.py`
+- 核心类: `dtflow/core.py:15` (DataTransformer 类)
+- 格式转换基类: `dtflow/formats/base.py:8` (BaseFormatter)
+- 预设模板: `dtflow/presets.py` (openai_chat、alpaca 等)
+- CLI 命令: `dtflow/cli/commands.py` (sample、transform)
+- MCP 服务: `dtflow/mcp/server.py`
 - 存储管理器: `label-app/backend/app/core/storage_flaxkv.py:12` (FlaxKVStorageManager)
 - 处理器基类: `next-gen-designer/light_transformer/core/base.py:11` (BaseProcessor)
 - FastAPI 主应用: `label-app/backend/app/main.py`
@@ -344,9 +344,9 @@ processor = registry.create("my_processor", config={"param": "value"})
 ## 开发工作流
 
 ### 添加新的格式转换器
-1. 在 `datatron/formats/` 下创建新文件
+1. 在 `dtflow/formats/` 下创建新文件
 2. 继承 `BaseFormatter` 并实现 `format()` 和 `parse()` 方法
-3. 在 `datatron/core.py` 的 `_formatters` 字典中注册
+3. 在 `dtflow/core.py` 的 `_formatters` 字典中注册
 4. 在 `tests/` 下添加测试
 5. 更新 `docs/api/formats.md` 文档
 
