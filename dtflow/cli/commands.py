@@ -28,7 +28,7 @@ def _check_file_format(filepath: Path) -> bool:
 def sample(
     filename: str,
     num: int = 10,
-    sample_type: Literal["random", "head", "tail"] = "random",
+    sample_type: Literal["random", "head", "tail"] = "head",
     output: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> None:

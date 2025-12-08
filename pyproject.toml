@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dtflow"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A flexible data transformation tool for ML training formats (SFT, RLHF, Pretrain)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -99,6 +99,10 @@ Documentation = "https://github.com/yourusername/DataTransformer#readme"
 Repository = "https://github.com/yourusername/DataTransformer"
 Issues = "https://github.com/yourusername/DataTransformer/issues"
 Changelog = "https://github.com/yourusername/DataTransformer/blob/main/CHANGELOG.md"
+
+# Hatchling version configuration
+[tool.hatch.version]
+path = "dtflow/__init__.py"
 
 # Hatchling build configuration
 [tool.hatch.build.targets.wheel]

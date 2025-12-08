@@ -56,7 +56,7 @@ class Cli:
     def sample(
         filename: str,
         num: int = 10,
-        sample_type: str = "random",
+        sample_type: str = "head",
         output: str = None,
         seed: int = None,
     ):

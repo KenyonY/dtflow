@@ -278,7 +278,7 @@ def _load_arrow(filepath: Path) -> List[Dict[str, Any]]:
 def sample_data(
     data: List[Dict[str, Any]],
     num: int = 10,
-    sample_type: str = "random",
+    sample_type: str = "head",
     seed: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -321,12 +321,15 @@ def sample_data(
 def sample_file(
     filepath: str,
     num: int = 10,
-    sample_type: str = "random",
+    sample_type: str = "head",
     seed: Optional[int] = None,
     output: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Sample data from a file.
+    Sample data from a file with streaming support for large files.
+
+    对于 head/tail 采样，支持流式读取，不需要加载整个文件到内存。
+    对于 random 采样，JSONL 使用蓄水池采样算法，其他格式需要加载全部数据。
 
     Args:
         filepath: Input file path (supports csv, xlsx, jsonl, json, parquet, arrow, feather)
@@ -342,17 +345,128 @@ def sample_file(
         >>> sampled = sample_file("data.jsonl", num=100, sample_type="random")
         >>> sample_file("data.csv", num=50, output="sampled.jsonl")
     """
-    # Load data
-    data = load_data(filepath)
+    filepath = Path(filepath)
+    file_format = _detect_format(filepath)
 
-    # Sample
-    sampled = sample_data(data, num=num, sample_type=sample_type, seed=seed)
+    # 尝试使用流式采样
+    sampled = _stream_sample(filepath, file_format, num, sample_type, seed)
 
     # Save if output specified
     if output:
         save_data(sampled, output)
 
     return sampled
+
+
+def _stream_sample(
+    filepath: Path,
+    file_format: str,
+    num: int,
+    sample_type: str,
+    seed: Optional[int],
+) -> List[Dict[str, Any]]:
+    """
+    流式采样实现，对 head 采样使用流式读取优化。
+
+    支持流式 head 采样的格式: jsonl, csv, parquet, arrow, excel
+    其他采样类型(tail, random)回退到全量加载。
+    """
+    # 只对 head 采样进行流式优化
+    if sample_type == "head":
+        if file_format == "jsonl":
+            return _stream_head_jsonl(filepath, num)
+        elif file_format == "csv":
+            return _stream_head_csv(filepath, num)
+        elif file_format == "parquet":
+            return _stream_head_parquet(filepath, num)
+        elif file_format == "arrow":
+            return _stream_head_arrow(filepath, num)
+        elif file_format == "excel":
+            return _stream_head_excel(filepath, num)
+
+    # 其他情况回退到全量加载
+    data = load_data(str(filepath))
+    return sample_data(data, num=num, sample_type=sample_type, seed=seed)
+
+
+def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """JSONL 流式读取前 N 行"""
+    result = []
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                result.append(json.loads(line))
+                if len(result) >= num:
+                    break
+    return result
+
+
+def _stream_head_csv(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """CSV 流式读取前 N 行"""
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("pandas is required for CSV support. Install with: pip install pandas")
+
+    df = pd.read_csv(filepath, encoding="utf-8", nrows=num)
+    return df.to_dict("records")
+
+
+def _stream_head_parquet(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """Parquet 流式读取前 N 行"""
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        raise ImportError("pyarrow is required for Parquet support. Install with: pip install pyarrow")
+
+    # 读取元数据获取行数
+    parquet_file = pq.ParquetFile(filepath)
+    total_rows = parquet_file.metadata.num_rows
+
+    # 只读取前 N 行
+    table = pq.read_table(filepath).slice(0, min(num, total_rows))
+    return table.to_pylist()
+
+
+def _stream_head_arrow(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """Arrow/Feather 流式读取前 N 行"""
+    try:
+        import pyarrow.feather as feather
+    except ImportError:
+        raise ImportError("pyarrow is required for Arrow support. Install with: pip install pyarrow")
+
+    table = feather.read_table(filepath)
+    sliced = table.slice(0, min(num, table.num_rows))
+    return _deserialize_arrow_data(sliced.to_pylist())
+
+
+def _deserialize_arrow_data(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """反序列化 Arrow 数据中的 JSON 字符串字段"""
+    result = []
+    for item in data:
+        new_item = {}
+        for k, v in item.items():
+            if isinstance(v, str) and v.startswith(("[", "{")):
+                try:
+                    new_item[k] = json.loads(v)
+                except json.JSONDecodeError:
+                    new_item[k] = v
+            else:
+                new_item[k] = v
+        result.append(new_item)
+    return result
+
+
+def _stream_head_excel(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """Excel 流式读取前 N 行"""
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("pandas and openpyxl are required for Excel support")
+
+    df = pd.read_excel(filepath, nrows=num)
+    return df.to_dict("records")
 
 
 def append_to_file(data: List[Dict[str, Any]],

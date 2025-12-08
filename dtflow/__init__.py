@@ -9,7 +9,7 @@ from .core import DataTransformer, DictWrapper, TransformError, TransformErrors
 from .presets import get_preset, list_presets
 from .storage import save_data, load_data, sample_file
 
-__version__ = '0.1.2'
+__version__ = '0.1.3'
 
 __all__ = [
     'DataTransformer',
