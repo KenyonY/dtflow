@@ -117,11 +117,48 @@ dt.to(transform_func, on_error="keep")
 result, errors = dt.to(transform_func, return_errors=True)
 ```
 
-## 设计原则
+## 设计哲学
 
-- **KISS**: 简单直接，一个类搞定所有操作
-- **链式 API**: 流畅的函数式编程风格
-- **属性访问**: `x.field` 代替 `x["field"]`
+### 函数式优于类继承
+
+不需要复杂的 OOP 抽象，直接用函数解决问题：
+
+```python
+# ✅ 简单直接
+dt.to(lambda x: {"q": x.question, "a": x.answer})
+
+# ❌ 不需要这种设计
+class MyFormatter(BaseFormatter):
+    def format(self, item): ...
+```
+
+### 预设是便利层，不是核心抽象
+
+90% 的需求用 `transform(lambda x: ...)` 就能解决。预设只是常见场景的快捷方式：
+
+```python
+# 预设：常见场景的便利函数
+dt.to(preset="openai_chat")
+
+# 自定义：完全控制转换逻辑
+dt.to(lambda x: {
+    "messages": [
+        {"role": "user", "content": x.q},
+        {"role": "assistant", "content": x.a}
+    ]
+})
+```
+
+### KISS 原则
+
+- 一个核心类 `DataTransformer` 搞定所有操作
+- 链式 API，代码像自然语言
+- 属性访问 `x.field` 代替 `x["field"]`
+- 不过度设计，不追求"可扩展框架"
+
+### 实用主义
+
+不追求学术上的完美抽象，只提供**足够好用的工具**。
 
 ## License
 

@@ -12,12 +12,9 @@ Datatron 是一个专业的数据标注和转换平台,支持多种机器学习�
 
 **数据转换核心层** (`dtflow/`)
 - `core.py`: DataTransformer 核心类,提供链式 API 和格式转换
-- `formats/`: 格式解析器(SFT、RLHF、Pretrain),继承自 `BaseFormatter`
-  - `base.py`: BaseFormatter 抽象基类,定义 `format()` 和 `parse()` 方法
-  - `sft.py`, `rlhf.py`, `pretrain.py`: 具体格式实现
+- `presets.py`: 预设转换函数(openai_chat、alpaca、sharegpt、dpo_pair、simple_qa)
 - `storage/io.py`: 文件存储抽象(支持 JSONL、JSON、CSV、Parquet)
-- `utils/`: 工具模块(相似度计算、数据展示)
-- `presets.py`: 预设转换模板(openai_chat、alpaca、sharegpt、dpo_pair、simple_qa)
+- `utils/`: 工具模块(数据展示)
 - `cli/`: 命令行工具(sample、transform 命令)
 - `mcp/`: MCP 服务，提供 AI 工具集成支持
 
@@ -49,15 +46,15 @@ Datatron 是一个专业的数据标注和转换平台,支持多种机器学习�
 - `processors/`: 内置处理器(MLLM、文本/图像相似度等)
 - `config/loader.py`: 从 YAML 配置文件加载流水线
 
-### 2. 设计原则
+### 2. dtflow 设计哲学
 
-项目严格遵循以下原则(详见 `docs/architecture/design-principles.md`):
-- **KISS 原则**: Keep it simple, stupid - 优先选择简单直接的解决方案
-- **组合大于继承**: 尽可能少地使用继承,优先使用组合和委托
-- **单一职责原则**: 每个类或模块应该只有一个变化的理由
-- **契约式编程**: 使用类型注解定义输入输出契约(在 light_transformer 中)
-- **链式 API 设计**: DataTransformer 支持流畅的链式调用
-- **显式优于隐式**: 明确的参数传递,清晰的错误消息
+dtflow 的核心设计理念:
+
+- **函数式优于类继承**: 直接用 lambda/函数做转换,不需要 BaseFormatter 等 OOP 抽象
+- **预设是便利层,不是核心抽象**: 90% 的需求用 `transform(lambda x: ...)` 解决,预设只是常见场景的快捷方式
+- **KISS 原则**: 一个 DataTransformer 类搞定所有操作,不追求"可扩展框架"
+- **链式 API**: 流畅的函数式编程风格 `dt.filter(...).to(...).save(...)`
+- **实用主义**: 不追求学术上的完美抽象,只提供足够好用的工具
 
 ### 3. 存储后端: FlaxKV2
 
@@ -222,20 +219,14 @@ python scripts/upload_sft_dataset.py \
 
 ## 关键约定
 
-### 1. 格式转换器开发
-
-所有格式转换器必须继承 `BaseFormatter` 并实现:
-- `format(item: Dict) -> Dict`: 单个数据项转换
-- `parse(item: Dict) -> Dict`: 反向解析
-
-### 2. FlaxKV2 存储管理
+### 1. FlaxKV2 存储管理
 
 使用 `FlaxKVStorageManager` 进行所有数据库操作,不直接操作 FlaxKV 实例:
 - 数据集操作: `create_dataset()`, `list_datasets()`, `delete_dataset()`
 - 数据项操作: `add_item()`, `get_items()`, `update_item()`, `delete_item()`
 - 标注操作: `get_next_item()`, `annotate_item()`
 
-### 3. API 路由结构
+### 2. API 路由结构
 
 - `/datasets`: 数据集管理
   - GET: 列表, POST: 创建, DELETE: 删除
@@ -245,7 +236,7 @@ python scripts/upload_sft_dataset.py \
   - GET `/annotations/{dataset_id}/items`: 获取数据项列表
   - POST `/annotations/{dataset_id}/items/{item_id}`: 提交标注
 
-### 4. 下一代框架(light_transformer)
+### 3. 下一代框架(light_transformer)
 
 创建处理器时:
 - 继承 `BaseProcessor` (位于 `light_transformer.core.base`)
@@ -318,7 +309,6 @@ processor = registry.create("my_processor", config={"param": "value"})
   - `mllm-quickstart.md`: MLLM 处理器快速开始
 - `docs/api/`: API 文档
   - `core.md`: 核心 API
-  - `formats.md`: 格式转换 API
   - `storage.md`: 存储 API
 
 其他文档:
@@ -331,24 +321,21 @@ processor = registry.create("my_processor", config={"param": "value"})
 
 ## 关键文件位置
 
-- 核心类: `dtflow/core.py:15` (DataTransformer 类)
-- 格式转换基类: `dtflow/formats/base.py:8` (BaseFormatter)
-- 预设模板: `dtflow/presets.py` (openai_chat、alpaca 等)
+- 核心类: `dtflow/core.py` (DataTransformer 类)
+- 预设函数: `dtflow/presets.py` (openai_chat、alpaca 等)
 - CLI 命令: `dtflow/cli/commands.py` (sample、transform)
 - MCP 服务: `dtflow/mcp/server.py`
-- 存储管理器: `label-app/backend/app/core/storage_flaxkv.py:12` (FlaxKVStorageManager)
-- 处理器基类: `next-gen-designer/light_transformer/core/base.py:11` (BaseProcessor)
+- 存储管理器: `label-app/backend/app/core/storage_flaxkv.py` (FlaxKVStorageManager)
+- 处理器基类: `next-gen-designer/light_transformer/core/base.py` (BaseProcessor)
 - FastAPI 主应用: `label-app/backend/app/main.py`
 - 项目配置: `pyproject.toml`
 
 ## 开发工作流
 
-### 添加新的格式转换器
-1. 在 `dtflow/formats/` 下创建新文件
-2. 继承 `BaseFormatter` 并实现 `format()` 和 `parse()` 方法
-3. 在 `dtflow/core.py` 的 `_formatters` 字典中注册
-4. 在 `tests/` 下添加测试
-5. 更新 `docs/api/formats.md` 文档
+### 添加新的预设转换函数
+1. 在 `dtflow/presets.py` 中添加新的工厂函数
+2. 在 `tests/` 下添加测试
+3. 更新 README.md 的预设模板表格
 
 ### 添加新的 light_transformer 处理器
 1. 在 `next-gen-designer/light_transformer/processors/` 下创建新文件
@@ -362,8 +349,7 @@ processor = registry.create("my_processor", config={"param": "value"})
 - [ ] 运行 `hatch run lint:fmt` 格式化代码
 - [ ] 运行 `hatch run lint:style` 检查代码风格
 - [ ] 运行 `hatch test` 确保测试通过
-- [ ] 更新相关文档
-- [ ] 遵循 KISS 原则和组合大于继承原则
+- [ ] 遵循 KISS 原则: 函数式优于类继承,不过度设计
 
 ## Git 工作流
 

@@ -19,7 +19,6 @@
 
 ### API 文档 (api/)
 - [核心 API](api/core.md) - DataTransformer 核心类 API 参考
-- [格式转换器](api/formats.md) - SFT、RLHF、Pretrain 格式转换器 API
 - [存储后端](api/storage.md) - FlaxKV2 存储管理器 API
 
 ### 架构文档 (architecture/)
@@ -47,11 +46,13 @@ from dtflow import DataTransformer
 # 加载数据
 dt = DataTransformer.load("data.jsonl")
 
-# 格式转换
-sft_data = dt.to_sft(style="messages")
+# 链式操作：过滤 -> 转换 -> 保存
+(dt.filter(lambda x: x.score > 0.8)
+   .to(lambda x: {"q": x.question, "a": x.answer})
+   .save("output.jsonl"))
 
-# 保存
-dt.save("output.jsonl", format_type="sft")
+# 或使用预设
+dt.to(preset="openai_chat").save("output.jsonl")
 ```
 
 详细使用方法请参考[使用指南](guides/)。
