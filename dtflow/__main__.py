@@ -10,13 +10,15 @@ Commands:
     sample     从数据文件中采样
     head       显示文件的前 N 条数据
     tail       显示文件的后 N 条数据
+    stats      显示数据文件的统计信息
     dedupe     数据去重
     concat     拼接多个数据文件
+    clean      数据清洗
     mcp        MCP 服务管理（install/uninstall/status）
 """
 import fire
 
-from .cli import concat as _concat, dedupe as _dedupe, head as _head, sample as _sample, tail as _tail, transform as _transform
+from .cli import clean as _clean, concat as _concat, dedupe as _dedupe, head as _head, sample as _sample, stats as _stats, tail as _tail, transform as _transform
 from .mcp.cli import MCPCommands
 
 
@@ -184,6 +186,58 @@ class Cli:
             dt concat a.jsonl b.jsonl --strict -o merged.jsonl
         """
         _concat(*files, output=output, strict=strict)
+
+    @staticmethod
+    def stats(
+        filename: str,
+        top: int = 10,
+    ):
+        """
+        显示数据文件的统计信息（类似 pandas df.info() + df.describe()）。
+
+        Args:
+            filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+            top: 显示频率最高的前 N 个值，默认 10
+
+        Examples:
+            dt stats data.jsonl
+            dt stats data.csv --top=5
+        """
+        _stats(filename, top)
+
+    @staticmethod
+    def clean(
+        filename: str,
+        drop_empty: str = None,
+        min_len: str = None,
+        max_len: str = None,
+        keep: str = None,
+        drop: str = None,
+        strip: bool = False,
+        output: str = None,
+    ):
+        """
+        数据清洗。
+
+        Args:
+            filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+            drop_empty: 删除空值记录（不带值删除任意空，指定字段用逗号分隔）
+            min_len: 最小长度过滤，格式 "字段:长度"（如 text:10）
+            max_len: 最大长度过滤，格式 "字段:长度"（如 text:1000）
+            keep: 只保留指定字段（逗号分隔）
+            drop: 删除指定字段（逗号分隔）
+            strip: 去除所有字符串字段的首尾空白
+            output: 输出文件路径，不指定则覆盖原文件
+
+        Examples:
+            dt clean data.jsonl --drop-empty                    # 删除任意空值记录
+            dt clean data.jsonl --drop-empty=text,answer        # 删除指定字段为空的记录
+            dt clean data.jsonl --min-len=text:10               # text 字段最少 10 字符
+            dt clean data.jsonl --keep=question,answer          # 只保留这些字段
+            dt clean data.jsonl --strip                         # 去除字符串首尾空白
+            dt clean data.jsonl --drop-empty --strip -o out.jsonl
+        """
+        _clean(filename, drop_empty, min_len, max_len, keep, drop, strip, output)
 
 
 def main():

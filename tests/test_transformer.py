@@ -469,5 +469,146 @@ class TestPresets:
             get_preset("invalid_preset_name")
 
 
+class TestConcat:
+    """Test cases for concat functionality."""
+
+    def test_concat_two_transformers(self):
+        """Test concatenating two DataTransformer instances."""
+        dt1 = DataTransformer([{"id": 1}, {"id": 2}])
+        dt2 = DataTransformer([{"id": 3}, {"id": 4}])
+
+        merged = DataTransformer.concat(dt1, dt2)
+
+        assert len(merged) == 4
+        assert merged[0]["id"] == 1
+        assert merged[3]["id"] == 4
+
+    def test_concat_multiple_transformers(self):
+        """Test concatenating multiple DataTransformer instances."""
+        dt1 = DataTransformer([{"id": 1}])
+        dt2 = DataTransformer([{"id": 2}])
+        dt3 = DataTransformer([{"id": 3}])
+
+        merged = DataTransformer.concat(dt1, dt2, dt3)
+
+        assert len(merged) == 3
+        assert [item["id"] for item in merged.data] == [1, 2, 3]
+
+    def test_concat_from_files(self):
+        """Test concatenating from file paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = Path(tmpdir) / "a.jsonl"
+            file2 = Path(tmpdir) / "b.jsonl"
+
+            DataTransformer([{"id": 1}, {"id": 2}]).save(str(file1))
+            DataTransformer([{"id": 3}, {"id": 4}]).save(str(file2))
+
+            merged = DataTransformer.concat(str(file1), str(file2))
+
+            assert len(merged) == 4
+            assert merged[0]["id"] == 1
+            assert merged[3]["id"] == 4
+
+    def test_concat_mixed_sources(self):
+        """Test concatenating mixed sources (files and DataTransformers)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = Path(tmpdir) / "a.jsonl"
+            DataTransformer([{"id": 1}]).save(str(file1))
+
+            dt2 = DataTransformer([{"id": 2}])
+
+            merged = DataTransformer.concat(str(file1), dt2)
+
+            assert len(merged) == 2
+            assert merged[0]["id"] == 1
+            assert merged[1]["id"] == 2
+
+    def test_concat_empty(self):
+        """Test concatenating with no sources returns empty."""
+        merged = DataTransformer.concat()
+        assert len(merged) == 0
+
+    def test_concat_single_source(self):
+        """Test concatenating single source."""
+        dt = DataTransformer([{"id": 1}])
+        merged = DataTransformer.concat(dt)
+        assert len(merged) == 1
+
+    def test_concat_preserves_order(self):
+        """Test that concat preserves order of items."""
+        dt1 = DataTransformer([{"id": i} for i in range(5)])
+        dt2 = DataTransformer([{"id": i} for i in range(5, 10)])
+
+        merged = DataTransformer.concat(dt1, dt2)
+
+        assert [item["id"] for item in merged.data] == list(range(10))
+
+    def test_add_operator(self):
+        """Test + operator for concatenation."""
+        dt1 = DataTransformer([{"id": 1}, {"id": 2}])
+        dt2 = DataTransformer([{"id": 3}, {"id": 4}])
+
+        merged = dt1 + dt2
+
+        assert len(merged) == 4
+        assert merged[0]["id"] == 1
+        assert merged[3]["id"] == 4
+
+    def test_add_operator_chained(self):
+        """Test chained + operators."""
+        dt1 = DataTransformer([{"id": 1}])
+        dt2 = DataTransformer([{"id": 2}])
+        dt3 = DataTransformer([{"id": 3}])
+
+        merged = dt1 + dt2 + dt3
+
+        assert len(merged) == 3
+        assert [item["id"] for item in merged.data] == [1, 2, 3]
+
+    def test_add_operator_with_file(self):
+        """Test + operator with file path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file1 = Path(tmpdir) / "a.jsonl"
+            DataTransformer([{"id": 2}]).save(str(file1))
+
+            dt1 = DataTransformer([{"id": 1}])
+            merged = dt1 + str(file1)
+
+            assert len(merged) == 2
+            assert merged[0]["id"] == 1
+            assert merged[1]["id"] == 2
+
+    def test_concat_different_fields(self):
+        """Test concatenating data with different fields."""
+        dt1 = DataTransformer([{"a": 1, "b": 2}])
+        dt2 = DataTransformer([{"a": 3, "c": 4}])
+
+        merged = DataTransformer.concat(dt1, dt2)
+
+        assert len(merged) == 2
+        assert merged[0] == {"a": 1, "b": 2}
+        assert merged[1] == {"a": 3, "c": 4}
+
+    def test_concat_invalid_source_type(self):
+        """Test error for invalid source type."""
+        with pytest.raises(TypeError):
+            DataTransformer.concat([{"id": 1}])  # list is not valid, should be DataTransformer
+
+    def test_concat_returns_new_instance(self):
+        """Test that concat returns a new DataTransformer instance."""
+        dt1 = DataTransformer([{"id": 1}])
+        dt2 = DataTransformer([{"id": 2}])
+
+        merged = DataTransformer.concat(dt1, dt2)
+
+        assert merged is not dt1
+        assert merged is not dt2
+
+        # Modifying merged should not affect originals
+        merged.data.append({"id": 3})
+        assert len(dt1) == 1
+        assert len(dt2) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

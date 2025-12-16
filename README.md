@@ -99,6 +99,27 @@ dt transform data.jsonl --preset=alpaca
 dt transform data.jsonl                    # 首次运行生成配置文件
 # 编辑 .dt/data.py 后再次运行
 dt transform data.jsonl --num=100          # 执行转换
+
+# 数据清洗
+dt clean data.jsonl --drop-empty                    # 删除任意空值记录
+dt clean data.jsonl --drop-empty=text,answer        # 删除指定字段为空的记录
+dt clean data.jsonl --min-len=text:10               # text 字段最少 10 字符
+dt clean data.jsonl --max-len=text:1000             # text 字段最多 1000 字符
+dt clean data.jsonl --keep=question,answer          # 只保留这些字段
+dt clean data.jsonl --drop=metadata                 # 删除指定字段
+dt clean data.jsonl --strip                         # 去除字符串首尾空白
+dt clean data.jsonl --strip --drop-empty=text --min-len=text:10 -o clean.jsonl  # 组合使用
+
+# 数据去重
+dt dedupe data.jsonl                            # 全量精确去重
+dt dedupe data.jsonl --key=text                 # 按字段精确去重
+dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
+
+# 文件拼接
+dt concat a.jsonl b.jsonl -o merged.jsonl
+
+# 数据统计
+dt stats data.jsonl
 ```
 
 ## 错误处理
