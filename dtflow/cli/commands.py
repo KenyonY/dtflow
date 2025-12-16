@@ -229,6 +229,10 @@ def _build_config_content(sample: Dict[str, Any], filename: str, total: int) -> 
     # 生成默认的 transform 函数（简单重命名）
     field_names = list(sample.keys())
 
+    # 生成规范化的字段名用于示例
+    safe_field1 = _sanitize_field_name(field_names[0])[0] if field_names else "field1"
+    safe_field2 = _sanitize_field_name(field_names[1])[0] if len(field_names) > 1 else "field2"
+
     # 生成默认输出文件名
     base_name = Path(filename).stem
     output_filename = f"{base_name}_output.jsonl"
@@ -265,17 +269,17 @@ output = "{output_filename}"
 # def transform(item: Item):
 #     return {{
 #         "messages": [
-#             {{"role": "user", "content": item.{field_names[0] if field_names else 'field1'}}},
-#             {{"role": "assistant", "content": item.{field_names[1] if len(field_names) > 1 else 'field2'}}},
+#             {{"role": "user", "content": item.{safe_field1}}},
+#             {{"role": "assistant", "content": item.{safe_field2}}},
 #         ]
 #     }}
 #
 # 示例2: Alpaca 格式
 # def transform(item: Item):
 #     return {{
-#         "instruction": item.{field_names[0] if field_names else 'field1'},
+#         "instruction": item.{safe_field1},
 #         "input": "",
-#         "output": item.{field_names[1] if len(field_names) > 1 else 'field2'},
+#         "output": item.{safe_field2},
 #     }}
 '''
     return config
@@ -289,7 +293,9 @@ def _generate_fields_definition(sample: Dict[str, Any], indent: int = 4) -> str:
     for key, value in sample.items():
         type_name = _get_type_name(value)
         example = _format_example_value(value)
-        lines.append(f"{prefix}{key}: {type_name} = {example}")
+        safe_key, changed = _sanitize_field_name(key)
+        comment = f"  # 原字段名: {key}" if changed else ""
+        lines.append(f"{prefix}{safe_key}: {type_name} = {example}{comment}")
 
     return "\n".join(lines) if lines else f"{prefix}pass"
 
@@ -336,11 +342,39 @@ def _format_example_value(value: Any, max_len: int = 50) -> str:
     return '""'
 
 
+def _sanitize_field_name(name: str) -> tuple:
+    """
+    将字段名规范化为合法的 Python 标识符。
+
+    Returns:
+        tuple: (规范化后的名称, 是否被修改)
+    """
+    if name.isidentifier():
+        return name, False
+
+    # 替换常见的非法字符
+    sanitized = name.replace("-", "_").replace(" ", "_").replace(".", "_")
+
+    # 如果以数字开头，添加前缀
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "f_" + sanitized
+
+    # 移除其他非法字符
+    sanitized = "".join(c if c.isalnum() or c == "_" else "_" for c in sanitized)
+
+    # 确保不为空
+    if not sanitized:
+        sanitized = "field"
+
+    return sanitized, True
+
+
 def _generate_default_transform(field_names: List[str]) -> str:
     """生成默认的 transform 函数体"""
     lines = []
     for name in field_names[:5]:  # 最多显示 5 个字段
-        lines.append(f'        "{name}": item.{name},')
+        safe_name, _ = _sanitize_field_name(name)
+        lines.append(f'        "{name}": item.{safe_name},')
     return "\n".join(lines) if lines else '        # 在这里定义输出字段'
 
 

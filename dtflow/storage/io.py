@@ -9,17 +9,21 @@ from pathlib import Path
 
 def save_data(data: List[Dict[str, Any]],
               filepath: str,
-              file_format: str = 'jsonl') -> None:
+              file_format: Optional[str] = None) -> None:
     """
     Save data to file.
 
     Args:
         data: List of data items to save
         filepath: Path to save file
-        file_format: File format ('jsonl', 'json', 'csv', 'parquet', 'flaxkv')
+        file_format: File format (auto-detected from extension if None)
     """
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    # Auto-detect format from extension
+    if file_format is None:
+        file_format = _detect_format(filepath)
 
     if file_format == 'jsonl':
         _save_jsonl(data, filepath)

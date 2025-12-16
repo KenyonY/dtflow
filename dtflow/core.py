@@ -355,26 +355,59 @@ class DataTransformer:
         return DataTransformer(data[:split_idx]), DataTransformer(data[split_idx:])
 
 
+def _sanitize_key(name: str) -> str:
+    """将字段名规范化为合法的 Python 标识符"""
+    if name.isidentifier():
+        return name
+    sanitized = name.replace("-", "_").replace(" ", "_").replace(".", "_")
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "f_" + sanitized
+    sanitized = "".join(c if c.isalnum() or c == "_" else "_" for c in sanitized)
+    return sanitized or "field"
+
+
 class DictWrapper:
     """
     字典包装器，支持属性访问。
+
+    支持通过规范化后的字段名访问原始键（如 item.原始_风险大类 访问 "原始-风险大类"）。
 
     Examples:
         >>> w = DictWrapper({"a": {"b": 1}})
         >>> w.a.b  # 1
         >>> w["a"]["b"]  # 1
+        >>> w = DictWrapper({"原始-风险": "值"})
+        >>> w.原始_风险  # "值"
     """
 
     def __init__(self, data: Dict[str, Any]):
         object.__setattr__(self, '_data', data)
+        # 构建规范化名称到原始名称的映射
+        alias_map = {}
+        for key in data.keys():
+            sanitized = _sanitize_key(key)
+            if sanitized != key:
+                alias_map[sanitized] = key
+        object.__setattr__(self, '_alias_map', alias_map)
 
     def __getattr__(self, name: str) -> Any:
         data = object.__getattribute__(self, '_data')
+        alias_map = object.__getattribute__(self, '_alias_map')
+
+        # 先尝试直接匹配
         if name in data:
             value = data[name]
             if isinstance(value, dict):
                 return DictWrapper(value)
             return value
+
+        # 再尝试通过别名映射
+        if name in alias_map:
+            value = data[alias_map[name]]
+            if isinstance(value, dict):
+                return DictWrapper(value)
+            return value
+
         raise AttributeError(f"字段不存在: {name}")
 
     def __getitem__(self, key: str) -> Any:
