@@ -8,11 +8,15 @@ Usage:
 Commands:
     transform  转换数据格式（核心命令）
     sample     从数据文件中采样
+    head       显示文件的前 N 条数据
+    tail       显示文件的后 N 条数据
+    dedupe     数据去重
+    concat     拼接多个数据文件
     mcp        MCP 服务管理（install/uninstall/status）
 """
 import fire
 
-from .cli import sample as _sample, transform as _transform
+from .cli import concat as _concat, dedupe as _dedupe, head as _head, sample as _sample, tail as _tail, transform as _transform
 from .mcp.cli import MCPCommands
 
 
@@ -66,7 +70,10 @@ class Cli:
         Args:
             filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
             num: 采样数量，默认 10
-            sample_type: 采样方式，可选 random/head/tail，默认 random
+                - num > 0: 采样指定数量
+                - num = 0: 采样所有数据
+                - num < 0: Python 切片风格（如 -1 表示最后 1 条，-10 表示最后 10 条）
+            sample_type: 采样方式，可选 random/head/tail，默认 head
             output: 输出文件路径，不指定则打印到控制台
             seed: 随机种子（仅在 sample_type=random 时有效）
 
@@ -74,8 +81,109 @@ class Cli:
             dt sample data.jsonl 5
             dt sample data.csv 100 --sample_type=head
             dt sample data.xlsx 50 --output=sampled.jsonl
+            dt sample data.jsonl 0   # 采样所有数据
+            dt sample data.jsonl -10 # 最后 10 条数据
         """
         _sample(filename, num, sample_type, output, seed)
+
+    @staticmethod
+    def head(
+        filename: str,
+        num: int = 10,
+        output: str = None,
+    ):
+        """
+        显示文件的前 N 条数据（dt sample --sample_type=head 的快捷方式）。
+
+        Args:
+            filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+            num: 显示数量，默认 10
+                - num > 0: 显示指定数量
+                - num = 0: 显示所有数据
+                - num < 0: Python 切片风格（如 -10 表示最后 10 条）
+            output: 输出文件路径，不指定则打印到控制台
+
+        Examples:
+            dt head data.jsonl          # 显示前 10 条
+            dt head data.jsonl 20       # 显示前 20 条
+            dt head data.csv 0          # 显示所有数据
+            dt head data.xlsx --output=head.jsonl
+        """
+        _head(filename, num, output)
+
+    @staticmethod
+    def tail(
+        filename: str,
+        num: int = 10,
+        output: str = None,
+    ):
+        """
+        显示文件的后 N 条数据（dt sample --sample_type=tail 的快捷方式）。
+
+        Args:
+            filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+            num: 显示数量，默认 10
+                - num > 0: 显示指定数量
+                - num = 0: 显示所有数据
+                - num < 0: Python 切片风格（如 -10 表示最后 10 条）
+            output: 输出文件路径，不指定则打印到控制台
+
+        Examples:
+            dt tail data.jsonl          # 显示后 10 条
+            dt tail data.jsonl 20       # 显示后 20 条
+            dt tail data.csv 0          # 显示所有数据
+            dt tail data.xlsx --output=tail.jsonl
+        """
+        _tail(filename, num, output)
+
+    @staticmethod
+    def dedupe(
+        filename: str,
+        key: str = None,
+        similar: float = None,
+        output: str = None,
+    ):
+        """
+        数据去重。
+
+        支持两种模式：
+        1. 精确去重（默认）：完全相同的数据才去重
+        2. 相似度去重：使用 MinHash+LSH 算法，相似度超过阈值则去重
+
+        Args:
+            filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+            key: 去重依据字段，多个字段用逗号分隔。不指定则全量去重
+            similar: 相似度阈值（0-1），指定后启用相似度去重模式
+            output: 输出文件路径，不指定则覆盖原文件
+
+        Examples:
+            dt dedupe data.jsonl                            # 全量精确去重
+            dt dedupe data.jsonl --key=text                 # 按字段精确去重
+            dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
+            dt dedupe data.jsonl --output=clean.jsonl       # 指定输出文件
+        """
+        _dedupe(filename, key, similar, output)
+
+    @staticmethod
+    def concat(
+        *files: str,
+        output: str = None,
+        strict: bool = False,
+    ):
+        """
+        拼接多个数据文件。
+
+        Args:
+            *files: 输入文件路径列表，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+            output: 输出文件路径，必须指定
+            strict: 严格模式，字段必须完全一致，否则报错
+
+        Examples:
+            dt concat a.jsonl b.jsonl -o merged.jsonl
+            dt concat data1.csv data2.csv data3.csv -o all.jsonl
+            dt concat a.jsonl b.jsonl --strict -o merged.jsonl
+        """
+        _concat(*files, output=output, strict=strict)
 
 
 def main():

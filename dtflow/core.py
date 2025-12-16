@@ -266,6 +266,154 @@ class DataTransformer:
         """取后 n 条"""
         return DataTransformer(self._data[-n:])
 
+    def dedupe(
+        self,
+        key: Union[None, str, List[str], Callable[[Any], Any]] = None,
+    ) -> 'DataTransformer':
+        """
+        数据去重。
+
+        Args:
+            key: 去重依据，可以是：
+                - None: 全量去重（整条数据比较）
+                - str: 按单个字段去重
+                - list[str]: 按多个字段组合去重
+                - callable: 自定义 key 函数
+
+        Returns:
+            去重后的新 DataTransformer
+
+        Examples:
+            >>> dt.dedupe()                            # 全量去重
+            >>> dt.dedupe('text')                      # 按 text 字段去重
+            >>> dt.dedupe(['user', 'timestamp'])       # 按多字段组合去重
+            >>> dt.dedupe(lambda x: x.text.lower())    # 自定义 key
+        """
+        import json
+
+        seen = set()
+        result = []
+
+        for item in self._data:
+            k = self._get_dedupe_key(item, key)
+            if k not in seen:
+                seen.add(k)
+                result.append(item)
+
+        return DataTransformer(result)
+
+    def _get_dedupe_key(
+        self,
+        item: Dict[str, Any],
+        key: Union[None, str, List[str], Callable[[Any], Any]],
+    ) -> Any:
+        """获取去重用的 key"""
+        import json
+
+        if key is None:
+            # 全量去重：json 序列化
+            return json.dumps(item, sort_keys=True, ensure_ascii=False)
+        elif isinstance(key, str):
+            # 单字段
+            return item.get(key)
+        elif isinstance(key, list):
+            # 多字段组合
+            return tuple(item.get(k) for k in key)
+        elif callable(key):
+            # 自定义函数
+            return key(DictWrapper(item))
+        else:
+            raise ValueError(f"不支持的 key 类型: {type(key)}")
+
+    def dedupe_similar(
+        self,
+        key: Union[str, Callable[[Any], str]],
+        threshold: float = 0.8,
+        num_perm: int = 128,
+        ngram: int = 3,
+    ) -> 'DataTransformer':
+        """
+        基于 MinHash + LSH 的相似度去重。
+
+        Args:
+            key: 用于比较的文本字段，可以是字段名或提取函数
+            threshold: 相似度阈值，0-1 之间，默认 0.8
+            num_perm: MinHash 签名长度，越大越精确但越慢，默认 128
+            ngram: n-gram 大小，默认 3（字符级）
+
+        Returns:
+            去重后的新 DataTransformer
+
+        Examples:
+            >>> dt.dedupe_similar('text')                    # 按 text 字段相似度去重
+            >>> dt.dedupe_similar('text', threshold=0.9)     # 更严格的阈值
+            >>> dt.dedupe_similar(lambda x: x.title + x.content)  # 自定义文本
+        """
+        try:
+            from datasketch import MinHash, MinHashLSH
+        except ImportError:
+            raise ImportError(
+                "相似度去重需要 datasketch 库，请安装: pip install datasketch"
+            )
+
+        if not self._data:
+            return DataTransformer([])
+
+        # 创建 LSH 索引
+        lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
+        minhashes = []
+
+        # 为每个文档创建 MinHash
+        for i, item in enumerate(self._data):
+            text = self._get_text_for_similarity(item, key)
+            m = self._create_minhash(text, num_perm, ngram)
+            minhashes.append(m)
+            lsh.insert(str(i), m)
+
+        # 找出要保留的索引（每个相似组保留第一个）
+        keep_indices = set()
+        removed_indices = set()
+
+        for i in range(len(self._data)):
+            if i in removed_indices:
+                continue
+
+            keep_indices.add(i)
+
+            # 查询相似文档
+            similar = lsh.query(minhashes[i])
+            for idx_str in similar:
+                idx = int(idx_str)
+                if idx != i and idx not in keep_indices:
+                    removed_indices.add(idx)
+
+        # 按原顺序保留数据
+        result = [self._data[i] for i in sorted(keep_indices)]
+        return DataTransformer(result)
+
+    def _get_text_for_similarity(
+        self,
+        item: Dict[str, Any],
+        key: Union[str, Callable[[Any], str]],
+    ) -> str:
+        """获取用于相似度比较的文本"""
+        if isinstance(key, str):
+            return str(item.get(key, ""))
+        elif callable(key):
+            return str(key(DictWrapper(item)))
+        else:
+            raise ValueError(f"不支持的 key 类型: {type(key)}")
+
+    def _create_minhash(self, text: str, num_perm: int, ngram: int) -> 'MinHash':
+        """创建文本的 MinHash 签名"""
+        from datasketch import MinHash
+
+        m = MinHash(num_perm=num_perm)
+        # 使用字符级 n-gram（对中英文都适用）
+        for i in range(len(text) - ngram + 1):
+            m.update(text[i:i + ngram].encode('utf-8'))
+        return m
+
     # ============ 数据信息 ============
 
     def fields(self) -> List[str]:
@@ -329,6 +477,49 @@ class DataTransformer:
     def copy(self) -> 'DataTransformer':
         """深拷贝"""
         return DataTransformer(deepcopy(self._data))
+
+    # ============ 数据合并 ============
+
+    @classmethod
+    def concat(cls, *sources: Union[str, 'DataTransformer']) -> 'DataTransformer':
+        """
+        拼接多个数据源。
+
+        Args:
+            *sources: 数据源，可以是文件路径或 DataTransformer 实例
+
+        Returns:
+            合并后的 DataTransformer
+
+        Examples:
+            >>> DataTransformer.concat("a.jsonl", "b.jsonl")
+            >>> DataTransformer.concat(dt1, dt2, dt3)
+            >>> DataTransformer.concat("a.jsonl", dt2)
+        """
+        if not sources:
+            return cls([])
+
+        all_data = []
+        for source in sources:
+            if isinstance(source, str):
+                data = load_data(source)
+            elif isinstance(source, DataTransformer):
+                data = source.data
+            else:
+                raise TypeError(f"不支持的数据源类型: {type(source)}")
+            all_data.extend(data)
+
+        return cls(all_data)
+
+    def __add__(self, other: Union[str, 'DataTransformer']) -> 'DataTransformer':
+        """
+        使用 + 运算符拼接数据。
+
+        Examples:
+            >>> merged = dt1 + dt2
+            >>> merged = dt1 + "other.jsonl"
+        """
+        return DataTransformer.concat(self, other)
 
     def shuffle(self, seed: Optional[int] = None) -> 'DataTransformer':
         """打乱顺序（返回新实例）"""

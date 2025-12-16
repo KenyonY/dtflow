@@ -38,7 +38,10 @@ def sample(
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
         num: 采样数量，默认 10
-        sample_type: 采样方式，可选 random/head/tail，默认 random
+            - num > 0: 采样指定数量
+            - num = 0: 采样所有数据
+            - num < 0: Python 切片风格（如 -1 表示最后 1 条，-10 表示最后 10 条）
+        sample_type: 采样方式，可选 random/head/tail，默认 head
         output: 输出文件路径，不指定则打印到控制台
         seed: 随机种子（仅在 sample_type=random 时有效）
 
@@ -46,6 +49,8 @@ def sample(
         dt sample data.jsonl 5
         dt sample data.csv 100 --sample_type=head
         dt sample data.xlsx 50 --output=sampled.jsonl
+        dt sample data.jsonl 0   # 采样所有数据
+        dt sample data.jsonl -10 # 最后 10 条数据
     """
     filepath = Path(filename)
 
@@ -74,6 +79,56 @@ def sample(
         print(f"已保存 {len(sampled)} 条数据到 {output}")
     else:
         _print_samples(sampled)
+
+
+def head(
+    filename: str,
+    num: int = 10,
+    output: Optional[str] = None,
+) -> None:
+    """
+    显示文件的前 N 条数据（dt sample --sample_type=head 的快捷方式）。
+
+    Args:
+        filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        num: 显示数量，默认 10
+            - num > 0: 显示指定数量
+            - num = 0: 显示所有数据
+            - num < 0: Python 切片风格（如 -10 表示最后 10 条）
+        output: 输出文件路径，不指定则打印到控制台
+
+    Examples:
+        dt head data.jsonl          # 显示前 10 条
+        dt head data.jsonl 20       # 显示前 20 条
+        dt head data.csv 0          # 显示所有数据
+        dt head data.xlsx --output=head.jsonl
+    """
+    sample(filename, num=num, sample_type="head", output=output)
+
+
+def tail(
+    filename: str,
+    num: int = 10,
+    output: Optional[str] = None,
+) -> None:
+    """
+    显示文件的后 N 条数据（dt sample --sample_type=tail 的快捷方式）。
+
+    Args:
+        filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        num: 显示数量，默认 10
+            - num > 0: 显示指定数量
+            - num = 0: 显示所有数据
+            - num < 0: Python 切片风格（如 -10 表示最后 10 条）
+        output: 输出文件路径，不指定则打印到控制台
+
+    Examples:
+        dt tail data.jsonl          # 显示后 10 条
+        dt tail data.jsonl 20       # 显示后 20 条
+        dt tail data.csv 0          # 显示所有数据
+        dt tail data.xlsx --output=tail.jsonl
+    """
+    sample(filename, num=num, sample_type="tail", output=output)
 
 
 def _print_samples(samples: list) -> None:
@@ -503,3 +558,205 @@ def _load_config(config_path: Path) -> Dict[str, Any]:
     spec.loader.exec_module(module)
 
     return {name: getattr(module, name) for name in dir(module) if not name.startswith("_")}
+
+
+# ============ Dedupe Command ============
+
+
+def dedupe(
+    filename: str,
+    key: Optional[str] = None,
+    similar: Optional[float] = None,
+    output: Optional[str] = None,
+) -> None:
+    """
+    数据去重。
+
+    支持两种模式：
+    1. 精确去重（默认）：完全相同的数据才去重
+    2. 相似度去重：使用 MinHash+LSH 算法，相似度超过阈值则去重
+
+    Args:
+        filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        key: 去重依据字段，多个字段用逗号分隔。不指定则全量去重
+        similar: 相似度阈值（0-1），指定后启用相似度去重模式，需要指定 --key
+        output: 输出文件路径，不指定则覆盖原文件
+
+    Examples:
+        dt dedupe data.jsonl                       # 全量精确去重
+        dt dedupe data.jsonl --key=text            # 按 text 字段精确去重
+        dt dedupe data.jsonl --key=user,timestamp  # 按多字段组合精确去重
+        dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
+        dt dedupe data.jsonl --output=clean.jsonl  # 指定输出文件
+    """
+    filepath = Path(filename)
+
+    if not filepath.exists():
+        print(f"错误: 文件不存在 - {filename}")
+        return
+
+    if not _check_file_format(filepath):
+        return
+
+    # 相似度去重模式必须指定 key
+    if similar is not None and not key:
+        print("错误: 相似度去重需要指定 --key 参数")
+        return
+
+    if similar is not None and (similar <= 0 or similar > 1):
+        print("错误: --similar 参数必须在 0-1 之间")
+        return
+
+    # 加载数据
+    print(f"📊 加载数据: {filepath}")
+    try:
+        dt = DataTransformer.load(str(filepath))
+    except Exception as e:
+        print(f"错误: 无法读取文件 - {e}")
+        return
+
+    original_count = len(dt)
+    print(f"   共 {original_count} 条数据")
+
+    # 执行去重
+    if similar is not None:
+        # 相似度去重模式
+        print(f"🔑 相似度去重: 字段={key}, 阈值={similar}")
+        print("🔄 执行去重（MinHash+LSH）...")
+        try:
+            result = dt.dedupe_similar(key, threshold=similar)
+        except ImportError as e:
+            print(f"错误: {e}")
+            return
+    else:
+        # 精确去重模式
+        dedupe_key: Any = None
+        if key:
+            keys = [k.strip() for k in key.split(",")]
+            if len(keys) == 1:
+                dedupe_key = keys[0]
+                print(f"🔑 按字段精确去重: {dedupe_key}")
+            else:
+                dedupe_key = keys
+                print(f"🔑 按多字段组合精确去重: {', '.join(dedupe_key)}")
+        else:
+            print("🔑 全量精确去重")
+
+        print("🔄 执行去重...")
+        result = dt.dedupe(dedupe_key)
+
+    dedupe_count = len(result)
+    removed_count = original_count - dedupe_count
+
+    # 保存结果
+    output_path = output or str(filepath)
+    print(f"💾 保存结果: {output_path}")
+    try:
+        result.save(output_path)
+    except Exception as e:
+        print(f"错误: 无法保存文件 - {e}")
+        return
+
+    print(f"\n✅ 完成! 去除 {removed_count} 条重复数据，剩余 {dedupe_count} 条")
+
+
+# ============ Concat Command ============
+
+
+def concat(
+    *files: str,
+    output: Optional[str] = None,
+    strict: bool = False,
+) -> None:
+    """
+    拼接多个数据文件。
+
+    Args:
+        *files: 输入文件路径列表，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        output: 输出文件路径，必须指定
+        strict: 严格模式，字段必须完全一致，否则报错
+
+    Examples:
+        dt concat a.jsonl b.jsonl -o merged.jsonl
+        dt concat data1.csv data2.csv data3.csv -o all.jsonl
+        dt concat a.jsonl b.jsonl --strict -o merged.jsonl
+    """
+    if len(files) < 2:
+        print("错误: 至少需要两个文件")
+        return
+
+    if not output:
+        print("错误: 必须指定输出文件 (-o/--output)")
+        return
+
+    # 验证所有文件
+    file_paths = []
+    for f in files:
+        filepath = Path(f)
+        if not filepath.exists():
+            print(f"错误: 文件不存在 - {f}")
+            return
+        if not _check_file_format(filepath):
+            return
+        file_paths.append(filepath)
+
+    # 分析各文件的字段
+    print("📊 文件字段分析:")
+    file_infos = []  # [(filepath, data, fields, count)]
+
+    for filepath in file_paths:
+        try:
+            data = load_data(str(filepath))
+        except Exception as e:
+            print(f"错误: 无法读取文件 {filepath} - {e}")
+            return
+
+        if not data:
+            print(f"警告: 文件为空 - {filepath}")
+            fields = set()
+        else:
+            fields = set(data[0].keys())
+
+        file_infos.append((filepath, data, fields, len(data)))
+        fields_str = ", ".join(sorted(fields)) if fields else "(空)"
+        print(f"   {filepath.name}: {fields_str} ({len(data)} 条)")
+
+    # 分析字段差异
+    all_fields = set()
+    common_fields = None
+    for _, _, fields, _ in file_infos:
+        all_fields.update(fields)
+        if common_fields is None:
+            common_fields = fields.copy()
+        else:
+            common_fields &= fields
+
+    common_fields = common_fields or set()
+    diff_fields = all_fields - common_fields
+
+    if diff_fields:
+        if strict:
+            print(f"\n❌ 严格模式: 字段不一致")
+            print(f"   共同字段: {', '.join(sorted(common_fields)) or '(无)'}")
+            print(f"   差异字段: {', '.join(sorted(diff_fields))}")
+            return
+        else:
+            print(f"\n⚠ 字段差异: {', '.join(sorted(diff_fields))} 仅在部分文件中存在")
+
+    # 执行拼接
+    print("\n🔄 执行拼接...")
+    all_data = []
+    for _, data, _, _ in file_infos:
+        all_data.extend(data)
+
+    # 保存结果
+    print(f"💾 保存结果: {output}")
+    try:
+        save_data(all_data, output)
+    except Exception as e:
+        print(f"错误: 无法保存文件 - {e}")
+        return
+
+    total_count = len(all_data)
+    file_count = len(files)
+    print(f"\n✅ 完成! 已合并 {file_count} 个文件，共 {total_count} 条数据到 {output}")

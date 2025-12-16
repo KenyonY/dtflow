@@ -290,7 +290,10 @@ def sample_data(
 
     Args:
         data: List of data items
-        num: Number of items to sample
+        num: Number of items to sample.
+            - num > 0: sample specified number of items
+            - num = 0: sample all data
+            - num < 0: Python slice style (e.g., -1 means last 1, -10 means last 10)
         sample_type: Sampling method - "random", "head", or "tail"
         seed: Random seed for reproducibility (only for random sampling)
 
@@ -303,6 +306,12 @@ def sample_data(
         [{'id': 0}, {'id': 1}, {'id': 2}, {'id': 3}, {'id': 4}]
         >>> sample_data(data, num=3, sample_type="tail")
         [{'id': 97}, {'id': 98}, {'id': 99}]
+        >>> len(sample_data(data, num=0))  # 0 means all
+        100
+        >>> sample_data(data, num=-1, sample_type="head")  # last 1 item
+        [{'id': 99}]
+        >>> sample_data(data, num=-3, sample_type="tail")  # last 3 items
+        [{'id': 97}, {'id': 98}, {'id': 99}]
     """
     import random as rand_module
 
@@ -310,7 +319,17 @@ def sample_data(
         return []
 
     total = len(data)
-    actual_num = min(num, total)
+
+    # Determine actual number to sample
+    if num == 0:
+        # 0 means sample all data
+        actual_num = total
+    elif num < 0:
+        # Negative number: Python slice style (e.g., -1 means 1 item, -10 means 10 items)
+        actual_num = min(abs(num), total)
+    else:
+        # Positive number: normal sampling
+        actual_num = min(num, total)
 
     if sample_type == "head":
         return data[:actual_num]
@@ -374,8 +393,15 @@ def _stream_sample(
 
     支持流式 head 采样的格式: jsonl, csv, parquet, arrow, excel
     其他采样类型(tail, random)回退到全量加载。
+    num == 0 表示采样所有数据，回退到全量加载。
+    num < 0 表示 Python 切片风格，回退到全量加载。
     """
-    # 只对 head 采样进行流式优化
+    # num == 0 表示采样所有数据，num < 0 表示切片风格，都需要全量加载
+    if num <= 0:
+        data = load_data(str(filepath))
+        return sample_data(data, num=num, sample_type=sample_type, seed=seed)
+
+    # 只对正数 num 的 head 采样进行流式优化
     if sample_type == "head":
         if file_format == "jsonl":
             return _stream_head_jsonl(filepath, num)
