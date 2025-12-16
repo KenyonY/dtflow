@@ -48,6 +48,7 @@ dependencies = [
     "tqdm>=4.60.0",
     "pyyaml>=5.4.0",
     "fire>=0.4.0",
+    "orjson>=3.9.0",
 ]
 
 [project.scripts]

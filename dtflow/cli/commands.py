@@ -809,43 +809,61 @@ def stats(
 
 
 def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
-    """计算每个字段的统计信息"""
-    from collections import Counter
+    """
+    单次遍历计算每个字段的统计信息。
 
-    # 收集所有字段
-    all_fields = set()
-    for item in data:
-        all_fields.update(item.keys())
+    优化：将多次遍历合并为单次遍历，在遍历过程中同时收集所有统计数据。
+    """
+    from collections import Counter, defaultdict
+
+    if not data:
+        return []
 
     total = len(data)
-    stats_list = []
 
-    for field in sorted(all_fields):
-        values = [item.get(field) for item in data]
+    # 单次遍历收集所有字段的值和统计信息
+    field_values = defaultdict(list)  # 存储每个字段的所有值
+    field_counters = defaultdict(Counter)  # 存储每个字段的值频率（用于 top N）
+
+    for item in data:
+        for k, v in item.items():
+            field_values[k].append(v)
+            # 对值进行截断后计数（用于 top N 显示）
+            displayable = _truncate(v if v is not None else "", 30)
+            field_counters[k][displayable] += 1
+
+    # 根据收集的数据计算统计信息
+    stats_list = []
+    for field in sorted(field_values.keys()):
+        values = field_values[field]
         non_null = [v for v in values if v is not None and v != ""]
         non_null_count = len(non_null)
+
+        # 推断类型（从第一个非空值）
+        field_type = _infer_type(non_null)
 
         # 基础统计
         stat = {
             "field": field,
             "non_null": non_null_count,
             "null_rate": f"{(total - non_null_count) / total * 100:.1f}%",
-            "type": _infer_type(non_null),
+            "type": field_type,
         }
 
         # 类型特定统计
         if non_null:
+            # 唯一值计数
             stat["unique"] = len(set(str(v) for v in non_null))
 
             # 字符串类型：计算长度统计
-            if stat["type"] == "str":
+            if field_type == "str":
                 lengths = [len(str(v)) for v in non_null]
                 stat["len_min"] = min(lengths)
                 stat["len_max"] = max(lengths)
                 stat["len_avg"] = sum(lengths) / len(lengths)
 
             # 数值类型：计算数值统计
-            elif stat["type"] in ("int", "float"):
+            elif field_type in ("int", "float"):
                 nums = [float(v) for v in non_null if _is_numeric(v)]
                 if nums:
                     stat["min"] = min(nums)
@@ -853,17 +871,14 @@ def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
                     stat["avg"] = sum(nums) / len(nums)
 
             # 列表类型：计算长度统计
-            elif stat["type"] == "list":
+            elif field_type == "list":
                 lengths = [len(v) if isinstance(v, list) else 0 for v in non_null]
                 stat["len_min"] = min(lengths)
                 stat["len_max"] = max(lengths)
                 stat["len_avg"] = sum(lengths) / len(lengths)
 
-            # Top N 值（包含空字符串）
-            all_values = [v if v is not None else "" for v in values]
-            displayable = [_truncate(v, 30) for v in all_values]
-            counter = Counter(displayable)
-            stat["top_values"] = counter.most_common(top)
+            # Top N 值（已在遍历时收集）
+            stat["top_values"] = field_counters[field].most_common(top)
 
         stats_list.append(stat)
 
@@ -1062,59 +1077,39 @@ def clean(
     keep_fields = _parse_field_list(keep) if keep else None
     drop_fields = _parse_field_list(drop) if drop else None
 
-    # 执行清洗步骤
-    data = dt.data
-    step_stats = []
-
-    # 步骤 1: strip（字符串清理）
-    if strip:
-        print("🔄 去除字符串首尾空白...")
-        data = _apply_strip(data)
-        step_stats.append("strip")
-
-    # 步骤 2: drop-empty（删除空记录）
+    # 构建清洗配置
+    empty_fields = None
     if drop_empty is not None:
-        # drop_empty 可能是空字符串（--drop-empty）或具体字段（--drop-empty=field1,field2）
         if drop_empty == "" or drop_empty is True:
             print("🔄 删除任意字段为空的记录...")
-            empty_fields = None
+            empty_fields = []  # 空列表表示检查所有字段
         else:
             empty_fields = _parse_field_list(drop_empty)
             print(f"🔄 删除字段为空的记录: {', '.join(empty_fields)}")
-        before = len(data)
-        data = _filter_empty(data, empty_fields)
-        removed = before - len(data)
-        if removed > 0:
-            step_stats.append(f"drop-empty: -{removed}")
 
-    # 步骤 3: min-len（最小长度过滤）
+    if strip:
+        print("🔄 去除字符串首尾空白...")
     if min_len_field:
         print(f"🔄 过滤 {min_len_field} 长度 < {min_len_value} 的记录...")
-        before = len(data)
-        data = _filter_by_len(data, min_len_field, min_len_value, "min")
-        removed = before - len(data)
-        if removed > 0:
-            step_stats.append(f"min-len: -{removed}")
-
-    # 步骤 4: max-len（最大长度过滤）
     if max_len_field:
         print(f"🔄 过滤 {max_len_field} 长度 > {max_len_value} 的记录...")
-        before = len(data)
-        data = _filter_by_len(data, max_len_field, max_len_value, "max")
-        removed = before - len(data)
-        if removed > 0:
-            step_stats.append(f"max-len: -{removed}")
-
-    # 步骤 5: keep/drop（字段管理）
     if keep_fields:
         print(f"🔄 只保留字段: {', '.join(keep_fields)}")
-        data = _keep_fields(data, keep_fields)
-        step_stats.append(f"keep: {len(keep_fields)} 字段")
-
     if drop_fields:
         print(f"🔄 删除字段: {', '.join(drop_fields)}")
-        data = _drop_fields(data, drop_fields)
-        step_stats.append(f"drop: {len(drop_fields)} 字段")
+
+    # 单次遍历执行所有清洗操作
+    data, step_stats = _clean_data_single_pass(
+        dt.data,
+        strip=strip,
+        empty_fields=empty_fields,
+        min_len_field=min_len_field,
+        min_len_value=min_len_value,
+        max_len_field=max_len_field,
+        max_len_value=max_len_value,
+        keep_fields=keep_fields,
+        drop_fields=set(drop_fields) if drop_fields else None,
+    )
 
     # 保存结果
     final_count = len(data)
@@ -1158,35 +1153,6 @@ def _parse_field_list(value: Any) -> List[str]:
         return [str(value)]
 
 
-def _apply_strip(data: List[Dict]) -> List[Dict]:
-    """去除所有字符串字段的首尾空白"""
-    result = []
-    for item in data:
-        new_item = {}
-        for k, v in item.items():
-            if isinstance(v, str):
-                new_item[k] = v.strip()
-            else:
-                new_item[k] = v
-        result.append(new_item)
-    return result
-
-
-def _filter_empty(data: List[Dict], fields: Optional[List[str]] = None) -> List[Dict]:
-    """过滤空值记录"""
-    result = []
-    for item in data:
-        if fields:
-            # 检查指定字段
-            is_empty = any(_is_empty_value(item.get(f)) for f in fields)
-        else:
-            # 检查所有字段
-            is_empty = any(_is_empty_value(v) for v in item.values())
-        if not is_empty:
-            result.append(item)
-    return result
-
-
 def _is_empty_value(v: Any) -> bool:
     """判断值是否为空"""
     if v is None:
@@ -1198,33 +1164,104 @@ def _is_empty_value(v: Any) -> bool:
     return False
 
 
-def _filter_by_len(data: List[Dict], field: str, length: int, mode: str) -> List[Dict]:
-    """按字段长度过滤"""
+def _get_value_len(value: Any) -> int:
+    """获取值的长度"""
+    if value is None:
+        return 0
+    if isinstance(value, (str, list, dict)):
+        return len(value)
+    return len(str(value))
+
+
+def _clean_data_single_pass(
+    data: List[Dict],
+    strip: bool = False,
+    empty_fields: Optional[List[str]] = None,
+    min_len_field: Optional[str] = None,
+    min_len_value: Optional[int] = None,
+    max_len_field: Optional[str] = None,
+    max_len_value: Optional[int] = None,
+    keep_fields: Optional[List[str]] = None,
+    drop_fields: Optional[set] = None,
+) -> tuple:
+    """
+    单次遍历执行所有清洗操作。
+
+    Args:
+        data: 原始数据列表
+        strip: 是否去除字符串首尾空白
+        empty_fields: 检查空值的字段列表，空列表表示检查所有字段，None 表示不检查
+        min_len_field: 最小长度检查的字段
+        min_len_value: 最小长度值
+        max_len_field: 最大长度检查的字段
+        max_len_value: 最大长度值
+        keep_fields: 只保留的字段列表
+        drop_fields: 要删除的字段集合
+
+    Returns:
+        (清洗后的数据, 统计信息列表)
+    """
     result = []
+    stats = {
+        "drop_empty": 0,
+        "min_len": 0,
+        "max_len": 0,
+    }
+
+    # 预先计算 keep_fields 集合（如果有的话）
+    keep_set = set(keep_fields) if keep_fields else None
+
     for item in data:
-        value = item.get(field, "")
-        if isinstance(value, str):
-            val_len = len(value)
-        elif isinstance(value, (list, dict)):
-            val_len = len(value)
-        else:
-            val_len = len(str(value)) if value is not None else 0
+        # 1. strip 处理（在过滤前执行，这样空值检测更准确）
+        if strip:
+            item = {k: v.strip() if isinstance(v, str) else v for k, v in item.items()}
 
-        if mode == "min":
-            if val_len >= length:
-                result.append(item)
-        else:  # max
-            if val_len <= length:
-                result.append(item)
-    return result
+        # 2. 空值过滤
+        if empty_fields is not None:
+            if len(empty_fields) == 0:
+                # 检查所有字段
+                if any(_is_empty_value(v) for v in item.values()):
+                    stats["drop_empty"] += 1
+                    continue
+            else:
+                # 检查指定字段
+                if any(_is_empty_value(item.get(f)) for f in empty_fields):
+                    stats["drop_empty"] += 1
+                    continue
 
+        # 3. 最小长度过滤
+        if min_len_field is not None:
+            if _get_value_len(item.get(min_len_field, "")) < min_len_value:
+                stats["min_len"] += 1
+                continue
 
-def _keep_fields(data: List[Dict], fields: List[str]) -> List[Dict]:
-    """只保留指定字段"""
-    return [{k: item.get(k) for k in fields if k in item} for item in data]
+        # 4. 最大长度过滤
+        if max_len_field is not None:
+            if _get_value_len(item.get(max_len_field, "")) > max_len_value:
+                stats["max_len"] += 1
+                continue
 
+        # 5. 字段管理（keep/drop）
+        if keep_set is not None:
+            item = {k: v for k, v in item.items() if k in keep_set}
+        elif drop_fields is not None:
+            item = {k: v for k, v in item.items() if k not in drop_fields}
 
-def _drop_fields(data: List[Dict], fields: List[str]) -> List[Dict]:
-    """删除指定字段"""
-    fields_set = set(fields)
-    return [{k: v for k, v in item.items() if k not in fields_set} for item in data]
+        result.append(item)
+
+    # 构建统计信息字符串列表
+    step_stats = []
+    if strip:
+        step_stats.append("strip")
+    if stats["drop_empty"] > 0:
+        step_stats.append(f"drop-empty: -{stats['drop_empty']}")
+    if stats["min_len"] > 0:
+        step_stats.append(f"min-len: -{stats['min_len']}")
+    if stats["max_len"] > 0:
+        step_stats.append(f"max-len: -{stats['max_len']}")
+    if keep_fields:
+        step_stats.append(f"keep: {len(keep_fields)} 字段")
+    if drop_fields:
+        step_stats.append(f"drop: {len(drop_fields)} 字段")
+
+    return result, step_stats

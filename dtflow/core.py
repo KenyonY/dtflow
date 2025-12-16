@@ -6,8 +6,29 @@ DataTransformer 核心模块
 from typing import List, Dict, Any, Optional, Callable, Union, Tuple, Literal
 from copy import deepcopy
 from dataclasses import dataclass
+import json
 
 from .storage.io import save_data, load_data
+
+# 尝试使用 orjson（更快的 JSON 序列化库）
+try:
+    import orjson
+    _HAS_ORJSON = True
+except ImportError:
+    _HAS_ORJSON = False
+
+
+def _fast_json_dumps(obj: Any) -> str:
+    """
+    快速 JSON 序列化，优先使用 orjson。
+
+    orjson 比标准 json 快约 10 倍，特别适合大量数据的序列化场景。
+    """
+    if _HAS_ORJSON:
+        # orjson.dumps 返回 bytes，需要 decode
+        return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS).decode('utf-8')
+    else:
+        return json.dumps(obj, sort_keys=True, ensure_ascii=False)
 
 
 # ============ 错误处理 ============
@@ -125,6 +146,7 @@ class DataTransformer:
         func: Callable[[Any], Any],
         on_error: Literal["skip", "raise", "null"] = "skip",
         return_errors: bool = False,
+        raw: bool = False,
     ) -> Union[List[Any], Tuple[List[Any], List[TransformError]]]:
         """
         使用函数转换数据格式。
@@ -136,6 +158,7 @@ class DataTransformer:
                 - "raise": 遇到错误立即抛出异常
                 - "null": 错误行返回 None
             return_errors: 是否返回错误列表（仅当 on_error != "raise" 时有效）
+            raw: 原始模式，直接传递 dict 而不包装为 DictWrapper（性能优化）
 
         Returns:
             - 默认返回转换后的数据列表
@@ -154,13 +177,19 @@ class DataTransformer:
 
             >>> # 获取错误详情
             >>> results, errors = dt.to(transform_func, return_errors=True)
+
+            >>> # 原始模式（性能优化，大数据集推荐）
+            >>> dt.to(lambda x: {"q": x["q"]}, raw=True)
         """
         results = []
         errors = []
 
+        # raw 模式：直接传递 dict，跳过 DictWrapper 包装
+        wrapper_func = (lambda x: x) if raw else DictWrapper
+
         for i, item in enumerate(self._data):
             try:
-                result = func(DictWrapper(item))
+                result = func(wrapper_func(item))
                 results.append(result)
             except Exception as e:
                 err = TransformError(index=i, item=item, error=e)
@@ -185,6 +214,7 @@ class DataTransformer:
         self,
         func: Callable[[Any], Any],
         on_error: Literal["skip", "raise", "null"] = "skip",
+        raw: bool = False,
     ) -> 'DataTransformer':
         """
         转换数据并返回新的 DataTransformer（支持链式调用）。
@@ -192,12 +222,15 @@ class DataTransformer:
         Args:
             func: 转换函数
             on_error: 错误处理策略（同 to() 方法）
+            raw: 原始模式，直接传递 dict 而不包装为 DictWrapper（性能优化）
 
         Examples:
             >>> dt.transform(lambda x: {"q": x.q}).save("output.jsonl")
             >>> dt.transform(transform_func, on_error="raise").save("output.jsonl")
+            >>> # 原始模式（大数据集推荐）
+            >>> dt.transform(lambda x: {"q": x["q"]}, raw=True).save("output.jsonl")
         """
-        return DataTransformer(self.to(func, on_error=on_error))
+        return DataTransformer(self.to(func, on_error=on_error, raw=raw))
 
     # ============ 数据筛选 ============
 
@@ -205,6 +238,7 @@ class DataTransformer:
         self,
         func: Callable[[Any], bool],
         on_error: Literal["skip", "raise", "keep"] = "skip",
+        raw: bool = False,
     ) -> 'DataTransformer':
         """
         筛选数据。
@@ -215,17 +249,23 @@ class DataTransformer:
                 - "skip": 跳过错误行，打印警告（默认，不保留错误行）
                 - "raise": 遇到错误立即抛出异常
                 - "keep": 保留错误行
+            raw: 原始模式，直接传递 dict 而不包装为 DictWrapper（性能优化）
 
         Examples:
             >>> dt.filter(lambda x: len(x.text) > 10)
             >>> dt.filter(lambda x: x.score > 0.5, on_error="raise")
+            >>> # 原始模式（大数据集推荐）
+            >>> dt.filter(lambda x: len(x["text"]) > 10, raw=True)
         """
         filtered = []
         errors = []
 
+        # raw 模式：直接传递 dict，跳过 DictWrapper 包装
+        wrapper_func = (lambda x: x) if raw else DictWrapper
+
         for i, item in enumerate(self._data):
             try:
-                if func(DictWrapper(item)):
+                if func(wrapper_func(item)):
                     filtered.append(item)
             except Exception as e:
                 err = TransformError(index=i, item=item, error=e)
@@ -289,8 +329,6 @@ class DataTransformer:
             >>> dt.dedupe(['user', 'timestamp'])       # 按多字段组合去重
             >>> dt.dedupe(lambda x: x.text.lower())    # 自定义 key
         """
-        import json
-
         seen = set()
         result = []
 
@@ -308,11 +346,9 @@ class DataTransformer:
         key: Union[None, str, List[str], Callable[[Any], Any]],
     ) -> Any:
         """获取去重用的 key"""
-        import json
-
         if key is None:
-            # 全量去重：json 序列化
-            return json.dumps(item, sort_keys=True, ensure_ascii=False)
+            # 全量去重：使用快速 JSON 序列化
+            return _fast_json_dumps(item)
         elif isinstance(key, str):
             # 单字段
             return item.get(key)
