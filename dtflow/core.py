@@ -581,6 +581,81 @@ class DataTransformer:
         split_idx = int(len(data) * ratio)
         return DataTransformer(data[:split_idx]), DataTransformer(data[split_idx:])
 
+    # ============ 并行处理 ============
+
+    def map_parallel(
+        self,
+        func: Callable[[Dict], Any],
+        workers: Optional[int] = None,
+        chunksize: int = 1000,
+    ) -> List[Any]:
+        """
+        并行执行转换函数（使用多进程）。
+
+        注意：func 必须是可 pickle 的（不能是 lambda，需要是模块级函数）。
+
+        Args:
+            func: 转换函数，接收原始 dict，返回转换结果
+            workers: 进程数，默认为 CPU 核心数
+            chunksize: 每个进程处理的数据块大小
+
+        Returns:
+            转换后的结果列表
+
+        Examples:
+            >>> def transform(item):
+            ...     return {"id": item["id"], "text": item["text"].upper()}
+            >>> results = dt.map_parallel(transform)
+        """
+        from multiprocessing import Pool, cpu_count
+
+        if not self._data:
+            return []
+
+        workers = workers or cpu_count()
+
+        with Pool(workers) as pool:
+            results = pool.map(func, self._data, chunksize=chunksize)
+
+        return results
+
+    def filter_parallel(
+        self,
+        func: Callable[[Dict], bool],
+        workers: Optional[int] = None,
+        chunksize: int = 1000,
+    ) -> 'DataTransformer':
+        """
+        并行执行过滤函数（使用多进程）。
+
+        注意：func 必须是可 pickle 的（不能是 lambda，需要是模块级函数）。
+
+        Args:
+            func: 过滤函数，接收原始 dict，返回 True 保留
+            workers: 进程数，默认为 CPU 核心数
+            chunksize: 每个进程处理的数据块大小
+
+        Returns:
+            过滤后的新 DataTransformer
+
+        Examples:
+            >>> def is_valid(item):
+            ...     return len(item["text"]) > 10
+            >>> filtered = dt.filter_parallel(is_valid)
+        """
+        from multiprocessing import Pool, cpu_count
+
+        if not self._data:
+            return DataTransformer([])
+
+        workers = workers or cpu_count()
+
+        with Pool(workers) as pool:
+            mask = pool.map(func, self._data, chunksize=chunksize)
+
+        filtered = [item for item, keep in zip(self._data, mask) if keep]
+        return DataTransformer(filtered)
+
 
 def _sanitize_key(name: str) -> str:
     """将字段名规范化为合法的 Python 标识符"""

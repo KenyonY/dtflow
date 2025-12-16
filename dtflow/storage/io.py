@@ -389,10 +389,13 @@ def _stream_sample(
     seed: Optional[int],
 ) -> List[Dict[str, Any]]:
     """
-    流式采样实现，对 head 采样使用流式读取优化。
+    流式采样实现。
 
-    支持流式 head 采样的格式: jsonl, csv, parquet, arrow, excel
-    其他采样类型(tail, random)回退到全量加载。
+    支持的流式优化：
+    - head: jsonl, csv, parquet, arrow, excel
+    - tail: jsonl（反向读取）
+    - random: jsonl（蓄水池采样）
+
     num == 0 表示采样所有数据，回退到全量加载。
     num < 0 表示 Python 切片风格，回退到全量加载。
     """
@@ -401,7 +404,7 @@ def _stream_sample(
         data = load_data(str(filepath))
         return sample_data(data, num=num, sample_type=sample_type, seed=seed)
 
-    # 只对正数 num 的 head 采样进行流式优化
+    # head 采样优化
     if sample_type == "head":
         if file_format == "jsonl":
             return _stream_head_jsonl(filepath, num)
@@ -413,6 +416,14 @@ def _stream_sample(
             return _stream_head_arrow(filepath, num)
         elif file_format == "excel":
             return _stream_head_excel(filepath, num)
+
+    # tail 采样优化（仅 JSONL）
+    if sample_type == "tail" and file_format == "jsonl":
+        return _stream_tail_jsonl(filepath, num)
+
+    # random 采样优化（仅 JSONL，使用蓄水池采样）
+    if sample_type == "random" and file_format == "jsonl":
+        return _stream_random_jsonl(filepath, num, seed)
 
     # 其他情况回退到全量加载
     data = load_data(str(filepath))
@@ -444,19 +455,23 @@ def _stream_head_csv(filepath: Path, num: int) -> List[Dict[str, Any]]:
 
 
 def _stream_head_parquet(filepath: Path, num: int) -> List[Dict[str, Any]]:
-    """Parquet 流式读取前 N 行"""
+    """Parquet 真流式读取前 N 行（使用 iter_batches 避免全量加载）"""
     try:
         import pyarrow.parquet as pq
     except ImportError:
         raise ImportError("pyarrow is required for Parquet support. Install with: pip install pyarrow")
 
-    # 读取元数据获取行数
     parquet_file = pq.ParquetFile(filepath)
-    total_rows = parquet_file.metadata.num_rows
+    result = []
 
-    # 只读取前 N 行
-    table = pq.read_table(filepath).slice(0, min(num, total_rows))
-    return table.to_pylist()
+    # 使用 iter_batches 真正流式读取，只读取需要的数据
+    for batch in parquet_file.iter_batches(batch_size=min(num, 10000)):
+        batch_data = batch.to_pylist()
+        result.extend(batch_data)
+        if len(result) >= num:
+            break
+
+    return result[:num]
 
 
 def _stream_head_arrow(filepath: Path, num: int) -> List[Dict[str, Any]]:
@@ -563,6 +578,65 @@ def stream_jsonl(filepath: str, chunk_size: int = 1000):
 
         if chunk:
             yield chunk
+
+
+# ============ JSONL 流式采样优化 ============
+
+
+def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """
+    JSONL 反向读取后 N 行（避免全量加载）。
+
+    使用双端队列保持最后 N 行，内存占用 O(num) 而非 O(total)。
+    """
+    from collections import deque
+
+    # 使用 deque 的 maxlen 自动保持最后 N 个元素
+    buffer = deque(maxlen=num)
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                buffer.append(json.loads(line))
+
+    return list(buffer)
+
+
+def _stream_random_jsonl(
+    filepath: Path, num: int, seed: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    JSONL 蓄水池采样（Reservoir Sampling）。
+
+    单次遍历文件，内存占用 O(num)，适合超大文件随机采样。
+    算法保证每条数据被选中的概率相等。
+    """
+    import random
+
+    if seed is not None:
+        random.seed(seed)
+
+    reservoir = []  # 蓄水池
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+
+            item = json.loads(line)
+
+            if len(reservoir) < num:
+                # 蓄水池未满，直接加入
+                reservoir.append(item)
+            else:
+                # 蓄水池已满，以 num/(i+1) 的概率替换
+                j = random.randint(0, i)
+                if j < num:
+                    reservoir[j] = item
+
+    return reservoir
 
 
 # ============ FlaxKV Format ============
