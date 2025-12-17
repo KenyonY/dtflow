@@ -90,11 +90,36 @@ stats = token_stats(dt.data, "text")
 # {"total_tokens": 12345, "avg_tokens": 123, "min_tokens": 5, "max_tokens": 500, ...}
 ```
 
-支持 `tiktoken`（OpenAI，默认）和 `transformers` 后端：
+支持 `tiktoken`（OpenAI，默认）和 `transformers` 后端，**自动检测**：
 
 ```python
-# 使用 transformers tokenizer
-count_tokens("Hello", model="Qwen/Qwen2-7B", backend="transformers")
+# OpenAI 模型 -> 自动使用 tiktoken
+count_tokens("Hello", model="gpt-4")
+
+# HuggingFace/本地模型 -> 自动使用 transformers
+count_tokens("Hello", model="Qwen/Qwen2-7B")
+count_tokens("Hello", model="/home/models/qwen")
+```
+
+### Messages Token 统计
+
+专为多轮对话设计的 token 统计功能：
+
+```python
+from dtflow import messages_token_counter, messages_token_filter, messages_token_stats
+
+# 为每条数据添加 token 统计
+dt.transform(messages_token_counter(model="gpt-4"))  # 简单模式，输出总数
+dt.transform(messages_token_counter(model="gpt-4", detailed=True))  # 详细模式
+# 详细模式输出: {"total": 500, "user": 200, "assistant": 280, "system": 20, "turns": 5, ...}
+
+# 按 token 数和轮数过滤
+dt.filter(messages_token_filter(min_tokens=100, max_tokens=4096))
+dt.filter(messages_token_filter(min_turns=2, max_turns=10))
+
+# 统计整个数据集
+stats = messages_token_stats(dt.data, model="gpt-4")
+# {"count": 1000, "total_tokens": 500000, "user_tokens": 200000, "assistant_tokens": 290000, ...}
 ```
 
 ### 格式转换器
@@ -103,7 +128,7 @@ count_tokens("Hello", model="Qwen/Qwen2-7B", backend="transformers")
 from dtflow import (
     to_hf_dataset, from_hf_dataset,    # HuggingFace Dataset
     to_openai_batch, from_openai_batch, # OpenAI Batch API
-    to_llama_factory,                   # LLaMA-Factory 格式
+    to_llama_factory,                   # LLaMA-Factory Alpaca 格式
     to_axolotl,                         # Axolotl 格式
     messages_to_text,                   # messages 转纯文本
 )
@@ -118,12 +143,60 @@ data = from_hf_dataset("tatsu-lab/alpaca", split="train")
 batch_input = dt.to(to_openai_batch(model="gpt-4o"))
 results = from_openai_batch(batch_output)
 
-# 训练框架格式
-dt.transform(to_llama_factory()).save("llama_factory.jsonl")
-dt.transform(to_axolotl()).save("axolotl.jsonl")
-
 # messages 转纯文本（支持 chatml/llama2/simple 模板）
 dt.transform(messages_to_text(template="chatml"))
+```
+
+### LLaMA-Factory 格式
+
+完整支持 LLaMA-Factory 的 SFT 训练格式：
+
+```python
+from dtflow import (
+    to_llama_factory,              # Alpaca 格式（单轮）
+    to_llama_factory_sharegpt,     # ShareGPT 格式（多轮对话）
+    to_llama_factory_vlm,          # VLM Alpaca 格式
+    to_llama_factory_vlm_sharegpt, # VLM ShareGPT 格式
+)
+
+# Alpaca 格式
+dt.transform(to_llama_factory()).save("alpaca.jsonl")
+# 输出: {"instruction": "...", "input": "", "output": "..."}
+
+# ShareGPT 格式（多轮对话）
+dt.transform(to_llama_factory_sharegpt()).save("sharegpt.jsonl")
+# 输出: {"conversations": [{"from": "human", "value": "..."}, {"from": "gpt", "value": "..."}], "system": "..."}
+
+# VLM 格式（图片/视频）
+dt.transform(to_llama_factory_vlm(images_field="images")).save("vlm.jsonl")
+# 输出: {"instruction": "...", "output": "...", "images": ["/path/to/img.jpg"]}
+
+dt.transform(to_llama_factory_vlm_sharegpt(images_field="images", videos_field="videos"))
+# 输出: {"conversations": [...], "images": [...], "videos": [...]}
+```
+
+### ms-swift 格式
+
+支持 ModelScope ms-swift 的训练格式：
+
+```python
+from dtflow import (
+    to_swift_messages,        # 标准 messages 格式
+    to_swift_query_response,  # query-response 格式
+    to_swift_vlm,             # VLM 格式
+)
+
+# messages 格式
+dt.transform(to_swift_messages()).save("swift_messages.jsonl")
+# 输出: {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+
+# query-response 格式（自动提取 history）
+dt.transform(to_swift_query_response(query_field="messages")).save("swift_qr.jsonl")
+# 输出: {"query": "...", "response": "...", "system": "...", "history": [["q1", "a1"], ...]}
+
+# VLM 格式
+dt.transform(to_swift_vlm(images_field="images")).save("swift_vlm.jsonl")
+# 输出: {"messages": [...], "images": ["/path/to/img.jpg"]}
 ```
 
 ### 其他操作

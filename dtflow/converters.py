@@ -259,6 +259,462 @@ def to_axolotl(
     return transform
 
 
+def to_llama_factory_sharegpt(
+    messages_field: str = "messages",
+    system_field: Optional[str] = None,
+    tools_field: Optional[str] = None,
+) -> Callable:
+    """
+    转换为 LLaMA-Factory ShareGPT 格式（多轮对话）。
+
+    输出格式:
+    {
+        "conversations": [
+            {"from": "human", "value": "..."},
+            {"from": "gpt", "value": "..."}
+        ],
+        "system": "...",      # 可选
+        "tools": "..."        # 可选
+    }
+
+    Args:
+        messages_field: 输入的 messages 字段名
+        system_field: 系统提示字段（如果为 None，从 messages 中提取）
+        tools_field: 工具描述字段
+
+    Returns:
+        转换函数
+
+    Examples:
+        >>> dt.transform(to_llama_factory_sharegpt())
+        >>> dt.transform(to_llama_factory_sharegpt(system_field="system_prompt"))
+    """
+    role_map = {
+        "user": "human",
+        "assistant": "gpt",
+        "system": "system",
+        "tool": "observation",
+        "function_call": "function_call",
+    }
+
+    def transform(item) -> dict:
+        get = lambda f: (item.get(f, "") if hasattr(item, "get") else item.get(f, ""))
+        messages = get(messages_field) or []
+
+        conversations = []
+        system_prompt = None
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            # 提取 system 消息
+            if role == "system":
+                system_prompt = content
+                continue
+
+            mapped_role = role_map.get(role, role)
+            conversations.append({"from": mapped_role, "value": content})
+
+        result = {"conversations": conversations}
+
+        # 系统提示：优先使用指定字段，否则用从 messages 提取的
+        if system_field:
+            system = get(system_field)
+            if system:
+                result["system"] = system
+        elif system_prompt:
+            result["system"] = system_prompt
+
+        # 工具描述
+        if tools_field:
+            tools = get(tools_field)
+            if tools:
+                result["tools"] = tools
+
+        return result
+
+    return transform
+
+
+def to_llama_factory_vlm(
+    messages_field: str = "messages",
+    images_field: str = "images",
+    videos_field: Optional[str] = None,
+    system_field: Optional[str] = None,
+) -> Callable:
+    """
+    转换为 LLaMA-Factory VLM（视觉语言模型）格式。
+
+    输出格式 (Alpaca 风格):
+    {
+        "instruction": "...",
+        "input": "",
+        "output": "...",
+        "images": ["path1.jpg", "path2.jpg"],  # 图片路径列表
+        "videos": ["path.mp4"],                 # 可选，视频路径列表
+        "system": "..."                         # 可选
+    }
+
+    Args:
+        messages_field: 输入的 messages 字段名
+        images_field: 图片路径字段名
+        videos_field: 视频路径字段名
+        system_field: 系统提示字段
+
+    Returns:
+        转换函数
+
+    Examples:
+        >>> dt.transform(to_llama_factory_vlm())
+        >>> dt.transform(to_llama_factory_vlm(images_field="image_paths"))
+    """
+
+    def transform(item) -> dict:
+        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        messages = get(messages_field) or []
+
+        instruction = ""
+        output = ""
+        system_prompt = None
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_prompt = content
+            elif role == "user":
+                instruction = content
+            elif role == "assistant":
+                output = content
+
+        result = {
+            "instruction": instruction,
+            "input": "",
+            "output": output,
+        }
+
+        # 图片
+        images = get(images_field)
+        if images:
+            result["images"] = images if isinstance(images, list) else [images]
+
+        # 视频
+        if videos_field:
+            videos = get(videos_field)
+            if videos:
+                result["videos"] = videos if isinstance(videos, list) else [videos]
+
+        # 系统提示
+        if system_field:
+            system = get(system_field)
+            if system:
+                result["system"] = system
+        elif system_prompt:
+            result["system"] = system_prompt
+
+        return result
+
+    return transform
+
+
+def to_llama_factory_vlm_sharegpt(
+    messages_field: str = "messages",
+    images_field: str = "images",
+    videos_field: Optional[str] = None,
+    system_field: Optional[str] = None,
+) -> Callable:
+    """
+    转换为 LLaMA-Factory VLM ShareGPT 格式（多轮多模态对话）。
+
+    输出格式:
+    {
+        "conversations": [
+            {"from": "human", "value": "<image>描述这张图片"},
+            {"from": "gpt", "value": "这是一张..."}
+        ],
+        "images": ["path1.jpg"],
+        "system": "..."
+    }
+
+    Args:
+        messages_field: 输入的 messages 字段名
+        images_field: 图片路径字段名
+        videos_field: 视频路径字段名
+        system_field: 系统提示字段
+
+    Returns:
+        转换函数
+
+    Examples:
+        >>> dt.transform(to_llama_factory_vlm_sharegpt())
+    """
+    role_map = {"user": "human", "assistant": "gpt", "system": "system"}
+
+    def transform(item) -> dict:
+        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        messages = get(messages_field) or []
+
+        conversations = []
+        system_prompt = None
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_prompt = content
+                continue
+
+            mapped_role = role_map.get(role, role)
+            conversations.append({"from": mapped_role, "value": content})
+
+        result = {"conversations": conversations}
+
+        # 图片
+        images = get(images_field)
+        if images:
+            result["images"] = images if isinstance(images, list) else [images]
+
+        # 视频
+        if videos_field:
+            videos = get(videos_field)
+            if videos:
+                result["videos"] = videos if isinstance(videos, list) else [videos]
+
+        # 系统提示
+        if system_field:
+            system = get(system_field)
+            if system:
+                result["system"] = system
+        elif system_prompt:
+            result["system"] = system_prompt
+
+        return result
+
+    return transform
+
+
+# ============== ms-swift 格式转换器 ==============
+
+
+def to_swift_messages(
+    messages_field: str = "messages",
+    system_field: Optional[str] = None,
+) -> Callable:
+    """
+    转换为 ms-swift messages 格式（标准格式）。
+
+    输出格式:
+    {
+        "messages": [
+            {"role": "system", "content": "..."},
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."}
+        ]
+    }
+
+    Args:
+        messages_field: 输入的 messages 字段名
+        system_field: 系统提示字段（如果需要额外添加）
+
+    Returns:
+        转换函数
+
+    Examples:
+        >>> dt.transform(to_swift_messages())
+    """
+
+    def transform(item) -> dict:
+        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        messages = get(messages_field) or []
+
+        # 复制 messages，避免修改原数据
+        result_messages = []
+
+        # 如果指定了 system_field，添加系统消息
+        if system_field:
+            system = get(system_field)
+            if system:
+                result_messages.append({"role": "system", "content": system})
+
+        for msg in messages:
+            # 标准化格式
+            result_messages.append({
+                "role": msg.get("role", "user"),
+                "content": msg.get("content", ""),
+            })
+
+        return {"messages": result_messages}
+
+    return transform
+
+
+def to_swift_query_response(
+    query_field: str = "query",
+    response_field: str = "response",
+    system_field: Optional[str] = None,
+    history_field: Optional[str] = None,
+) -> Callable:
+    """
+    转换为 ms-swift query-response 格式。
+
+    输出格式:
+    {
+        "query": "用户问题",
+        "response": "模型回答",
+        "system": "系统提示",      # 可选
+        "history": [["q1", "r1"]]  # 可选
+    }
+
+    Args:
+        query_field: 用户问题字段
+        response_field: 模型回答字段
+        system_field: 系统提示字段
+        history_field: 历史对话字段
+
+    Returns:
+        转换函数
+
+    Examples:
+        >>> dt.transform(to_swift_query_response())
+        >>> # 从 messages 格式转换
+        >>> dt.transform(to_swift_query_response(query_field="messages"))
+    """
+
+    def transform(item) -> dict:
+        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+
+        query = get(query_field)
+        response = get(response_field)
+
+        # 如果 query_field 是 messages，提取最后一轮对话
+        if isinstance(query, list):
+            messages = query
+            system_prompt = None
+            history = []
+            current_query = ""
+            current_response = ""
+
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+
+                if role == "system":
+                    system_prompt = content
+                elif role == "user":
+                    if current_query and current_response:
+                        history.append([current_query, current_response])
+                    current_query = content
+                    current_response = ""
+                elif role == "assistant":
+                    current_response = content
+
+            result = {
+                "query": current_query,
+                "response": current_response,
+            }
+
+            if system_prompt:
+                result["system"] = system_prompt
+            if history:
+                result["history"] = history
+
+            return result
+
+        # 直接使用字段
+        result = {
+            "query": query or "",
+            "response": response or "",
+        }
+
+        if system_field:
+            system = get(system_field)
+            if system:
+                result["system"] = system
+
+        if history_field:
+            history = get(history_field)
+            if history:
+                result["history"] = history
+
+        return result
+
+    return transform
+
+
+def to_swift_vlm(
+    messages_field: str = "messages",
+    images_field: str = "images",
+    videos_field: Optional[str] = None,
+    system_field: Optional[str] = None,
+) -> Callable:
+    """
+    转换为 ms-swift VLM（视觉语言模型）格式。
+
+    输出格式:
+    {
+        "messages": [
+            {"role": "user", "content": "<image>描述图片"},
+            {"role": "assistant", "content": "这是..."}
+        ],
+        "images": ["/path/to/image.jpg"]
+    }
+
+    Args:
+        messages_field: 输入的 messages 字段名
+        images_field: 图片路径字段名
+        videos_field: 视频路径字段名
+        system_field: 系统提示字段
+
+    Returns:
+        转换函数
+
+    Examples:
+        >>> dt.transform(to_swift_vlm())
+        >>> dt.transform(to_swift_vlm(images_field="image_paths"))
+    """
+
+    def transform(item) -> dict:
+        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        messages = get(messages_field) or []
+
+        result_messages = []
+
+        # 添加系统提示
+        if system_field:
+            system = get(system_field)
+            if system:
+                result_messages.append({"role": "system", "content": system})
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system" and not system_field:
+                result_messages.append({"role": "system", "content": content})
+            elif role in ("user", "assistant"):
+                result_messages.append({"role": role, "content": content})
+
+        result = {"messages": result_messages}
+
+        # 图片
+        images = get(images_field)
+        if images:
+            result["images"] = images if isinstance(images, list) else [images]
+
+        # 视频
+        if videos_field:
+            videos = get(videos_field)
+            if videos:
+                result["videos"] = videos if isinstance(videos, list) else [videos]
+
+        return result
+
+    return transform
+
+
 def messages_to_text(
     messages_field: str = "messages",
     output_field: str = "text",

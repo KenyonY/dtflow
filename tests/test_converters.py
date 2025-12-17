@@ -12,6 +12,14 @@ from dtflow.converters import (
     to_llama_factory,
     to_axolotl,
     messages_to_text,
+    # LLaMA-Factory 扩展
+    to_llama_factory_sharegpt,
+    to_llama_factory_vlm,
+    to_llama_factory_vlm_sharegpt,
+    # ms-swift
+    to_swift_messages,
+    to_swift_query_response,
+    to_swift_vlm,
 )
 
 
@@ -472,6 +480,449 @@ class TestHuggingFaceDatasetDict:
         ds = to_hf_dataset([])
 
         assert len(ds) == 0
+
+
+class TestLLaMAFactoryShareGPT:
+    """Test cases for LLaMA-Factory ShareGPT format converter."""
+
+    @pytest.fixture
+    def messages_data(self):
+        return [{
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+                {"role": "user", "content": "How are you?"},
+                {"role": "assistant", "content": "I am fine."},
+            ]
+        }]
+
+    def test_to_llama_factory_sharegpt_basic(self, messages_data):
+        """Test basic ShareGPT conversion."""
+        dt = DataTransformer(messages_data)
+        result = dt.to(to_llama_factory_sharegpt())
+
+        assert "conversations" in result[0]
+        assert len(result[0]["conversations"]) == 4  # 不包含 system
+        assert result[0]["conversations"][0]["from"] == "human"
+        assert result[0]["conversations"][0]["value"] == "Hello"
+        assert result[0]["conversations"][1]["from"] == "gpt"
+        assert result[0]["system"] == "You are helpful."
+
+    def test_to_llama_factory_sharegpt_no_system(self):
+        """Test conversion without system message."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ]
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_sharegpt())
+
+        assert "conversations" in result[0]
+        assert "system" not in result[0]
+        assert len(result[0]["conversations"]) == 2
+
+    def test_to_llama_factory_sharegpt_with_system_field(self):
+        """Test conversion with explicit system field."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+            "system_prompt": "Custom system message",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_sharegpt(system_field="system_prompt"))
+
+        assert result[0]["system"] == "Custom system message"
+
+    def test_to_llama_factory_sharegpt_with_tools(self):
+        """Test conversion with tools field."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Use calculator"},
+                {"role": "assistant", "content": "OK"},
+            ],
+            "tools_desc": "Calculator tool available",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_sharegpt(tools_field="tools_desc"))
+
+        assert result[0]["tools"] == "Calculator tool available"
+
+    def test_to_llama_factory_sharegpt_role_mapping(self):
+        """Test correct role mapping."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Query"},
+                {"role": "assistant", "content": "Response"},
+                {"role": "tool", "content": "Tool result"},
+            ]
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_sharegpt())
+
+        assert result[0]["conversations"][0]["from"] == "human"
+        assert result[0]["conversations"][1]["from"] == "gpt"
+        assert result[0]["conversations"][2]["from"] == "observation"
+
+
+class TestLLaMAFactoryVLM:
+    """Test cases for LLaMA-Factory VLM format converter."""
+
+    @pytest.fixture
+    def vlm_data(self):
+        return [{
+            "messages": [
+                {"role": "system", "content": "Describe images."},
+                {"role": "user", "content": "What is in this image?"},
+                {"role": "assistant", "content": "A cat sitting on a couch."},
+            ],
+            "images": ["/path/to/cat.jpg"],
+        }]
+
+    def test_to_llama_factory_vlm_basic(self, vlm_data):
+        """Test basic VLM conversion."""
+        dt = DataTransformer(vlm_data)
+        result = dt.to(to_llama_factory_vlm())
+
+        assert result[0]["instruction"] == "What is in this image?"
+        assert result[0]["output"] == "A cat sitting on a couch."
+        assert result[0]["input"] == ""
+        assert result[0]["images"] == ["/path/to/cat.jpg"]
+        assert result[0]["system"] == "Describe images."
+
+    def test_to_llama_factory_vlm_multiple_images(self):
+        """Test VLM with multiple images."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Compare these images."},
+                {"role": "assistant", "content": "The first shows..."},
+            ],
+            "images": ["/path/to/img1.jpg", "/path/to/img2.jpg"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_vlm())
+
+        assert len(result[0]["images"]) == 2
+
+    def test_to_llama_factory_vlm_single_image_string(self):
+        """Test VLM with single image as string."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Describe."},
+                {"role": "assistant", "content": "A dog."},
+            ],
+            "image": "/path/to/dog.jpg",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_vlm(images_field="image"))
+
+        assert result[0]["images"] == ["/path/to/dog.jpg"]
+
+    def test_to_llama_factory_vlm_with_videos(self):
+        """Test VLM with video support."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "What happens?"},
+                {"role": "assistant", "content": "A person walks."},
+            ],
+            "images": ["/path/to/frame.jpg"],
+            "videos": ["/path/to/video.mp4"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_vlm(videos_field="videos"))
+
+        assert result[0]["images"] == ["/path/to/frame.jpg"]
+        assert result[0]["videos"] == ["/path/to/video.mp4"]
+
+    def test_to_llama_factory_vlm_no_images(self):
+        """Test VLM without images field."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+            ],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_vlm())
+
+        assert "images" not in result[0]
+
+
+class TestLLaMAFactoryVLMShareGPT:
+    """Test cases for LLaMA-Factory VLM ShareGPT format converter."""
+
+    def test_to_llama_factory_vlm_sharegpt_basic(self):
+        """Test basic VLM ShareGPT conversion."""
+        data = [{
+            "messages": [
+                {"role": "system", "content": "You can see images."},
+                {"role": "user", "content": "<image>Describe this."},
+                {"role": "assistant", "content": "This is a landscape."},
+            ],
+            "images": ["/path/to/landscape.jpg"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_vlm_sharegpt())
+
+        assert "conversations" in result[0]
+        assert result[0]["conversations"][0]["from"] == "human"
+        assert result[0]["conversations"][0]["value"] == "<image>Describe this."
+        assert result[0]["images"] == ["/path/to/landscape.jpg"]
+        assert result[0]["system"] == "You can see images."
+
+    def test_to_llama_factory_vlm_sharegpt_multi_turn(self):
+        """Test VLM ShareGPT with multiple turns."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "<image>What is this?"},
+                {"role": "assistant", "content": "A flower."},
+                {"role": "user", "content": "What color?"},
+                {"role": "assistant", "content": "It's red."},
+            ],
+            "images": ["/path/to/flower.jpg"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_llama_factory_vlm_sharegpt())
+
+        assert len(result[0]["conversations"]) == 4
+        assert result[0]["images"] == ["/path/to/flower.jpg"]
+
+
+class TestSwiftMessages:
+    """Test cases for ms-swift messages format converter."""
+
+    def test_to_swift_messages_basic(self):
+        """Test basic messages conversion."""
+        data = [{
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+            ]
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_messages())
+
+        assert "messages" in result[0]
+        assert len(result[0]["messages"]) == 3
+        assert result[0]["messages"][0]["role"] == "system"
+        assert result[0]["messages"][1]["role"] == "user"
+        assert result[0]["messages"][2]["role"] == "assistant"
+
+    def test_to_swift_messages_with_system_field(self):
+        """Test messages conversion with external system field."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+            ],
+            "sys_prompt": "Be helpful.",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_messages(system_field="sys_prompt"))
+
+        assert len(result[0]["messages"]) == 3
+        assert result[0]["messages"][0]["role"] == "system"
+        assert result[0]["messages"][0]["content"] == "Be helpful."
+
+    def test_to_swift_messages_standardizes_format(self):
+        """Test that messages are standardized."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hi", "extra": "field"},
+            ]
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_messages())
+
+        # 只包含 role 和 content
+        assert set(result[0]["messages"][0].keys()) == {"role", "content"}
+
+
+class TestSwiftQueryResponse:
+    """Test cases for ms-swift query-response format converter."""
+
+    def test_to_swift_query_response_basic(self):
+        """Test basic query-response conversion."""
+        data = [{
+            "query": "What is Python?",
+            "response": "A programming language.",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_query_response())
+
+        assert result[0]["query"] == "What is Python?"
+        assert result[0]["response"] == "A programming language."
+
+    def test_to_swift_query_response_with_system(self):
+        """Test query-response with system prompt."""
+        data = [{
+            "query": "Hello",
+            "response": "Hi!",
+            "sys": "Be friendly.",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_query_response(system_field="sys"))
+
+        assert result[0]["system"] == "Be friendly."
+
+    def test_to_swift_query_response_with_history(self):
+        """Test query-response with history."""
+        data = [{
+            "query": "And you?",
+            "response": "I'm fine too.",
+            "hist": [["Hello", "Hi!"], ["How are you?", "I'm good."]],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_query_response(history_field="hist"))
+
+        assert result[0]["history"] == [["Hello", "Hi!"], ["How are you?", "I'm good."]]
+
+    def test_to_swift_query_response_from_messages(self):
+        """Test conversion from messages format."""
+        data = [{
+            "messages": [
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+                {"role": "user", "content": "How are you?"},
+                {"role": "assistant", "content": "I'm fine."},
+            ]
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_query_response(query_field="messages"))
+
+        assert result[0]["query"] == "How are you?"
+        assert result[0]["response"] == "I'm fine."
+        assert result[0]["system"] == "Be helpful."
+        assert result[0]["history"] == [["Hello", "Hi!"]]
+
+    def test_to_swift_query_response_from_messages_single_turn(self):
+        """Test conversion from single-turn messages."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+            ]
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_query_response(query_field="messages"))
+
+        assert result[0]["query"] == "Hello"
+        assert result[0]["response"] == "Hi!"
+        assert "history" not in result[0]
+
+
+class TestSwiftVLM:
+    """Test cases for ms-swift VLM format converter."""
+
+    def test_to_swift_vlm_basic(self):
+        """Test basic VLM conversion."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "<image>Describe this."},
+                {"role": "assistant", "content": "A beautiful sunset."},
+            ],
+            "images": ["/path/to/sunset.jpg"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm())
+
+        assert "messages" in result[0]
+        assert result[0]["images"] == ["/path/to/sunset.jpg"]
+        assert len(result[0]["messages"]) == 2
+
+    def test_to_swift_vlm_with_system(self):
+        """Test VLM with system message in messages."""
+        data = [{
+            "messages": [
+                {"role": "system", "content": "You can see images."},
+                {"role": "user", "content": "What is this?"},
+                {"role": "assistant", "content": "A cat."},
+            ],
+            "images": ["/path/to/cat.jpg"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm())
+
+        assert len(result[0]["messages"]) == 3
+        assert result[0]["messages"][0]["role"] == "system"
+
+    def test_to_swift_vlm_with_external_system(self):
+        """Test VLM with external system field."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Describe."},
+                {"role": "assistant", "content": "A dog."},
+            ],
+            "images": ["/path/to/dog.jpg"],
+            "sys_prompt": "Describe images accurately.",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm(system_field="sys_prompt"))
+
+        assert result[0]["messages"][0]["role"] == "system"
+        assert result[0]["messages"][0]["content"] == "Describe images accurately."
+
+    def test_to_swift_vlm_multiple_images(self):
+        """Test VLM with multiple images."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Compare."},
+                {"role": "assistant", "content": "Different."},
+            ],
+            "images": ["/path/to/img1.jpg", "/path/to/img2.jpg"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm())
+
+        assert len(result[0]["images"]) == 2
+
+    def test_to_swift_vlm_with_videos(self):
+        """Test VLM with video support."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "What happens?"},
+                {"role": "assistant", "content": "Dancing."},
+            ],
+            "images": [],
+            "videos": ["/path/to/dance.mp4"],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm(videos_field="videos"))
+
+        assert result[0]["videos"] == ["/path/to/dance.mp4"]
+
+    def test_to_swift_vlm_single_image_string(self):
+        """Test VLM with single image as string."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Describe."},
+                {"role": "assistant", "content": "A bird."},
+            ],
+            "image": "/path/to/bird.jpg",
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm(images_field="image"))
+
+        assert result[0]["images"] == ["/path/to/bird.jpg"]
+
+    def test_to_swift_vlm_no_images(self):
+        """Test VLM without images (text only)."""
+        data = [{
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!"},
+            ],
+        }]
+        dt = DataTransformer(data)
+        result = dt.to(to_swift_vlm())
+
+        assert "images" not in result[0]
 
 
 if __name__ == "__main__":
