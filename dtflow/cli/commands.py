@@ -31,6 +31,8 @@ def sample(
     sample_type: Literal["random", "head", "tail"] = "head",
     output: Optional[str] = None,
     seed: Optional[int] = None,
+    by: Optional[str] = None,
+    uniform: bool = False,
 ) -> None:
     """
     从数据文件中采样指定数量的数据。
@@ -44,6 +46,8 @@ def sample(
         sample_type: 采样方式，可选 random/head/tail，默认 head
         output: 输出文件路径，不指定则打印到控制台
         seed: 随机种子（仅在 sample_type=random 时有效）
+        by: 分层采样字段名，按该字段的值分组采样
+        uniform: 均匀采样模式（需配合 --by 使用），各组采样相同数量
 
     Examples:
         dt sample data.jsonl 5
@@ -51,6 +55,8 @@ def sample(
         dt sample data.xlsx 50 --output=sampled.jsonl
         dt sample data.jsonl 0   # 采样所有数据
         dt sample data.jsonl -10 # 最后 10 条数据
+        dt sample data.jsonl 1000 --by=category           # 按比例分层采样
+        dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
     """
     filepath = Path(filename)
 
@@ -61,24 +67,158 @@ def sample(
     if not _check_file_format(filepath):
         return
 
-    # 调用核心实现
-    try:
-        sampled = sample_file(
-            str(filepath),
-            num=num,
-            sample_type=sample_type,
-            seed=seed,
-            output=output,
-        )
-    except Exception as e:
-        print(f"错误: {e}")
+    # uniform 必须配合 by 使用
+    if uniform and not by:
+        print("错误: --uniform 必须配合 --by 使用")
         return
+
+    # 分层采样模式
+    if by:
+        try:
+            sampled = _stratified_sample(
+                filepath, num, by, uniform, seed, sample_type
+            )
+        except Exception as e:
+            print(f"错误: {e}")
+            return
+    else:
+        # 普通采样
+        try:
+            sampled = sample_file(
+                str(filepath),
+                num=num,
+                sample_type=sample_type,
+                seed=seed,
+                output=None,  # 先不保存，统一在最后处理
+            )
+        except Exception as e:
+            print(f"错误: {e}")
+            return
 
     # 输出结果
     if output:
+        save_data(sampled, output)
         print(f"已保存 {len(sampled)} 条数据到 {output}")
     else:
         _print_samples(sampled)
+
+
+def _stratified_sample(
+    filepath: Path,
+    num: int,
+    stratify_field: str,
+    uniform: bool,
+    seed: Optional[int],
+    sample_type: str,
+) -> List[Dict]:
+    """
+    分层采样实现。
+
+    Args:
+        filepath: 文件路径
+        num: 目标采样总数
+        stratify_field: 分层字段
+        uniform: 是否均匀采样（各组相同数量）
+        seed: 随机种子
+        sample_type: 采样方式（用于组内采样）
+
+    Returns:
+        采样后的数据列表
+    """
+    import random
+    from collections import defaultdict
+
+    if seed is not None:
+        random.seed(seed)
+
+    # 加载数据
+    data = load_data(str(filepath))
+    total = len(data)
+
+    if num <= 0 or num > total:
+        num = total
+
+    # 按字段分组
+    groups: Dict[Any, List[Dict]] = defaultdict(list)
+    for item in data:
+        key = item.get(stratify_field, "__null__")
+        groups[key].append(item)
+
+    group_keys = list(groups.keys())
+    num_groups = len(group_keys)
+
+    # 打印分组信息
+    print(f"📊 分层采样: 字段={stratify_field}, 共 {num_groups} 组")
+    for key in sorted(group_keys, key=lambda x: -len(groups[x])):
+        count = len(groups[key])
+        pct = count / total * 100
+        display_key = key if key != "__null__" else "[空值]"
+        print(f"   {display_key}: {count} 条 ({pct:.1f}%)")
+
+    # 计算各组采样数量
+    if uniform:
+        # 均匀采样：各组数量相等
+        per_group = num // num_groups
+        remainder = num % num_groups
+        sample_counts = {key: per_group for key in group_keys}
+        # 余数分配给数据量最多的组
+        for key in sorted(group_keys, key=lambda x: -len(groups[x]))[:remainder]:
+            sample_counts[key] += 1
+    else:
+        # 按比例采样：保持原有比例
+        sample_counts = {}
+        allocated = 0
+        # 按组大小降序处理，确保小组也能分到
+        sorted_keys = sorted(group_keys, key=lambda x: -len(groups[x]))
+        for i, key in enumerate(sorted_keys):
+            if i == len(sorted_keys) - 1:
+                # 最后一组分配剩余
+                sample_counts[key] = num - allocated
+            else:
+                # 按比例计算
+                ratio = len(groups[key]) / total
+                count = int(num * ratio)
+                # 确保至少 1 条（如果组有数据）
+                count = max(1, count) if groups[key] else 0
+                sample_counts[key] = count
+                allocated += count
+
+    # 执行各组采样
+    result = []
+    print(f"🔄 执行采样...")
+    for key in group_keys:
+        group_data = groups[key]
+        target = min(sample_counts[key], len(group_data))
+
+        if target <= 0:
+            continue
+
+        # 组内采样
+        if sample_type == "random":
+            sampled = random.sample(group_data, target)
+        elif sample_type == "head":
+            sampled = group_data[:target]
+        else:  # tail
+            sampled = group_data[-target:]
+
+        result.extend(sampled)
+
+    # 打印采样结果
+    print(f"\n📋 采样结果:")
+    result_groups: Dict[Any, int] = defaultdict(int)
+    for item in result:
+        key = item.get(stratify_field, "__null__")
+        result_groups[key] += 1
+
+    for key in sorted(group_keys, key=lambda x: -len(groups[x])):
+        orig = len(groups[key])
+        sampled_count = result_groups.get(key, 0)
+        display_key = key if key != "__null__" else "[空值]"
+        print(f"   {display_key}: {orig} → {sampled_count}")
+
+    print(f"\n✅ 总计: {total} → {len(result)} 条")
+
+    return result
 
 
 def head(
@@ -911,12 +1051,42 @@ def _is_numeric(v: Any) -> bool:
     return False
 
 
-def _truncate(v: Any, max_len: int) -> str:
-    """截断显示值"""
+def _truncate(v: Any, max_width: int) -> str:
+    """按显示宽度截断值（中文字符算 2 宽度）"""
     s = str(v)
-    if len(s) > max_len:
-        return s[:max_len - 3] + "..."
+    width = 0
+    result = []
+    for char in s:
+        # CJK 字符范围
+        if '\u4e00' <= char <= '\u9fff' or '\u3000' <= char <= '\u303f' or '\uff00' <= char <= '\uffef':
+            char_width = 2
+        else:
+            char_width = 1
+        if width + char_width > max_width - 3:  # 预留 ... 的宽度
+            return ''.join(result) + "..."
+        result.append(char)
+        width += char_width
     return s
+
+
+def _display_width(s: str) -> int:
+    """计算字符串的显示宽度（中文字符算 2，ASCII 字符算 1）"""
+    width = 0
+    for char in s:
+        # CJK 字符范围
+        if '\u4e00' <= char <= '\u9fff' or '\u3000' <= char <= '\u303f' or '\uff00' <= char <= '\uffef':
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _pad_to_width(s: str, target_width: int) -> str:
+    """将字符串填充到指定的显示宽度"""
+    current_width = _display_width(s)
+    if current_width >= target_width:
+        return s
+    return s + ' ' * (target_width - current_width)
 
 
 def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -> None:
@@ -985,12 +1155,15 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
                 continue
 
             console.print(f"\n[bold cyan]{stat['field']}[/bold cyan] 值分布 (Top {len(top_values)}):")
+            max_count = max(c for _, c in top_values) if top_values else 1
             for value, count in top_values:
                 pct = count / total * 100
-                bar_len = int(pct / 2)  # 最长 50 字符
+                bar_len = int(count / max_count * 20)  # 按相对比例，最长 20 字符
                 bar = "█" * bar_len
                 display_value = value if value else "[空]"
-                console.print(f"  {display_value:<30} {count:>6} ({pct:>5.1f}%) {bar}")
+                # 使用显示宽度对齐（处理中文字符）
+                padded_value = _pad_to_width(display_value, 32)
+                console.print(f"  {padded_value} {count:>6} ({pct:>5.1f}%) {bar}")
 
     except ImportError:
         # 没有 rich，使用普通打印

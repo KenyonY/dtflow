@@ -65,6 +65,8 @@ class Cli:
         sample_type: str = "head",
         output: str = None,
         seed: int = None,
+        by: str = None,
+        uniform: bool = False,
     ):
         """
         从数据文件中采样指定数量的数据。
@@ -78,6 +80,8 @@ class Cli:
             sample_type: 采样方式，可选 random/head/tail，默认 head
             output: 输出文件路径，不指定则打印到控制台
             seed: 随机种子（仅在 sample_type=random 时有效）
+            by: 分层采样字段名，按该字段的值分组采样
+            uniform: 均匀采样模式（需配合 --by 使用），各组采样相同数量
 
         Examples:
             dt sample data.jsonl 5
@@ -85,8 +89,10 @@ class Cli:
             dt sample data.xlsx 50 --output=sampled.jsonl
             dt sample data.jsonl 0   # 采样所有数据
             dt sample data.jsonl -10 # 最后 10 条数据
+            dt sample data.jsonl 1000 --by=category           # 按比例分层采样
+            dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
         """
-        _sample(filename, num, sample_type, output, seed)
+        _sample(filename, num, sample_type, output, seed, by, uniform)
 
     @staticmethod
     def head(

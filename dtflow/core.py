@@ -395,6 +395,23 @@ class DataTransformer:
         if not self._data:
             return DataTransformer([])
 
+        # 验证并调整参数
+        # MinHashLSH 在高阈值时需要更大的 num_perm，否则 bands 数量会过小
+        # threshold=0.99 需要 num_perm>=512，threshold>=0.999 会需要极大的值(4096+)
+        if threshold >= 0.999:
+            import warnings
+            warnings.warn(
+                f"阈值 {threshold} 过高，已自动调整为 0.99。"
+                f"如需更高精度，建议使用 dedupe() 精确去重。",
+                UserWarning
+            )
+            threshold = 0.99
+
+        if threshold >= 0.99 and num_perm < 512:
+            num_perm = 512
+        elif threshold >= 0.95 and num_perm < 256:
+            num_perm = 256
+
         # 创建 LSH 索引
         lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
         minhashes = []
