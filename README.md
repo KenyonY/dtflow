@@ -6,6 +6,11 @@
 
 ```bash
 pip install dtflow
+
+# 可选依赖
+pip install tiktoken          # Token 统计（OpenAI 模型）
+pip install transformers      # Token 统计（HuggingFace 模型）
+pip install datasets          # HuggingFace Dataset 转换
 ```
 
 ## 快速开始
@@ -64,6 +69,62 @@ dt.to(preset="openai_chat", user_field="q", assistant_field="a")
 | `sharegpt` | `{"conversations": [{"from": "human", ...}, {"from": "gpt", ...}]}` |
 | `dpo_pair` | `{"prompt": ..., "chosen": ..., "rejected": ...}` |
 | `simple_qa` | `{"question": ..., "answer": ...}` |
+
+### Token 统计
+
+```python
+from dtflow import count_tokens, token_counter, token_filter, token_stats
+
+# 计算 token 数量
+count = count_tokens("Hello world", model="gpt-4")
+
+# 添加 token_count 字段
+dt.transform(token_counter("text")).save("with_tokens.jsonl")
+
+# 按 token 长度过滤
+dt.filter(token_filter("text", max_tokens=2048))
+dt.filter(token_filter(["question", "answer"], min_tokens=10, max_tokens=4096))
+
+# 统计 token 分布
+stats = token_stats(dt.data, "text")
+# {"total_tokens": 12345, "avg_tokens": 123, "min_tokens": 5, "max_tokens": 500, ...}
+```
+
+支持 `tiktoken`（OpenAI，默认）和 `transformers` 后端：
+
+```python
+# 使用 transformers tokenizer
+count_tokens("Hello", model="Qwen/Qwen2-7B", backend="transformers")
+```
+
+### 格式转换器
+
+```python
+from dtflow import (
+    to_hf_dataset, from_hf_dataset,    # HuggingFace Dataset
+    to_openai_batch, from_openai_batch, # OpenAI Batch API
+    to_llama_factory,                   # LLaMA-Factory 格式
+    to_axolotl,                         # Axolotl 格式
+    messages_to_text,                   # messages 转纯文本
+)
+
+# HuggingFace Dataset 互转
+ds = to_hf_dataset(dt.data)
+ds.push_to_hub("my-dataset")
+
+data = from_hf_dataset("tatsu-lab/alpaca", split="train")
+
+# OpenAI Batch API
+batch_input = dt.to(to_openai_batch(model="gpt-4o"))
+results = from_openai_batch(batch_output)
+
+# 训练框架格式
+dt.transform(to_llama_factory()).save("llama_factory.jsonl")
+dt.transform(to_axolotl()).save("axolotl.jsonl")
+
+# messages 转纯文本（支持 chatml/llama2/simple 模板）
+dt.transform(messages_to_text(template="chatml"))
+```
 
 ### 其他操作
 

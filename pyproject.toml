@@ -61,6 +61,8 @@ full = [
     "scikit-learn>=0.24.0",
     "datasketch>=1.5.0",
     "pyarrow",
+    "tiktoken>=0.5.0",
+    "datasets>=2.0.0",
 ]
 
 storage = [
@@ -75,6 +77,14 @@ display = [
 similarity = [
     "scikit-learn>=0.24.0",
     "datasketch>=1.5.0",
+]
+
+tokenizers = [
+    "tiktoken>=0.5.0",
+]
+
+converters = [
+    "datasets>=2.0.0",
 ]
 
 mcp = [
