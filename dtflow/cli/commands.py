@@ -2,6 +2,9 @@
 CLI 命令实现
 """
 import json
+import os
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -9,10 +12,21 @@ from typing import Any, Dict, List, Literal, Optional
 from ..core import DataTransformer, DictWrapper
 from ..presets import get_preset, list_presets
 from ..storage.io import load_data, save_data, sample_file
+from ..pipeline import run_pipeline, validate_pipeline
+from ..lineage import load_lineage, format_lineage_report, has_lineage, get_lineage_chain
+from ..streaming import load_stream
 
 
 # 支持的文件格式
 SUPPORTED_FORMATS = {".csv", ".jsonl", ".json", ".xlsx", ".xls", ".parquet", ".arrow", ".feather"}
+
+# 支持流式处理的格式（与 streaming.py 保持一致）
+STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather"}
+
+
+def _is_streaming_supported(filepath: Path) -> bool:
+    """检查文件是否支持流式处理"""
+    return filepath.suffix.lower() in STREAMING_FORMATS
 
 
 def _check_file_format(filepath: Path) -> bool:
@@ -522,9 +536,8 @@ def _format_example_value(value: Any, max_len: int = 50) -> str:
         # 截断长字符串
         if len(value) > max_len:
             value = value[:max_len] + "..."
-        # 转义并加引号
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-        return f'"{escaped}"'
+        # 使用 repr() 自动处理所有转义字符
+        return repr(value)
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, (int, float)):
@@ -532,7 +545,7 @@ def _format_example_value(value: Any, max_len: int = 50) -> str:
     if isinstance(value, (list, dict)):
         s = json.dumps(value, ensure_ascii=False)
         if len(s) > max_len:
-            return f"{s[:max_len]}..."
+            return repr(s[:max_len] + "...")
         return s
     return '""'
 
@@ -579,7 +592,7 @@ def _execute_transform(
     output_override: Optional[str],
     num: Optional[int],
 ) -> None:
-    """执行数据转换"""
+    """执行数据转换（默认流式处理）"""
     print(f"📂 加载配置: {config_path}")
 
     # 动态加载配置文件
@@ -599,7 +612,28 @@ def _execute_transform(
     # 获取输出路径
     output_path = output_override or config_ns.get("output", "output.jsonl")
 
-    # 加载数据并使用 DataTransformer 执行转换
+    # 对于 JSONL 文件使用流式处理
+    if _is_streaming_supported(input_path):
+        print(f"📊 流式加载: {input_path}")
+        print("🔄 执行转换...")
+        try:
+            # 包装转换函数以支持属性访问（配置文件中定义的 Item 类）
+            def wrapped_transform(item):
+                return transform_func(DictWrapper(item))
+
+            st = load_stream(str(input_path))
+            if num:
+                st = st.head(num)
+            count = st.transform(wrapped_transform).save(output_path)
+            print(f"💾 保存结果: {output_path}")
+            print(f"\n✅ 完成! 已转换 {count} 条数据到 {output_path}")
+        except Exception as e:
+            print(f"错误: 转换失败 - {e}")
+            import traceback
+            traceback.print_exc()
+        return
+
+    # 非 JSONL 文件使用传统方式
     print(f"📊 加载数据: {input_path}")
     try:
         dt = DataTransformer.load(str(input_path))
@@ -641,7 +675,7 @@ def _execute_preset_transform(
     output_override: Optional[str],
     num: Optional[int],
 ) -> None:
-    """使用预设模板执行转换"""
+    """使用预设模板执行转换（默认流式处理）"""
     print(f"📂 使用预设: {preset_name}")
 
     # 获取预设函数
@@ -652,7 +686,57 @@ def _execute_preset_transform(
         print(f"可用预设: {', '.join(list_presets())}")
         return
 
-    # 加载数据
+    output_path = output_override or f"{input_path.stem}_{preset_name}.jsonl"
+
+    # 检查输入输出是否相同
+    input_resolved = input_path.resolve()
+    output_resolved = Path(output_path).resolve()
+    use_temp_file = input_resolved == output_resolved
+
+    # 对于 JSONL 文件使用流式处理
+    if _is_streaming_supported(input_path):
+        print(f"📊 流式加载: {input_path}")
+        print("🔄 执行转换...")
+
+        # 如果输入输出相同，使用临时文件
+        if use_temp_file:
+            print("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix=output_resolved.suffix,
+                prefix=".tmp_",
+                dir=output_resolved.parent,
+            )
+            os.close(temp_fd)
+            actual_output = temp_path
+        else:
+            actual_output = output_path
+
+        try:
+            # 包装转换函数以支持属性访问
+            def wrapped_transform(item):
+                return transform_func(DictWrapper(item))
+
+            st = load_stream(str(input_path))
+            if num:
+                st = st.head(num)
+            count = st.transform(wrapped_transform).save(actual_output)
+
+            # 如果使用了临时文件，移动到目标位置
+            if use_temp_file:
+                shutil.move(temp_path, output_path)
+
+            print(f"💾 保存结果: {output_path}")
+            print(f"\n✅ 完成! 已转换 {count} 条数据到 {output_path}")
+        except Exception as e:
+            # 清理临时文件
+            if use_temp_file and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            print(f"错误: 转换失败 - {e}")
+            import traceback
+            traceback.print_exc()
+        return
+
+    # 非 JSONL 文件使用传统方式
     print(f"📊 加载数据: {input_path}")
     try:
         dt = DataTransformer.load(str(input_path))
@@ -678,7 +762,6 @@ def _execute_preset_transform(
         return
 
     # 保存结果
-    output_path = output_override or f"{input_path.stem}_{preset_name}.jsonl"
     print(f"💾 保存结果: {output_path}")
     try:
         save_data(results, output_path)
@@ -809,7 +892,7 @@ def concat(
     strict: bool = False,
 ) -> None:
     """
-    拼接多个数据文件。
+    拼接多个数据文件（流式处理，内存占用 O(1)）。
 
     Args:
         *files: 输入文件路径列表，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
@@ -832,7 +915,7 @@ def concat(
     # 验证所有文件
     file_paths = []
     for f in files:
-        filepath = Path(f)
+        filepath = Path(f).resolve()  # 使用绝对路径进行比较
         if not filepath.exists():
             print(f"错误: 文件不存在 - {f}")
             return
@@ -840,31 +923,37 @@ def concat(
             return
         file_paths.append(filepath)
 
-    # 分析各文件的字段
+    # 检查输出文件是否与输入文件冲突
+    output_path = Path(output).resolve()
+    use_temp_file = output_path in file_paths
+    if use_temp_file:
+        print("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
+
+    # 流式分析字段（只读取每个文件的第一行）
     print("📊 文件字段分析:")
-    file_infos = []  # [(filepath, data, fields, count)]
+    file_fields = []  # [(filepath, fields)]
 
     for filepath in file_paths:
         try:
-            data = load_data(str(filepath))
+            # 只读取第一行来获取字段
+            first_row = load_stream(str(filepath)).head(1).collect()
+            if not first_row:
+                print(f"警告: 文件为空 - {filepath}")
+                fields = set()
+            else:
+                fields = set(first_row[0].keys())
         except Exception as e:
             print(f"错误: 无法读取文件 {filepath} - {e}")
             return
 
-        if not data:
-            print(f"警告: 文件为空 - {filepath}")
-            fields = set()
-        else:
-            fields = set(data[0].keys())
-
-        file_infos.append((filepath, data, fields, len(data)))
+        file_fields.append((filepath, fields))
         fields_str = ", ".join(sorted(fields)) if fields else "(空)"
-        print(f"   {filepath.name}: {fields_str} ({len(data)} 条)")
+        print(f"   {filepath.name}: {fields_str}")
 
     # 分析字段差异
     all_fields = set()
     common_fields = None
-    for _, _, fields, _ in file_infos:
+    for _, fields in file_fields:
         all_fields.update(fields)
         if common_fields is None:
             common_fields = fields.copy()
@@ -883,23 +972,70 @@ def concat(
         else:
             print(f"\n⚠ 字段差异: {', '.join(sorted(diff_fields))} 仅在部分文件中存在")
 
-    # 执行拼接
-    print("\n🔄 执行拼接...")
-    all_data = []
-    for _, data, _, _ in file_infos:
-        all_data.extend(data)
+    # 流式拼接
+    print("\n🔄 流式拼接...")
 
-    # 保存结果
-    print(f"💾 保存结果: {output}")
+    # 如果输出文件与输入文件冲突，使用临时文件（在输出文件同一目录下）
+    if use_temp_file:
+        output_dir = output_path.parent
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix=output_path.suffix,
+            prefix=".tmp_",
+            dir=output_dir,
+        )
+        os.close(temp_fd)
+        actual_output = temp_path
+        print(f"💾 写入临时文件: {temp_path}")
+    else:
+        actual_output = output
+        print(f"💾 保存结果: {output}")
+
     try:
-        save_data(all_data, output)
+        total_count = _concat_streaming(file_paths, actual_output)
+
+        # 如果使用了临时文件，重命名为目标文件
+        if use_temp_file:
+            shutil.move(temp_path, output)
+            print(f"💾 移动到目标文件: {output}")
     except Exception as e:
-        print(f"错误: 无法保存文件 - {e}")
+        # 清理临时文件
+        if use_temp_file and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        print(f"错误: 拼接失败 - {e}")
         return
 
-    total_count = len(all_data)
     file_count = len(files)
     print(f"\n✅ 完成! 已合并 {file_count} 个文件，共 {total_count} 条数据到 {output}")
+
+
+def _concat_streaming(file_paths: List[Path], output: str) -> int:
+    """流式拼接多个文件"""
+    from ..streaming import StreamingTransformer, _stream_jsonl, _stream_csv, _stream_parquet, _stream_arrow
+
+    def generator():
+        for filepath in file_paths:
+            ext = filepath.suffix.lower()
+            if ext == ".jsonl":
+                yield from _stream_jsonl(str(filepath))
+            elif ext == ".csv":
+                yield from _stream_csv(str(filepath))
+            elif ext == ".parquet":
+                yield from _stream_parquet(str(filepath))
+            elif ext in (".arrow", ".feather"):
+                yield from _stream_arrow(str(filepath))
+            elif ext in (".json",):
+                # JSON 需要全量加载
+                data = load_data(str(filepath))
+                yield from data
+            elif ext in (".xlsx", ".xls"):
+                # Excel 需要全量加载
+                data = load_data(str(filepath))
+                yield from data
+            else:
+                yield from _stream_jsonl(str(filepath))
+
+    st = StreamingTransformer(generator())
+    return st.save(output, show_progress=True)
 
 
 # ============ Stats Command ============
@@ -1200,7 +1336,7 @@ def clean(
     output: Optional[str] = None,
 ) -> None:
     """
-    数据清洗。
+    数据清洗（默认流式处理）。
 
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
@@ -1233,29 +1369,19 @@ def clean(
     if not _check_file_format(filepath):
         return
 
-    # 加载数据
-    print(f"📊 加载数据: {filepath}")
-    try:
-        dt = DataTransformer.load(str(filepath))
-    except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
-
-    original_count = len(dt)
-    print(f"   共 {original_count} 条数据")
-
-    # 解析参数（fire 可能会将逗号分隔的值解析为元组）
+    # 解析参数
     min_len_field, min_len_value = _parse_len_param(min_len) if min_len else (None, None)
     max_len_field, max_len_value = _parse_len_param(max_len) if max_len else (None, None)
     keep_fields = _parse_field_list(keep) if keep else None
-    drop_fields = _parse_field_list(drop) if drop else None
+    drop_fields_set = set(_parse_field_list(drop)) if drop else None
+    keep_set = set(keep_fields) if keep_fields else None
 
     # 构建清洗配置
     empty_fields = None
     if drop_empty is not None:
         if drop_empty == "" or drop_empty is True:
             print("🔄 删除任意字段为空的记录...")
-            empty_fields = []  # 空列表表示检查所有字段
+            empty_fields = []
         else:
             empty_fields = _parse_field_list(drop_empty)
             print(f"🔄 删除字段为空的记录: {', '.join(empty_fields)}")
@@ -1268,8 +1394,72 @@ def clean(
         print(f"🔄 过滤 {max_len_field} 长度 > {max_len_value} 的记录...")
     if keep_fields:
         print(f"🔄 只保留字段: {', '.join(keep_fields)}")
-    if drop_fields:
-        print(f"🔄 删除字段: {', '.join(drop_fields)}")
+    if drop_fields_set:
+        print(f"🔄 删除字段: {', '.join(drop_fields_set)}")
+
+    output_path = output or str(filepath)
+
+    # 检查输入输出是否相同（流式处理需要临时文件）
+    input_resolved = filepath.resolve()
+    output_resolved = Path(output_path).resolve()
+    use_temp_file = input_resolved == output_resolved
+
+    # 对于 JSONL 文件使用流式处理
+    if _is_streaming_supported(filepath):
+        print(f"📊 流式加载: {filepath}")
+
+        # 如果输入输出相同，使用临时文件
+        if use_temp_file:
+            print("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix=output_resolved.suffix,
+                prefix=".tmp_",
+                dir=output_resolved.parent,
+            )
+            os.close(temp_fd)
+            actual_output = temp_path
+        else:
+            actual_output = output_path
+
+        try:
+            count = _clean_streaming(
+                str(filepath),
+                actual_output,
+                strip=strip,
+                empty_fields=empty_fields,
+                min_len_field=min_len_field,
+                min_len_value=min_len_value,
+                max_len_field=max_len_field,
+                max_len_value=max_len_value,
+                keep_set=keep_set,
+                drop_fields_set=drop_fields_set,
+            )
+
+            # 如果使用了临时文件，移动到目标位置
+            if use_temp_file:
+                shutil.move(temp_path, output_path)
+
+            print(f"💾 保存结果: {output_path}")
+            print(f"\n✅ 完成! 清洗后 {count} 条数据")
+        except Exception as e:
+            # 清理临时文件
+            if use_temp_file and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            print(f"错误: 清洗失败 - {e}")
+            import traceback
+            traceback.print_exc()
+        return
+
+    # 非 JSONL 文件使用传统方式
+    print(f"📊 加载数据: {filepath}")
+    try:
+        dt = DataTransformer.load(str(filepath))
+    except Exception as e:
+        print(f"错误: 无法读取文件 - {e}")
+        return
+
+    original_count = len(dt)
+    print(f"   共 {original_count} 条数据")
 
     # 单次遍历执行所有清洗操作
     data, step_stats = _clean_data_single_pass(
@@ -1281,12 +1471,11 @@ def clean(
         max_len_field=max_len_field,
         max_len_value=max_len_value,
         keep_fields=keep_fields,
-        drop_fields=set(drop_fields) if drop_fields else None,
+        drop_fields=drop_fields_set,
     )
 
     # 保存结果
     final_count = len(data)
-    output_path = output or str(filepath)
     print(f"💾 保存结果: {output_path}")
 
     try:
@@ -1438,3 +1627,533 @@ def _clean_data_single_pass(
         step_stats.append(f"drop: {len(drop_fields)} 字段")
 
     return result, step_stats
+
+
+def _clean_streaming(
+    input_path: str,
+    output_path: str,
+    strip: bool = False,
+    empty_fields: Optional[List[str]] = None,
+    min_len_field: Optional[str] = None,
+    min_len_value: Optional[int] = None,
+    max_len_field: Optional[str] = None,
+    max_len_value: Optional[int] = None,
+    keep_set: Optional[set] = None,
+    drop_fields_set: Optional[set] = None,
+) -> int:
+    """
+    流式清洗数据。
+
+    Returns:
+        处理后的数据条数
+    """
+    def clean_filter(item: Dict) -> bool:
+        """过滤函数：返回 True 保留，False 过滤"""
+        # 空值过滤
+        if empty_fields is not None:
+            if len(empty_fields) == 0:
+                if any(_is_empty_value(v) for v in item.values()):
+                    return False
+            else:
+                if any(_is_empty_value(item.get(f)) for f in empty_fields):
+                    return False
+
+        # 最小长度过滤
+        if min_len_field is not None:
+            if _get_value_len(item.get(min_len_field, "")) < min_len_value:
+                return False
+
+        # 最大长度过滤
+        if max_len_field is not None:
+            if _get_value_len(item.get(max_len_field, "")) > max_len_value:
+                return False
+
+        return True
+
+    def clean_transform(item: Dict) -> Dict:
+        """转换函数：strip + 字段管理"""
+        # strip 处理
+        if strip:
+            item = {k: v.strip() if isinstance(v, str) else v for k, v in item.items()}
+
+        # 字段管理
+        if keep_set is not None:
+            item = {k: v for k, v in item.items() if k in keep_set}
+        elif drop_fields_set is not None:
+            item = {k: v for k, v in item.items() if k not in drop_fields_set}
+
+        return item
+
+    # 构建流式处理链
+    st = load_stream(input_path)
+
+    # 如果需要 strip，先执行 strip 转换（在过滤之前，这样空值检测更准确）
+    if strip:
+        st = st.transform(lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()})
+
+    # 执行过滤
+    if empty_fields is not None or min_len_field is not None or max_len_field is not None:
+        st = st.filter(clean_filter)
+
+    # 执行字段管理（如果没有 strip，也需要在这里处理）
+    if keep_set is not None or drop_fields_set is not None:
+        def field_transform(item):
+            if keep_set is not None:
+                return {k: v for k, v in item.items() if k in keep_set}
+            elif drop_fields_set is not None:
+                return {k: v for k, v in item.items() if k not in drop_fields_set}
+            return item
+        st = st.transform(field_transform)
+
+    return st.save(output_path)
+
+
+# ============ Run Command ============
+
+
+def run(
+    config: str,
+    input: Optional[str] = None,
+    output: Optional[str] = None,
+) -> None:
+    """
+    执行 Pipeline 配置文件。
+
+    Args:
+        config: Pipeline YAML 配置文件路径
+        input: 输入文件路径（覆盖配置中的 input）
+        output: 输出文件路径（覆盖配置中的 output）
+
+    Examples:
+        dt run pipeline.yaml
+        dt run pipeline.yaml --input=new_data.jsonl
+        dt run pipeline.yaml --input=data.jsonl --output=result.jsonl
+    """
+    config_path = Path(config)
+
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在 - {config}")
+        return
+
+    if config_path.suffix.lower() not in (".yaml", ".yml"):
+        print(f"错误: 配置文件必须是 YAML 格式 (.yaml 或 .yml)")
+        return
+
+    # 验证配置
+    errors = validate_pipeline(config)
+    if errors:
+        print("❌ 配置文件验证失败:")
+        for err in errors:
+            print(f"   - {err}")
+        return
+
+    # 执行 pipeline
+    try:
+        run_pipeline(config, input_file=input, output_file=output, verbose=True)
+    except Exception as e:
+        print(f"错误: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# ============ Token Stats Command ============
+
+
+def token_stats(
+    filename: str,
+    field: str = "messages",
+    model: str = "gpt-4",
+    detailed: bool = False,
+) -> None:
+    """
+    统计数据集的 Token 信息。
+
+    Args:
+        filename: 输入文件路径
+        field: 要统计的字段（默认 messages）
+        model: 模型名称，用于选择 tokenizer
+        detailed: 是否显示详细统计
+
+    Examples:
+        dt token-stats data.jsonl
+        dt token-stats data.jsonl --field=text --model=gpt-4
+        dt token-stats data.jsonl --detailed
+    """
+    filepath = Path(filename)
+
+    if not filepath.exists():
+        print(f"错误: 文件不存在 - {filename}")
+        return
+
+    if not _check_file_format(filepath):
+        return
+
+    # 加载数据
+    print(f"📊 加载数据: {filepath}")
+    try:
+        data = load_data(str(filepath))
+    except Exception as e:
+        print(f"错误: 无法读取文件 - {e}")
+        return
+
+    if not data:
+        print("文件为空")
+        return
+
+    total = len(data)
+    print(f"   共 {total} 条数据")
+    print(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
+
+    # 检查字段类型并选择合适的统计方法
+    sample = data[0]
+    field_value = sample.get(field)
+
+    try:
+        if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
+            # messages 格式
+            from ..tokenizers import messages_token_stats
+            stats = messages_token_stats(data, messages_field=field, model=model)
+            _print_messages_token_stats(stats, detailed)
+        else:
+            # 普通文本字段
+            from ..tokenizers import token_stats as compute_token_stats
+            stats = compute_token_stats(data, fields=field, model=model)
+            _print_text_token_stats(stats, detailed)
+    except ImportError as e:
+        print(f"错误: {e}")
+        return
+    except Exception as e:
+        print(f"错误: 统计失败 - {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
+    """打印 messages 格式的 token 统计"""
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+
+        console = Console()
+
+        # 概览
+        overview = (
+            f"[bold]总样本数:[/bold] {stats['count']:,}\n"
+            f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
+            f"[bold]平均 Token:[/bold] {stats['avg_tokens']:,}\n"
+            f"[bold]中位数:[/bold] {stats['median_tokens']:,}\n"
+            f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
+        )
+        console.print(Panel(overview, title="📊 Token 统计概览", expand=False))
+
+        if detailed:
+            # 详细统计
+            table = Table(title="📋 分角色统计")
+            table.add_column("角色", style="cyan")
+            table.add_column("Token 数", justify="right")
+            table.add_column("占比", justify="right")
+
+            total = stats['total_tokens']
+            for role, key in [("User", "user_tokens"), ("Assistant", "assistant_tokens"), ("System", "system_tokens")]:
+                tokens = stats.get(key, 0)
+                pct = tokens / total * 100 if total > 0 else 0
+                table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
+
+            console.print(table)
+            console.print(f"\n平均对话轮数: {stats.get('avg_turns', 0)}")
+
+    except ImportError:
+        # 没有 rich，使用普通打印
+        print(f"\n{'=' * 40}")
+        print("📊 Token 统计概览")
+        print(f"{'=' * 40}")
+        print(f"总样本数: {stats['count']:,}")
+        print(f"总 Token: {stats['total_tokens']:,}")
+        print(f"平均 Token: {stats['avg_tokens']:,}")
+        print(f"中位数: {stats['median_tokens']:,}")
+        print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
+
+        if detailed:
+            print(f"\n{'=' * 40}")
+            print("📋 分角色统计")
+            print(f"{'=' * 40}")
+            total = stats['total_tokens']
+            for role, key in [("User", "user_tokens"), ("Assistant", "assistant_tokens"), ("System", "system_tokens")]:
+                tokens = stats.get(key, 0)
+                pct = tokens / total * 100 if total > 0 else 0
+                print(f"{role}: {tokens:,} ({pct:.1f}%)")
+            print(f"\n平均对话轮数: {stats.get('avg_turns', 0)}")
+
+
+def _print_text_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
+    """打印普通文本的 token 统计"""
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+
+        console = Console()
+
+        overview = (
+            f"[bold]总样本数:[/bold] {stats['count']:,}\n"
+            f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
+            f"[bold]平均 Token:[/bold] {stats['avg_tokens']:.1f}\n"
+            f"[bold]中位数:[/bold] {stats['median_tokens']:,}\n"
+            f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
+        )
+        console.print(Panel(overview, title="📊 Token 统计", expand=False))
+
+    except ImportError:
+        print(f"\n{'=' * 40}")
+        print("📊 Token 统计")
+        print(f"{'=' * 40}")
+        print(f"总样本数: {stats['count']:,}")
+        print(f"总 Token: {stats['total_tokens']:,}")
+        print(f"平均 Token: {stats['avg_tokens']:.1f}")
+        print(f"中位数: {stats['median_tokens']:,}")
+        print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
+
+
+# ============ Diff Command ============
+
+
+def diff(
+    file1: str,
+    file2: str,
+    key: Optional[str] = None,
+    output: Optional[str] = None,
+) -> None:
+    """
+    对比两个数据集的差异。
+
+    Args:
+        file1: 第一个文件路径
+        file2: 第二个文件路径
+        key: 用于匹配的键字段（可选）
+        output: 差异报告输出路径（可选）
+
+    Examples:
+        dt diff v1/train.jsonl v2/train.jsonl
+        dt diff a.jsonl b.jsonl --key=id
+        dt diff a.jsonl b.jsonl --output=diff_report.json
+    """
+    path1 = Path(file1)
+    path2 = Path(file2)
+
+    # 验证文件
+    for p, name in [(path1, "file1"), (path2, "file2")]:
+        if not p.exists():
+            print(f"错误: 文件不存在 - {p}")
+            return
+        if not _check_file_format(p):
+            return
+
+    # 加载数据
+    print(f"📊 加载数据...")
+    try:
+        data1 = load_data(str(path1))
+        data2 = load_data(str(path2))
+    except Exception as e:
+        print(f"错误: 无法读取文件 - {e}")
+        return
+
+    print(f"   文件1: {path1.name} ({len(data1)} 条)")
+    print(f"   文件2: {path2.name} ({len(data2)} 条)")
+
+    # 计算差异
+    print("🔍 计算差异...")
+    diff_result = _compute_diff(data1, data2, key)
+
+    # 打印差异报告
+    _print_diff_report(diff_result, path1.name, path2.name)
+
+    # 保存报告
+    if output:
+        print(f"\n💾 保存报告: {output}")
+        save_data([diff_result], output)
+
+
+def _compute_diff(
+    data1: List[Dict],
+    data2: List[Dict],
+    key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """计算两个数据集的差异"""
+    result = {
+        "summary": {
+            "file1_count": len(data1),
+            "file2_count": len(data2),
+            "added": 0,
+            "removed": 0,
+            "modified": 0,
+            "unchanged": 0,
+        },
+        "field_changes": {},
+        "details": {
+            "added": [],
+            "removed": [],
+            "modified": [],
+        },
+    }
+
+    if key:
+        # 基于 key 的精确匹配
+        dict1 = {item.get(key): item for item in data1 if item.get(key) is not None}
+        dict2 = {item.get(key): item for item in data2 if item.get(key) is not None}
+
+        keys1 = set(dict1.keys())
+        keys2 = set(dict2.keys())
+
+        # 新增
+        added_keys = keys2 - keys1
+        result["summary"]["added"] = len(added_keys)
+        result["details"]["added"] = [dict2[k] for k in list(added_keys)[:10]]  # 最多显示 10 条
+
+        # 删除
+        removed_keys = keys1 - keys2
+        result["summary"]["removed"] = len(removed_keys)
+        result["details"]["removed"] = [dict1[k] for k in list(removed_keys)[:10]]
+
+        # 修改/未变
+        common_keys = keys1 & keys2
+        for k in common_keys:
+            if dict1[k] == dict2[k]:
+                result["summary"]["unchanged"] += 1
+            else:
+                result["summary"]["modified"] += 1
+                if len(result["details"]["modified"]) < 10:
+                    result["details"]["modified"].append({
+                        "key": k,
+                        "before": dict1[k],
+                        "after": dict2[k],
+                    })
+    else:
+        # 基于哈希的比较
+        def _hash_item(item):
+            return json.dumps(item, sort_keys=True, ensure_ascii=False)
+
+        set1 = {_hash_item(item) for item in data1}
+        set2 = {_hash_item(item) for item in data2}
+
+        added = set2 - set1
+        removed = set1 - set2
+        unchanged = set1 & set2
+
+        result["summary"]["added"] = len(added)
+        result["summary"]["removed"] = len(removed)
+        result["summary"]["unchanged"] = len(unchanged)
+
+        # 详情
+        result["details"]["added"] = [json.loads(h) for h in list(added)[:10]]
+        result["details"]["removed"] = [json.loads(h) for h in list(removed)[:10]]
+
+    # 字段变化分析
+    fields1 = set()
+    fields2 = set()
+    for item in data1[:1000]:  # 采样分析
+        fields1.update(item.keys())
+    for item in data2[:1000]:
+        fields2.update(item.keys())
+
+    result["field_changes"] = {
+        "added_fields": list(fields2 - fields1),
+        "removed_fields": list(fields1 - fields2),
+        "common_fields": list(fields1 & fields2),
+    }
+
+    return result
+
+
+def _print_diff_report(diff_result: Dict[str, Any], name1: str, name2: str) -> None:
+    """打印差异报告"""
+    summary = diff_result["summary"]
+    field_changes = diff_result["field_changes"]
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+
+        console = Console()
+
+        # 概览
+        overview = (
+            f"[bold]{name1}:[/bold] {summary['file1_count']:,} 条\n"
+            f"[bold]{name2}:[/bold] {summary['file2_count']:,} 条\n"
+            f"\n"
+            f"[green]+ 新增:[/green] {summary['added']:,} 条\n"
+            f"[red]- 删除:[/red] {summary['removed']:,} 条\n"
+            f"[yellow]~ 修改:[/yellow] {summary['modified']:,} 条\n"
+            f"[dim]= 未变:[/dim] {summary['unchanged']:,} 条"
+        )
+        console.print(Panel(overview, title="📊 差异概览", expand=False))
+
+        # 字段变化
+        if field_changes["added_fields"] or field_changes["removed_fields"]:
+            console.print("\n[bold]📋 字段变化:[/bold]")
+            if field_changes["added_fields"]:
+                console.print(f"  [green]+ 新增字段:[/green] {', '.join(field_changes['added_fields'])}")
+            if field_changes["removed_fields"]:
+                console.print(f"  [red]- 删除字段:[/red] {', '.join(field_changes['removed_fields'])}")
+
+    except ImportError:
+        print(f"\n{'=' * 50}")
+        print("📊 差异概览")
+        print(f"{'=' * 50}")
+        print(f"{name1}: {summary['file1_count']:,} 条")
+        print(f"{name2}: {summary['file2_count']:,} 条")
+        print()
+        print(f"+ 新增: {summary['added']:,} 条")
+        print(f"- 删除: {summary['removed']:,} 条")
+        print(f"~ 修改: {summary['modified']:,} 条")
+        print(f"= 未变: {summary['unchanged']:,} 条")
+
+        if field_changes["added_fields"] or field_changes["removed_fields"]:
+            print(f"\n📋 字段变化:")
+            if field_changes["added_fields"]:
+                print(f"  + 新增字段: {', '.join(field_changes['added_fields'])}")
+            if field_changes["removed_fields"]:
+                print(f"  - 删除字段: {', '.join(field_changes['removed_fields'])}")
+
+
+# ============ History Command ============
+
+
+def history(
+    filename: str,
+    json_output: bool = False,
+) -> None:
+    """
+    显示数据文件的血缘历史。
+
+    Args:
+        filename: 数据文件路径
+        json_output: 以 JSON 格式输出
+
+    Examples:
+        dt history data.jsonl
+        dt history data.jsonl --json
+    """
+    filepath = Path(filename)
+
+    if not filepath.exists():
+        print(f"错误: 文件不存在 - {filename}")
+        return
+
+    if not has_lineage(str(filepath)):
+        print(f"文件 {filename} 没有血缘记录")
+        print("\n提示: 使用 track_lineage=True 加载数据，并在保存时使用 lineage=True 来记录血缘")
+        print("示例:")
+        print("  dt = DataTransformer.load('data.jsonl', track_lineage=True)")
+        print("  dt.filter(...).transform(...).save('output.jsonl', lineage=True)")
+        return
+
+    if json_output:
+        # JSON 格式输出
+        chain = get_lineage_chain(str(filepath))
+        output = [record.to_dict() for record in chain]
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    else:
+        # 格式化报告
+        report = format_lineage_report(str(filepath))
+        print(report)

@@ -23,6 +23,12 @@ from .converters import (
     # ms-swift
     to_swift_messages, to_swift_query_response, to_swift_vlm,
 )
+from .streaming import (
+    StreamingTransformer,
+    load_stream,
+    load_sharded,
+    process_shards,
+)
 
 __version__ = '0.3.0'
 
@@ -64,4 +70,9 @@ __all__ = [
     'to_swift_messages',
     'to_swift_query_response',
     'to_swift_vlm',
+    # streaming
+    'StreamingTransformer',
+    'load_stream',
+    'load_sharded',
+    'process_shards',
 ]

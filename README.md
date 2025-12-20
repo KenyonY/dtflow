@@ -32,7 +32,7 @@ dt = DataTransformer.load("data.jsonl")
 ### 数据加载与保存
 
 ```python
-# 支持 JSONL、JSON、CSV、Parquet
+# 支持 JSONL、JSON、CSV、Parquet、Arrow（使用 Polars 引擎，比 Pandas 快 3x）
 dt = DataTransformer.load("data.jsonl")
 dt.save("output.jsonl")
 
@@ -224,6 +224,7 @@ dt.shuffle(seed=42)
 # 数据采样
 dt sample data.jsonl --num=10
 dt sample data.csv --num=100 --sample_type=head
+dt sample data.jsonl 1000 --by=category           # 分层采样
 
 # 数据转换 - 预设模式
 dt transform data.jsonl --preset=openai_chat
@@ -233,6 +234,18 @@ dt transform data.jsonl --preset=alpaca
 dt transform data.jsonl                    # 首次运行生成配置文件
 # 编辑 .dt/data.py 后再次运行
 dt transform data.jsonl --num=100          # 执行转换
+
+# Pipeline 执行（可复现的数据处理流程）
+dt run pipeline.yaml
+dt run pipeline.yaml --input=new_data.jsonl --output=result.jsonl
+
+# Token 统计
+dt token-stats data.jsonl --field=messages --model=gpt-4
+dt token-stats data.jsonl --field=text --detailed
+
+# 数据对比
+dt diff v1/train.jsonl v2/train.jsonl
+dt diff a.jsonl b.jsonl --key=id
 
 # 数据清洗
 dt clean data.jsonl --drop-empty                    # 删除任意空值记录
@@ -255,6 +268,132 @@ dt concat a.jsonl b.jsonl -o merged.jsonl
 # 数据统计
 dt stats data.jsonl
 ```
+
+### Pipeline 配置
+
+使用 YAML 配置文件定义可复现的数据处理流程：
+
+```yaml
+# pipeline.yaml
+version: "1.0"
+seed: 42
+input: raw_data.jsonl
+output: processed.jsonl
+
+steps:
+  - type: filter
+    condition: "score > 0.5"
+
+  - type: filter
+    condition: "len(text) > 10"
+
+  - type: transform
+    preset: openai_chat
+    params:
+      user_field: q
+      assistant_field: a
+
+  - type: dedupe
+    key: text
+```
+
+支持的步骤类型：
+
+| 步骤 | 参数 | 说明 |
+|------|------|------|
+| `filter` | `condition` | 条件过滤：`score > 0.5`, `len(text) > 10`, `field is not empty` |
+| `transform` | `preset`, `params` | 格式转换，使用预设模板 |
+| `dedupe` | `key`, `similar` | 去重，支持精确和相似度去重 |
+| `sample` | `num`, `seed` | 随机采样 |
+| `head` | `num` | 取前 N 条 |
+| `tail` | `num` | 取后 N 条 |
+| `shuffle` | `seed` | 打乱顺序 |
+| `split` | `ratio`, `seed` | 数据集分割 |
+
+执行 Pipeline：
+
+```bash
+dt run pipeline.yaml
+dt run pipeline.yaml --input=new_data.jsonl  # 覆盖输入文件
+```
+
+### 数据血缘追踪
+
+记录数据处理的完整历史，支持可复现和问题追溯：
+
+```python
+# 启用血缘追踪
+dt = DataTransformer.load("raw.jsonl", track_lineage=True)
+
+# 正常进行数据处理
+result = (dt
+    .filter(lambda x: x.score > 0.5)
+    .transform(lambda x: {"q": x.q, "a": x.a})
+    .dedupe("q")
+)
+
+# 保存时记录血缘
+result.save("processed.jsonl", lineage=True)
+# 自动生成 processed.jsonl.lineage.json
+```
+
+查看血缘历史：
+
+```bash
+dt history processed.jsonl
+# 输出：
+# 📊 数据血缘报告: processed.jsonl
+# └─ 版本 1
+#    来源: raw.jsonl
+#    操作链:
+#      ├─ filter: 1000 → 800
+#      ├─ transform: 800 → 800
+#      └─ dedupe: 800 → 750
+#    输出数量: 750
+
+dt history processed.jsonl --json  # JSON 格式输出
+```
+
+### 大文件流式处理
+
+专为超大文件设计的流式处理接口，内存占用 O(1)，支持 JSONL、CSV、Parquet、Arrow 格式：
+
+```python
+from dtflow import load_stream, load_sharded
+
+# 流式加载和处理（100GB 文件也只用常量内存）
+(load_stream("huge_100gb.jsonl")
+    .filter(lambda x: x["score"] > 0.5)
+    .transform(lambda x: {"text": x["content"]})
+    .save("output.jsonl"))
+
+# 跨格式转换（CSV → Parquet）
+(load_stream("data.csv")
+    .filter(lambda x: x["score"] > 0.5)
+    .save("output.parquet"))
+
+# 分片文件加载（支持多格式）
+(load_sharded("data/train_*.parquet")
+    .filter(lambda x: len(x["text"]) > 10)
+    .save("merged.jsonl"))
+
+# 分片保存
+(load_stream("huge.jsonl")
+    .transform(lambda x: {"q": x["question"], "a": x["answer"]})
+    .save_sharded("output/", shard_size=100000))
+# 生成: output/part-00000.jsonl, output/part-00001.jsonl, ...
+
+# 批次处理（适合需要批量调用 API 的场景）
+for batch in load_stream("data.jsonl").batch(1000):
+    results = call_api(batch)  # 批量处理
+```
+
+特点：
+- **惰性执行**：filter/transform 不会立即执行，只在 save/collect 时才触发
+- **O(1) 内存**：无论文件多大，内存占用恒定（读取侧）
+- **多格式支持**：JSONL、CSV、Parquet、Arrow 均支持流式处理
+- **跨格式转换**：可直接从 CSV 读取并保存为 Parquet 等
+- **分片支持**：支持 glob 模式加载多个分片，自动合并处理
 
 ## 错误处理
 

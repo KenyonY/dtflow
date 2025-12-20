@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import json
 
 from .storage.io import save_data, load_data
+from .lineage import LineageTracker
 
 # 尝试使用 orjson（更快的 JSON 序列化库）
 try:
@@ -102,8 +103,15 @@ class DataTransformer:
     - fields/stats: 数据信息
     """
 
-    def __init__(self, data: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        data: Optional[List[Dict[str, Any]]] = None,
+        _source_path: Optional[str] = None,
+        _lineage_tracker: Optional[LineageTracker] = None,
+    ):
         self._data = data if data is not None else []
+        self._source_path = _source_path
+        self._lineage_tracker = _lineage_tracker
 
     @property
     def data(self) -> List[Dict[str, Any]]:
@@ -122,22 +130,37 @@ class DataTransformer:
     # ============ 加载/保存 ============
 
     @classmethod
-    def load(cls, filepath: str) -> 'DataTransformer':
+    def load(cls, filepath: str, track_lineage: bool = False) -> 'DataTransformer':
         """
         从文件加载数据。
 
         支持格式: jsonl, json, csv, parquet（自动检测）
+
+        Args:
+            filepath: 文件路径
+            track_lineage: 是否追踪血缘（默认 False）
         """
         data = load_data(filepath)
-        return cls(data)
+        tracker = LineageTracker(filepath) if track_lineage else None
+        return cls(data, _source_path=filepath, _lineage_tracker=tracker)
 
-    def save(self, filepath: str) -> None:
+    def save(self, filepath: str, lineage: bool = False) -> None:
         """
         保存数据到文件。
 
         支持格式: jsonl, json, csv, parquet（根据扩展名）
+
+        Args:
+            filepath: 文件路径
+            lineage: 是否保存血缘元数据（默认 False）
         """
         save_data(self._data, filepath)
+
+        # 保存血缘记录
+        if lineage and self._lineage_tracker:
+            lineage_path = self._lineage_tracker.save(filepath, len(self._data))
+            import sys
+            print(f"📜 血缘记录已保存: {lineage_path}", file=sys.stderr)
 
     # ============ 核心转换 ============
 
@@ -230,7 +253,16 @@ class DataTransformer:
             >>> # 原始模式（大数据集推荐）
             >>> dt.transform(lambda x: {"q": x["q"]}, raw=True).save("output.jsonl")
         """
-        return DataTransformer(self.to(func, on_error=on_error, raw=raw))
+        input_count = len(self._data)
+        result = self.to(func, on_error=on_error, raw=raw)
+        output_count = len(result)
+
+        # 传递血缘追踪器并记录操作
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("transform", {"func": func}, input_count, output_count)
+
+        return DataTransformer(result, _lineage_tracker=tracker)
 
     # ============ 数据筛选 ============
 
@@ -281,7 +313,12 @@ class DataTransformer:
         if errors:
             _print_error_summary(errors, len(self._data))
 
-        return DataTransformer(filtered)
+        # 传递血缘追踪器并记录操作
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("filter", {"func": func}, len(self._data), len(filtered))
+
+        return DataTransformer(filtered, _lineage_tracker=tracker)
 
     def sample(self, n: int, seed: Optional[int] = None) -> 'DataTransformer':
         """
@@ -295,16 +332,30 @@ class DataTransformer:
         if seed is not None:
             random.seed(seed)
 
+        input_count = len(self._data)
         data = self._data[:] if n >= len(self._data) else random.sample(self._data, n)
-        return DataTransformer(data)
+
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("sample", {"n": n, "seed": seed}, input_count, len(data))
+
+        return DataTransformer(data, _lineage_tracker=tracker)
 
     def head(self, n: int = 10) -> 'DataTransformer':
         """取前 n 条"""
-        return DataTransformer(self._data[:n])
+        data = self._data[:n]
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("head", {"n": n}, len(self._data), len(data))
+        return DataTransformer(data, _lineage_tracker=tracker)
 
     def tail(self, n: int = 10) -> 'DataTransformer':
         """取后 n 条"""
-        return DataTransformer(self._data[-n:])
+        data = self._data[-n:]
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("tail", {"n": n}, len(self._data), len(data))
+        return DataTransformer(data, _lineage_tracker=tracker)
 
     def dedupe(
         self,
@@ -338,7 +389,11 @@ class DataTransformer:
                 seen.add(k)
                 result.append(item)
 
-        return DataTransformer(result)
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("dedupe", {"key": key}, len(self._data), len(result))
+
+        return DataTransformer(result, _lineage_tracker=tracker)
 
     def _get_dedupe_key(
         self,
@@ -442,7 +497,17 @@ class DataTransformer:
 
         # 按原顺序保留数据
         result = [self._data[i] for i in sorted(keep_indices)]
-        return DataTransformer(result)
+
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record(
+                "dedupe_similar",
+                {"key": key, "threshold": threshold, "num_perm": num_perm, "ngram": ngram},
+                len(self._data),
+                len(result),
+            )
+
+        return DataTransformer(result, _lineage_tracker=tracker)
 
     def _get_text_for_similarity(
         self,
@@ -581,7 +646,12 @@ class DataTransformer:
         if seed is not None:
             random.seed(seed)
         random.shuffle(data)
-        return DataTransformer(data)
+
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("shuffle", {"seed": seed}, len(self._data), len(data))
+
+        return DataTransformer(data, _lineage_tracker=tracker)
 
     def split(self, ratio: float = 0.8, seed: Optional[int] = None) -> tuple:
         """
@@ -596,7 +666,16 @@ class DataTransformer:
         """
         data = self.shuffle(seed).data
         split_idx = int(len(data) * ratio)
-        return DataTransformer(data[:split_idx]), DataTransformer(data[split_idx:])
+
+        # 分割后血缘追踪器各自独立
+        tracker = self._lineage_tracker
+        if tracker:
+            tracker.record("split", {"ratio": ratio, "seed": seed}, len(self._data), len(data))
+
+        return (
+            DataTransformer(data[:split_idx], _lineage_tracker=tracker),
+            DataTransformer(data[split_idx:], _lineage_tracker=tracker),
+        )
 
     # ============ 并行处理 ============
 

@@ -6,19 +6,23 @@ Usage:
     dt <command> [options]
 
 Commands:
-    transform  转换数据格式（核心命令）
-    sample     从数据文件中采样
-    head       显示文件的前 N 条数据
-    tail       显示文件的后 N 条数据
-    stats      显示数据文件的统计信息
-    dedupe     数据去重
-    concat     拼接多个数据文件
-    clean      数据清洗
-    mcp        MCP 服务管理（install/uninstall/status）
+    transform    转换数据格式（核心命令）
+    run          执行 Pipeline 配置文件
+    sample       从数据文件中采样
+    head         显示文件的前 N 条数据
+    tail         显示文件的后 N 条数据
+    stats        显示数据文件的统计信息
+    token-stats  Token 统计
+    diff         数据集对比
+    dedupe       数据去重
+    concat       拼接多个数据文件
+    clean        数据清洗
+    mcp          MCP 服务管理（install/uninstall/status）
 """
 import fire
 
 from .cli import clean as _clean, concat as _concat, dedupe as _dedupe, head as _head, sample as _sample, stats as _stats, tail as _tail, transform as _transform
+from .cli.commands import diff as _diff, token_stats as _token_stats, run as _run, history as _history
 from .mcp.cli import MCPCommands
 
 
@@ -245,8 +249,101 @@ class Cli:
         """
         _clean(filename, drop_empty, min_len, max_len, keep, drop, strip, output)
 
+    @staticmethod
+    def run(
+        config: str,
+        input: str = None,
+        output: str = None,
+    ):
+        """
+        执行 Pipeline 配置文件。
+
+        Args:
+            config: Pipeline YAML 配置文件路径
+            input: 输入文件路径（覆盖配置中的 input）
+            output: 输出文件路径（覆盖配置中的 output）
+
+        Examples:
+            dt run pipeline.yaml
+            dt run pipeline.yaml --input=new_data.jsonl
+            dt run pipeline.yaml --input=data.jsonl --output=result.jsonl
+        """
+        _run(config, input, output)
+
+    @staticmethod
+    def token_stats(
+        filename: str,
+        field: str = "messages",
+        model: str = "gpt-4",
+        detailed: bool = False,
+    ):
+        """
+        统计数据集的 Token 信息。
+
+        Args:
+            filename: 输入文件路径
+            field: 要统计的字段（默认 messages）
+            model: 模型名称，用于选择 tokenizer
+            detailed: 是否显示详细统计
+
+        Examples:
+            dt token-stats data.jsonl
+            dt token-stats data.jsonl --field=text --model=gpt-4
+            dt token-stats data.jsonl --detailed
+        """
+        _token_stats(filename, field, model, detailed)
+
+    @staticmethod
+    def diff(
+        file1: str,
+        file2: str,
+        key: str = None,
+        output: str = None,
+    ):
+        """
+        对比两个数据集的差异。
+
+        Args:
+            file1: 第一个文件路径
+            file2: 第二个文件路径
+            key: 用于匹配的键字段（可选）
+            output: 差异报告输出路径（可选）
+
+        Examples:
+            dt diff v1/train.jsonl v2/train.jsonl
+            dt diff a.jsonl b.jsonl --key=id
+            dt diff a.jsonl b.jsonl --output=diff_report.json
+        """
+        _diff(file1, file2, key, output)
+
+    @staticmethod
+    def history(
+        filename: str,
+        json: bool = False,
+    ):
+        """
+        显示数据文件的血缘历史。
+
+        Args:
+            filename: 数据文件路径
+            json: 以 JSON 格式输出
+
+        Examples:
+            dt history data.jsonl
+            dt history data.jsonl --json
+        """
+        _history(filename, json)
+
 
 def main():
+    import os
+    import sys
+
+    # less 分页器配置（仅 Unix-like 系统）
+    # -R 保留颜色，-X 退出后内容保留在屏幕，-F 内容少时直接输出
+    if sys.platform != 'win32':
+        os.environ['PAGER'] = 'less -RXF'
+
     fire.Fire(Cli)
 
 
