@@ -6,30 +6,16 @@ DataTransformer 核心模块
 from typing import List, Dict, Any, Optional, Callable, Union, Tuple, Literal
 from copy import deepcopy
 from dataclasses import dataclass
-import json
+
+import orjson
 
 from .storage.io import save_data, load_data
 from .lineage import LineageTracker
 
-# 尝试使用 orjson（更快的 JSON 序列化库）
-try:
-    import orjson
-    _HAS_ORJSON = True
-except ImportError:
-    _HAS_ORJSON = False
-
 
 def _fast_json_dumps(obj: Any) -> str:
-    """
-    快速 JSON 序列化，优先使用 orjson。
-
-    orjson 比标准 json 快约 10 倍，特别适合大量数据的序列化场景。
-    """
-    if _HAS_ORJSON:
-        # orjson.dumps 返回 bytes，需要 decode
-        return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS).decode('utf-8')
-    else:
-        return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    """快速 JSON 序列化（使用 orjson，比标准 json 快约 10 倍）"""
+    return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS).decode('utf-8')
 
 
 # ============ 错误处理 ============

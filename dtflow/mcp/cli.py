@@ -3,7 +3,7 @@
 提供 MCP 服务的安装和管理命令。
 """
 
-import json
+import orjson
 import os
 import platform
 from pathlib import Path
@@ -63,9 +63,9 @@ def _install_to_config(config_path: Path, name: str, target_name: str) -> bool:
     config = {}
     if config_path.exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except json.JSONDecodeError:
+            with open(config_path, "rb") as f:
+                config = orjson.loads(f.read())
+        except orjson.JSONDecodeError:
             if console:
                 console.print(f"[yellow]警告:[/yellow] {target_name} 配置文件格式错误，将创建新配置")
             else:
@@ -87,8 +87,8 @@ def _install_to_config(config_path: Path, name: str, target_name: str) -> bool:
 
     # 写入配置
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        with open(config_path, "wb") as f:
+            f.write(orjson.dumps(config, option=orjson.OPT_INDENT_2))
         return True
     except Exception as e:
         if console:
@@ -108,9 +108,9 @@ def _uninstall_from_config(config_path: Path, name: str, target_name: str) -> bo
         return False
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except json.JSONDecodeError:
+        with open(config_path, "rb") as f:
+            config = orjson.loads(f.read())
+    except orjson.JSONDecodeError:
         return False
 
     if "mcpServers" not in config or name not in config["mcpServers"]:
@@ -119,8 +119,8 @@ def _uninstall_from_config(config_path: Path, name: str, target_name: str) -> bo
     del config["mcpServers"][name]
 
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        with open(config_path, "wb") as f:
+            f.write(orjson.dumps(config, option=orjson.OPT_INDENT_2))
         return True
     except Exception:
         return False
@@ -141,9 +141,9 @@ def _show_config_status(config_path: Path, target_name: str):
         return
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except json.JSONDecodeError:
+        with open(config_path, "rb") as f:
+            config = orjson.loads(f.read())
+    except orjson.JSONDecodeError:
         if console:
             console.print("  [red]配置文件格式错误[/red]")
         else:

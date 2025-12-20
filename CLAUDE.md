@@ -16,6 +16,7 @@ dtflow 是一个简洁的机器学习训练数据格式转换工具，支持 SFT
 
 ```
 dtflow/                    # 核心库
+├── __main__.py           # CLI 入口 (fire 包装，直接引用 commands.py)
 ├── core.py               # DataTransformer 核心类 + DictWrapper
 ├── presets.py            # 预设转换函数 (openai_chat, alpaca, sharegpt, dpo_pair, simple_qa)
 ├── tokenizers.py         # Token 统计和过滤 (tiktoken/transformers 后端)
@@ -24,7 +25,7 @@ dtflow/                    # 核心库
 ├── lineage.py            # 数据血缘追踪
 ├── pipeline.py           # Pipeline YAML 执行器
 ├── storage/io.py         # 文件 I/O (JSONL, JSON, CSV, Parquet, Arrow) - 使用 Polars
-├── cli/commands.py       # CLI 命令实现 (dt 命令)
+├── cli/commands.py       # CLI 命令实现 (所有命令逻辑都在这里)
 └── mcp/                  # MCP 服务 (Claude Code 集成)
 ```
 

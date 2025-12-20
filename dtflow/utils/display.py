@@ -2,7 +2,8 @@
 Data display utilities.
 """
 from typing import List, Dict, Any, Optional
-import json
+
+import orjson
 
 
 def display_data(data: List[Dict[str, Any]],
@@ -52,7 +53,7 @@ def _display_with_rich(data: List[Dict[str, Any]],
             display_item = {k: v for k, v in item.items() if k in fields}
 
         # Create a panel for each item
-        json_str = json.dumps(display_item, indent=2, ensure_ascii=False)
+        json_str = orjson.dumps(display_item, option=orjson.OPT_INDENT_2).decode("utf-8")
 
         panel = Panel(
             JSON(json_str, indent=2),
@@ -84,7 +85,7 @@ def _display_plain(data: List[Dict[str, Any]],
             display_item = {k: v for k, v in item.items() if k in fields}
 
         # Pretty print JSON
-        print(json.dumps(display_item, indent=2, ensure_ascii=False))
+        print(orjson.dumps(display_item, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
     print(f"\n{separator}\n")
 
@@ -100,7 +101,7 @@ def format_item(item: Dict[str, Any], max_width: int = 80) -> str:
     Returns:
         Formatted string
     """
-    return json.dumps(item, indent=2, ensure_ascii=False)
+    return orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8")
 
 
 def preview_fields(data: List[Dict[str, Any]], n: int = 5) -> Dict[str, List[Any]]:

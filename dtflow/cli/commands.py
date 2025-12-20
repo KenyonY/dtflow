@@ -1,7 +1,7 @@
 """
 CLI 命令实现
 """
-import json
+import orjson
 import os
 import shutil
 import tempfile
@@ -42,11 +42,12 @@ def _check_file_format(filepath: Path) -> bool:
 def sample(
     filename: str,
     num: int = 10,
-    sample_type: Literal["random", "head", "tail"] = "head",
+    type: Literal["random", "head", "tail"] = "head",
     output: Optional[str] = None,
     seed: Optional[int] = None,
     by: Optional[str] = None,
     uniform: bool = False,
+    fields: Optional[str] = None,
 ) -> None:
     """
     从数据文件中采样指定数量的数据。
@@ -57,20 +58,22 @@ def sample(
             - num > 0: 采样指定数量
             - num = 0: 采样所有数据
             - num < 0: Python 切片风格（如 -1 表示最后 1 条，-10 表示最后 10 条）
-        sample_type: 采样方式，可选 random/head/tail，默认 head
+        type: 采样方式，可选 random/head/tail，默认 head
         output: 输出文件路径，不指定则打印到控制台
-        seed: 随机种子（仅在 sample_type=random 时有效）
+        seed: 随机种子（仅在 type=random 时有效）
         by: 分层采样字段名，按该字段的值分组采样
         uniform: 均匀采样模式（需配合 --by 使用），各组采样相同数量
+        fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
 
     Examples:
         dt sample data.jsonl 5
-        dt sample data.csv 100 --sample_type=head
+        dt sample data.csv 100 --type=head
         dt sample data.xlsx 50 --output=sampled.jsonl
         dt sample data.jsonl 0   # 采样所有数据
         dt sample data.jsonl -10 # 最后 10 条数据
         dt sample data.jsonl 1000 --by=category           # 按比例分层采样
         dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
+        dt sample data.jsonl --fields=question,answer     # 只显示指定字段
     """
     filepath = Path(filename)
 
@@ -90,7 +93,7 @@ def sample(
     if by:
         try:
             sampled = _stratified_sample(
-                filepath, num, by, uniform, seed, sample_type
+                filepath, num, by, uniform, seed, type
             )
         except Exception as e:
             print(f"错误: {e}")
@@ -101,7 +104,7 @@ def sample(
             sampled = sample_file(
                 str(filepath),
                 num=num,
-                sample_type=sample_type,
+                sample_type=type,
                 seed=seed,
                 output=None,  # 先不保存，统一在最后处理
             )
@@ -114,7 +117,11 @@ def sample(
         save_data(sampled, output)
         print(f"已保存 {len(sampled)} 条数据到 {output}")
     else:
-        _print_samples(sampled)
+        # 获取文件总行数用于显示
+        total_count = _get_file_row_count(filepath)
+        # 解析 fields 参数
+        field_list = _parse_field_list(fields) if fields else None
+        _print_samples(sampled, filepath.name, total_count, field_list)
 
 
 def _stratified_sample(
@@ -239,9 +246,10 @@ def head(
     filename: str,
     num: int = 10,
     output: Optional[str] = None,
+    fields: Optional[str] = None,
 ) -> None:
     """
-    显示文件的前 N 条数据（dt sample --sample_type=head 的快捷方式）。
+    显示文件的前 N 条数据（dt sample --type=head 的快捷方式）。
 
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
@@ -250,23 +258,26 @@ def head(
             - num = 0: 显示所有数据
             - num < 0: Python 切片风格（如 -10 表示最后 10 条）
         output: 输出文件路径，不指定则打印到控制台
+        fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
 
     Examples:
         dt head data.jsonl          # 显示前 10 条
         dt head data.jsonl 20       # 显示前 20 条
         dt head data.csv 0          # 显示所有数据
         dt head data.xlsx --output=head.jsonl
+        dt head data.jsonl --fields=question,answer
     """
-    sample(filename, num=num, sample_type="head", output=output)
+    sample(filename, num=num, type="head", output=output, fields=fields)
 
 
 def tail(
     filename: str,
     num: int = 10,
     output: Optional[str] = None,
+    fields: Optional[str] = None,
 ) -> None:
     """
-    显示文件的后 N 条数据（dt sample --sample_type=tail 的快捷方式）。
+    显示文件的后 N 条数据（dt sample --type=tail 的快捷方式）。
 
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
@@ -275,58 +286,244 @@ def tail(
             - num = 0: 显示所有数据
             - num < 0: Python 切片风格（如 -10 表示最后 10 条）
         output: 输出文件路径，不指定则打印到控制台
+        fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
 
     Examples:
         dt tail data.jsonl          # 显示后 10 条
         dt tail data.jsonl 20       # 显示后 20 条
         dt tail data.csv 0          # 显示所有数据
         dt tail data.xlsx --output=tail.jsonl
+        dt tail data.jsonl --fields=question,answer
     """
-    sample(filename, num=num, sample_type="tail", output=output)
+    sample(filename, num=num, type="tail", output=output, fields=fields)
 
 
-def _print_samples(samples: list) -> None:
-    """打印采样结果。"""
+def _get_file_row_count(filepath: Path) -> Optional[int]:
+    """
+    快速获取文件行数（不加载全部数据）。
+
+    对于 JSONL 文件，直接计算行数；其他格式返回 None。
+    """
+    ext = filepath.suffix.lower()
+    if ext == ".jsonl":
+        try:
+            with open(filepath, "rb") as f:
+                return sum(1 for _ in f)
+        except Exception:
+            return None
+    # 其他格式暂不支持快速计数
+    return None
+
+
+def _format_value(value: Any, max_len: int = 80) -> str:
+    """格式化单个值，长文本截断。"""
+    if value is None:
+        return "[dim]null[/dim]"
+    if isinstance(value, bool):
+        return "[cyan]true[/cyan]" if value else "[cyan]false[/cyan]"
+    if isinstance(value, (int, float)):
+        return f"[cyan]{value}[/cyan]"
+    if isinstance(value, str):
+        # 处理多行文本
+        if "\n" in value:
+            lines = value.split("\n")
+            if len(lines) > 3:
+                preview = lines[0][:max_len] + f"... [dim]({len(lines)} 行)[/dim]"
+            else:
+                preview = value.replace("\n", "\\n")
+                if len(preview) > max_len:
+                    preview = preview[:max_len] + "..."
+            return f'"{preview}"'
+        if len(value) > max_len:
+            return f'"{value[:max_len]}..." [dim]({len(value)} 字符)[/dim]'
+        return f'"{value}"'
+    return str(value)
+
+
+def _format_nested(
+    value: Any,
+    indent: str = "",
+    is_last: bool = True,
+    max_len: int = 80,
+) -> List[str]:
+    """
+    递归格式化嵌套结构，返回行列表。
+
+    使用树形符号展示结构：
+    ├─ 中间项
+    └─ 最后一项
+    """
+    lines = []
+    branch = "└─ " if is_last else "├─ "
+    cont = "   " if is_last else "│  "
+
+    if isinstance(value, dict):
+        items = list(value.items())
+        for i, (k, v) in enumerate(items):
+            is_last_item = (i == len(items) - 1)
+            b = "└─ " if is_last_item else "├─ "
+            c = "   " if is_last_item else "│  "
+
+            if isinstance(v, (dict, list)) and v:
+                # 嵌套结构
+                if isinstance(v, list):
+                    # 检测是否为 messages 格式
+                    is_messages = (
+                        v and isinstance(v[0], dict)
+                        and "role" in v[0] and "content" in v[0]
+                    )
+                    if is_messages:
+                        lines.append(f"{indent}{b}[green]{k}[/green]: ({len(v)} items) [dim]→ \\[role]: content[/dim]")
+                    else:
+                        lines.append(f"{indent}{b}[green]{k}[/green]: ({len(v)} items)")
+                else:
+                    lines.append(f"{indent}{b}[green]{k}[/green]:")
+                lines.extend(_format_nested(v, indent + c, True, max_len))
+            else:
+                # 简单值
+                lines.append(f"{indent}{b}[green]{k}[/green]: {_format_value(v, max_len)}")
+
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            is_last_item = (i == len(value) - 1)
+            b = "└─ " if is_last_item else "├─ "
+            c = "   " if is_last_item else "│  "
+
+            if isinstance(item, dict):
+                # 列表中的字典项 - 检测是否为 messages 格式
+                if "role" in item and "content" in item:
+                    role = item.get("role", "")
+                    content = item.get("content", "")
+                    # 截断长内容
+                    if len(content) > max_len:
+                        content = content[:max_len].replace("\n", "\\n") + "..."
+                    else:
+                        content = content.replace("\n", "\\n")
+                    # 使用 \[ 转义避免被 rich 解析为样式
+                    lines.append(f"{indent}{b}[yellow]\\[{role}]:[/yellow] {content}")
+                else:
+                    # 普通字典
+                    lines.append(f"{indent}{b}[dim]{{...}}[/dim]")
+                    lines.extend(_format_nested(item, indent + c, True, max_len))
+            elif isinstance(item, list):
+                lines.append(f"{indent}{b}[dim][{len(item)} items][/dim]")
+                lines.extend(_format_nested(item, indent + c, True, max_len))
+            else:
+                lines.append(f"{indent}{b}{_format_value(item, max_len)}")
+
+    return lines
+
+
+def _is_simple_data(samples: List[Dict]) -> bool:
+    """判断数据是否适合表格展示（无嵌套结构）。"""
+    if not samples or not isinstance(samples[0], dict):
+        return False
+    keys = list(samples[0].keys())
+    if len(keys) > 6:
+        return False
+    for s in samples[:3]:
+        for k in keys:
+            v = s.get(k)
+            if isinstance(v, (dict, list)):
+                return False
+            if isinstance(v, str) and len(v) > 80:
+                return False
+    return True
+
+
+def _print_samples(
+    samples: list,
+    filename: Optional[str] = None,
+    total_count: Optional[int] = None,
+    fields: Optional[List[str]] = None,
+) -> None:
+    """
+    打印采样结果。
+
+    Args:
+        samples: 采样数据列表
+        filename: 文件名（用于显示概览）
+        total_count: 文件总行数（用于显示概览）
+        fields: 只显示指定字段
+    """
     if not samples:
         print("没有数据")
         return
 
+    # 过滤字段
+    if fields and isinstance(samples[0], dict):
+        field_set = set(fields)
+        samples = [{k: v for k, v in item.items() if k in field_set} for item in samples]
+
     try:
         from rich.console import Console
-        from rich.json import JSON
         from rich.table import Table
+        from rich.panel import Panel
 
         console = Console()
 
-        # 尝试以表格形式展示
-        if isinstance(samples[0], dict):
-            keys = list(samples[0].keys())
-            # 适合表格展示：字段不太多且值不太长
-            if len(keys) <= 5 and all(
-                len(str(s.get(k, ""))) < 100 for s in samples[:3] for k in keys
-            ):
-                table = Table(title=f"采样结果 ({len(samples)} 条)")
-                for key in keys:
-                    table.add_column(key, overflow="fold")
-                for item in samples:
-                    table.add_row(*[str(item.get(k, "")) for k in keys])
-                console.print(table)
-                return
+        # 显示数据概览头部
+        if filename:
+            all_fields = set()
+            for item in samples:
+                if isinstance(item, dict):
+                    all_fields.update(item.keys())
+            field_names = ", ".join(sorted(all_fields))
 
-        # 以 JSON 形式展示
+            if total_count is not None:
+                info = f"总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+            else:
+                info = f"采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+
+            console.print(Panel(
+                f"[dim]{info}[/dim]\n[dim]字段: {field_names}[/dim]",
+                title=f"[bold]📊 {filename}[/bold]",
+                expand=False,
+                border_style="dim",
+            ))
+            console.print()
+
+        # 简单数据用表格展示
+        if _is_simple_data(samples):
+            keys = list(samples[0].keys())
+            table = Table(show_header=True, header_style="bold cyan")
+            for key in keys:
+                table.add_column(key, overflow="fold")
+            for item in samples:
+                table.add_row(*[str(item.get(k, "")) for k in keys])
+            console.print(table)
+            return
+
+        # 嵌套数据用树形结构展示
         for i, item in enumerate(samples, 1):
-            console.print(f"\n[bold cyan]--- 第 {i} 条 ---[/bold cyan]")
-            console.print(JSON.from_data(item))
+            console.print(f"[bold cyan]--- 第 {i} 条 ---[/bold cyan]")
+            if isinstance(item, dict):
+                for line in _format_nested(item):
+                    console.print(line)
+            else:
+                console.print(_format_value(item))
+            console.print()
 
     except ImportError:
         # 没有 rich，使用普通打印
-        import json
+        if filename:
+            all_fields = set()
+            for item in samples:
+                if isinstance(item, dict):
+                    all_fields.update(item.keys())
+
+            print(f"\n📊 {filename}")
+            if total_count is not None:
+                print(f"   总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个")
+            else:
+                print(f"   采样: {len(samples)} 条 | 字段: {len(all_fields)} 个")
+            print(f"   字段: {', '.join(sorted(all_fields))}")
+            print()
 
         for i, item in enumerate(samples, 1):
-            print(f"\n--- 第 {i} 条 ---")
-            print(json.dumps(item, ensure_ascii=False, indent=2))
-
-    print(f"\n共 {len(samples)} 条数据")
+            print(f"--- 第 {i} 条 ---")
+            print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
+            print()
 
 
 # ============ Transform Command ============
@@ -543,7 +740,7 @@ def _format_example_value(value: Any, max_len: int = 50) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, (list, dict)):
-        s = json.dumps(value, ensure_ascii=False)
+        s = orjson.dumps(value).decode("utf-8")
         if len(s) > max_len:
             return repr(s[:max_len] + "...")
         return s
@@ -2030,7 +2227,7 @@ def _compute_diff(
     else:
         # 基于哈希的比较
         def _hash_item(item):
-            return json.dumps(item, sort_keys=True, ensure_ascii=False)
+            return orjson.dumps(item, option=orjson.OPT_SORT_KEYS)
 
         set1 = {_hash_item(item) for item in data1}
         set2 = {_hash_item(item) for item in data2}
@@ -2044,8 +2241,8 @@ def _compute_diff(
         result["summary"]["unchanged"] = len(unchanged)
 
         # 详情
-        result["details"]["added"] = [json.loads(h) for h in list(added)[:10]]
-        result["details"]["removed"] = [json.loads(h) for h in list(removed)[:10]]
+        result["details"]["added"] = [orjson.loads(h) for h in list(added)[:10]]
+        result["details"]["removed"] = [orjson.loads(h) for h in list(removed)[:10]]
 
     # 字段变化分析
     fields1 = set()
@@ -2121,14 +2318,14 @@ def _print_diff_report(diff_result: Dict[str, Any], name1: str, name2: str) -> N
 
 def history(
     filename: str,
-    json_output: bool = False,
+    json: bool = False,
 ) -> None:
     """
     显示数据文件的血缘历史。
 
     Args:
         filename: 数据文件路径
-        json_output: 以 JSON 格式输出
+        json: 以 JSON 格式输出
 
     Examples:
         dt history data.jsonl
@@ -2148,11 +2345,11 @@ def history(
         print("  dt.filter(...).transform(...).save('output.jsonl', lineage=True)")
         return
 
-    if json_output:
+    if json:
         # JSON 格式输出
         chain = get_lineage_chain(str(filepath))
         output = [record.to_dict() for record in chain]
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        print(orjson.dumps(output, option=orjson.OPT_INDENT_2).decode("utf-8"))
     else:
         # 格式化报告
         report = format_lineage_report(str(filepath))

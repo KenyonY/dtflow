@@ -4,8 +4,9 @@
 记录数据处理的完整历史，支持数据溯源和版本对比。
 """
 import hashlib
-import json
 import os
+
+import orjson
 import platform
 import time
 from datetime import datetime
@@ -228,8 +229,8 @@ class LineageTracker:
         record = self.build_record(output_path, output_count)
         lineage_path = _get_lineage_path(output_path)
 
-        with open(lineage_path, "w", encoding="utf-8") as f:
-            json.dump(record.to_dict(), f, ensure_ascii=False, indent=2)
+        with open(lineage_path, "wb") as f:
+            f.write(orjson.dumps(record.to_dict(), option=orjson.OPT_INDENT_2))
 
         return lineage_path
 
@@ -284,10 +285,10 @@ def load_lineage(data_path: str) -> Optional[LineageRecord]:
         return None
 
     try:
-        with open(lineage_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(lineage_path, "rb") as f:
+            data = orjson.loads(f.read())
         return LineageRecord.from_dict(data)
-    except (json.JSONDecodeError, IOError):
+    except (orjson.JSONDecodeError, IOError):
         return None
 
 
