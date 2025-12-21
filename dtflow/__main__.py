@@ -167,7 +167,7 @@ def stats(
 def token_stats(
     filename: str = typer.Argument(..., help="输入文件路径"),
     field: str = typer.Option("messages", "--field", "-f", help="统计字段"),
-    model: str = typer.Option("gpt-4", "--model", "-m", help="模型名称"),
+    model: str = typer.Option("cl100k_base", "--model", "-m", help="分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等"),
     detailed: bool = typer.Option(False, "--detailed", "-d", help="显示详细统计"),
 ):
     """统计数据集的 Token 信息"""

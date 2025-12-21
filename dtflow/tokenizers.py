@@ -2,49 +2,169 @@
 Token 统计模块
 
 提供 token 计数和基于 token 长度的过滤功能。
+支持 OpenAI (tiktoken) 和开源模型 (transformers) 两种后端。
 """
 from typing import Callable, Union, List, Dict, Any, Optional
 
 # 延迟导入，避免未安装时报错
 _tokenizer_cache = {}
 
+# 默认编码器（使用 tiktoken 的 cl100k_base，速度快且依赖轻）
+DEFAULT_MODEL = "cl100k_base"
 
-def _get_tiktoken_encoder(model: str = "gpt-4"):
+# 模型别名映射：简短名称 -> HuggingFace 模型路径
+MODEL_ALIASES = {
+    # Qwen 系列
+    "qwen2.5": "Qwen/Qwen2.5-7B",
+    "qwen2.5-0.5b": "Qwen/Qwen2.5-0.5B",
+    "qwen2.5-1.5b": "Qwen/Qwen2.5-1.5B",
+    "qwen2.5-3b": "Qwen/Qwen2.5-3B",
+    "qwen2.5-7b": "Qwen/Qwen2.5-7B",
+    "qwen2.5-14b": "Qwen/Qwen2.5-14B",
+    "qwen2.5-32b": "Qwen/Qwen2.5-32B",
+    "qwen2.5-72b": "Qwen/Qwen2.5-72B",
+    "qwen3": "Qwen/Qwen3-8B",
+    "qwen3-0.6b": "Qwen/Qwen3-0.6B",
+    "qwen3-1.7b": "Qwen/Qwen3-1.7B",
+    "qwen3-4b": "Qwen/Qwen3-4B",
+    "qwen3-8b": "Qwen/Qwen3-8B",
+    "qwen3-14b": "Qwen/Qwen3-14B",
+    "qwen3-32b": "Qwen/Qwen3-32B",
+    "qwen3-30b-a3b": "Qwen/Qwen3-30B-A3B",
+    "qwen3-235b-a22b": "Qwen/Qwen3-235B-A22B",
+    "qwen2": "Qwen/Qwen2-7B",
+    "qwen2-0.5b": "Qwen/Qwen2-0.5B",
+    "qwen2-1.5b": "Qwen/Qwen2-1.5B",
+    "qwen2-7b": "Qwen/Qwen2-7B",
+    "qwen2-72b": "Qwen/Qwen2-72B",
+    # Llama 系列
+    "llama3": "meta-llama/Llama-3.1-8B",
+    "llama3.1": "meta-llama/Llama-3.1-8B",
+    "llama3.1-8b": "meta-llama/Llama-3.1-8B",
+    "llama3.1-70b": "meta-llama/Llama-3.1-70B",
+    "llama3.2": "meta-llama/Llama-3.2-3B",
+    "llama3.2-1b": "meta-llama/Llama-3.2-1B",
+    "llama3.2-3b": "meta-llama/Llama-3.2-3B",
+    "llama3.3": "meta-llama/Llama-3.3-70B-Instruct",
+    "llama3.3-70b": "meta-llama/Llama-3.3-70B-Instruct",
+    # Mistral 系列
+    "mistral": "mistralai/Mistral-7B-v0.3",
+    "mistral-7b": "mistralai/Mistral-7B-v0.3",
+    "mixtral": "mistralai/Mixtral-8x7B-v0.1",
+    "mixtral-8x7b": "mistralai/Mixtral-8x7B-v0.1",
+    # DeepSeek 系列
+    "deepseek": "deepseek-ai/DeepSeek-V3",
+    "deepseek-v3": "deepseek-ai/DeepSeek-V3",
+    "deepseek-v2": "deepseek-ai/DeepSeek-V2",
+    "deepseek-coder": "deepseek-ai/deepseek-coder-6.7b-base",
+    # Yi 系列
+    "yi": "01-ai/Yi-1.5-9B",
+    "yi-1.5": "01-ai/Yi-1.5-9B",
+    "yi-1.5-6b": "01-ai/Yi-1.5-6B",
+    "yi-1.5-9b": "01-ai/Yi-1.5-9B",
+    "yi-1.5-34b": "01-ai/Yi-1.5-34B",
+    # InternLM 系列
+    "internlm": "internlm/internlm2_5-7b",
+    "internlm2.5": "internlm/internlm2_5-7b",
+    "internlm2.5-7b": "internlm/internlm2_5-7b",
+    "internlm2.5-20b": "internlm/internlm2_5-20b",
+    # GLM 系列
+    "glm4": "THUDM/glm-4-9b",
+    "glm4-9b": "THUDM/glm-4-9b",
+    # Baichuan 系列
+    "baichuan2": "baichuan-inc/Baichuan2-13B-Base",
+    "baichuan2-7b": "baichuan-inc/Baichuan2-7B-Base",
+    "baichuan2-13b": "baichuan-inc/Baichuan2-13B-Base",
+}
+
+# OpenAI 模型（使用 tiktoken）
+OPENAI_MODELS = {"gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4-turbo", "o1", "o1-mini", "o1-preview", "o3", "o3-mini"}
+
+# tiktoken 编码器名称
+TIKTOKEN_ENCODINGS = {"cl100k_base", "p50k_base", "p50k_edit", "r50k_base", "o200k_base"}
+
+
+def resolve_model(model: str) -> str:
+    """
+    解析模型名称，将别名转换为完整的 HuggingFace 路径。
+
+    Args:
+        model: 模型名称或别名
+
+    Returns:
+        完整的模型路径
+    """
+    return MODEL_ALIASES.get(model.lower(), model)
+
+
+def _get_tiktoken_encoder(model: str):
     """获取 tiktoken 编码器（带缓存）"""
     if model not in _tokenizer_cache:
         try:
             import tiktoken
-            _tokenizer_cache[model] = tiktoken.encoding_for_model(model)
+            # 直接使用编码器名称 (cl100k_base 等) 或通过模型名获取
+            if model in TIKTOKEN_ENCODINGS:
+                _tokenizer_cache[model] = tiktoken.get_encoding(model)
+            else:
+                _tokenizer_cache[model] = tiktoken.encoding_for_model(model)
         except ImportError:
             raise ImportError("需要安装 tiktoken: pip install tiktoken")
     return _tokenizer_cache[model]
 
 
-def _get_transformers_tokenizer(model: str):
-    """获取 transformers tokenizer（带缓存）"""
-    if model not in _tokenizer_cache:
+def _get_hf_tokenizer(model: str):
+    """
+    获取 HuggingFace tokenizer（带缓存，支持别名解析）。
+
+    优先使用 tokenizers 库（Rust 实现，轻量快速），失败时 fallback 到 transformers。
+    """
+    resolved = resolve_model(model)
+    if resolved not in _tokenizer_cache:
+        # 优先使用 tokenizers 库（更轻量）
         try:
-            from transformers import AutoTokenizer
-            _tokenizer_cache[model] = AutoTokenizer.from_pretrained(model)
-        except ImportError:
-            raise ImportError("需要安装 transformers: pip install transformers")
-    return _tokenizer_cache[model]
+            from tokenizers import Tokenizer
+            from huggingface_hub import hf_hub_download
+
+            tokenizer_path = hf_hub_download(repo_id=resolved, filename="tokenizer.json")
+            _tokenizer_cache[resolved] = ("tokenizers", Tokenizer.from_file(tokenizer_path))
+        except Exception:
+            # Fallback 到 transformers（某些模型可能没有 tokenizer.json）
+            try:
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(resolved, trust_remote_code=True)
+                _tokenizer_cache[resolved] = ("transformers", tokenizer)
+            except ImportError:
+                raise ImportError(
+                    "需要安装 tokenizers 或 transformers:\n"
+                    "  pip install tokenizers huggingface_hub  (推荐，更轻量)\n"
+                    "  pip install transformers"
+                )
+    return _tokenizer_cache[resolved]
+
+
+def _encode_tokens(tokenizer_info, text: str) -> int:
+    """编码文本，返回 token 数量"""
+    backend, tokenizer = tokenizer_info
+    if backend == "tokenizers":
+        return len(tokenizer.encode(text).ids)
+    else:
+        return len(tokenizer.encode(text))
 
 
 def count_tokens(
     text: str,
-    model: str = "gpt-4",
-    backend: str = "tiktoken",
+    model: str = DEFAULT_MODEL,
+    backend: Optional[str] = None,
 ) -> int:
     """
     计算文本的 token 数量。
 
     Args:
         text: 输入文本
-        model: 模型名称
-        backend: 后端选择
+        model: 模型名称或别名，如 "qwen2.5", "gpt-4", "llama3" 等
+        backend: 后端选择，None 则自动检测
             - "tiktoken": OpenAI tiktoken（快速，支持 GPT 系列）
-            - "transformers": HuggingFace transformers（支持更多模型）
+            - "transformers": HuggingFace transformers（支持开源模型）
 
     Returns:
         token 数量
@@ -52,20 +172,22 @@ def count_tokens(
     if not text:
         return 0
 
-    if backend == "tiktoken":
+    _backend = backend or _auto_backend(model)
+
+    if _backend == "tiktoken":
         encoder = _get_tiktoken_encoder(model)
         return len(encoder.encode(text))
-    elif backend == "transformers":
-        tokenizer = _get_transformers_tokenizer(model)
-        return len(tokenizer.encode(text))
+    elif _backend == "transformers":
+        tokenizer_info = _get_hf_tokenizer(model)
+        return _encode_tokens(tokenizer_info, text)
     else:
-        raise ValueError(f"不支持的 backend: {backend}")
+        raise ValueError(f"不支持的 backend: {_backend}")
 
 
 def token_counter(
     fields: Union[str, List[str]],
-    model: str = "gpt-4",
-    backend: str = "tiktoken",
+    model: str = DEFAULT_MODEL,
+    backend: Optional[str] = None,
     output_field: str = "token_count",
 ) -> Callable:
     """
@@ -73,8 +195,8 @@ def token_counter(
 
     Args:
         fields: 要统计的字段（单个或多个）
-        model: 模型名称
-        backend: tiktoken 或 transformers
+        model: 模型名称或别名，如 "qwen2.5", "gpt-4", "llama3" 等
+        backend: 后端选择，None 则自动检测
         output_field: 输出字段名
 
     Returns:
@@ -82,7 +204,7 @@ def token_counter(
 
     Examples:
         >>> dt.transform(token_counter("text"))
-        >>> dt.transform(token_counter(["question", "answer"]))
+        >>> dt.transform(token_counter(["question", "answer"], model="qwen3"))
     """
     if isinstance(fields, str):
         fields = [fields]
@@ -104,8 +226,8 @@ def token_filter(
     fields: Union[str, List[str]],
     min_tokens: Optional[int] = None,
     max_tokens: Optional[int] = None,
-    model: str = "gpt-4",
-    backend: str = "tiktoken",
+    model: str = DEFAULT_MODEL,
+    backend: Optional[str] = None,
 ) -> Callable:
     """
     创建基于 token 长度的过滤函数。
@@ -146,8 +268,8 @@ def token_filter(
 def token_stats(
     data: List[Dict[str, Any]],
     fields: Union[str, List[str]],
-    model: str = "gpt-4",
-    backend: str = "tiktoken",
+    model: str = DEFAULT_MODEL,
+    backend: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     统计数据集的 token 信息。
@@ -155,8 +277,8 @@ def token_stats(
     Args:
         data: 数据列表
         fields: 要统计的字段
-        model: 模型名称
-        backend: tiktoken 或 transformers
+        model: 模型名称或别名，如 "qwen2.5", "gpt-4" 等
+        backend: 后端选择，None 则自动检测
 
     Returns:
         统计信息字典
@@ -187,15 +309,25 @@ def token_stats(
 
 
 def _auto_backend(model: str) -> str:
-    """自动检测 tokenizer backend"""
-    # 本地路径或包含 / 的模型 ID 使用 transformers
-    if "/" in model or model.startswith(("/", "~", ".")):
-        return "transformers"
-    # OpenAI 模型使用 tiktoken
-    openai_models = {"gpt-4", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo", "o1", "o1-mini"}
-    if model in openai_models or model.startswith(("gpt-", "o1")):
+    """
+    自动检测 tokenizer backend。
+
+    规则：
+    1. tiktoken 编码器名称 (cl100k_base 等) -> tiktoken
+    2. OpenAI 模型 (gpt-*, o1*, o3*) -> tiktoken
+    3. 其他模型（包括别名和 HuggingFace 路径）-> transformers
+    """
+    model_lower = model.lower()
+
+    # tiktoken 编码器名称
+    if model_lower in TIKTOKEN_ENCODINGS:
         return "tiktoken"
-    # 默认尝试 transformers
+
+    # OpenAI 模型使用 tiktoken
+    if model_lower in OPENAI_MODELS or model_lower.startswith(("gpt-", "o1", "o3")):
+        return "tiktoken"
+
+    # 其他模型使用 transformers
     return "transformers"
 
 
@@ -237,7 +369,7 @@ def _count_messages_tokens(
 
 def messages_token_counter(
     messages_field: str = "messages",
-    model: str = "gpt-4",
+    model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
     output_field: str = "token_stats",
     detailed: bool = False,
@@ -247,9 +379,10 @@ def messages_token_counter(
 
     Args:
         messages_field: messages 字段名
-        model: 模型名称或本地路径
+        model: 模型名称或别名
+            - 别名: "qwen2.5", "qwen3", "llama3", "deepseek" 等
             - OpenAI 模型: "gpt-4", "gpt-4o" 等（使用 tiktoken）
-            - HuggingFace 模型: "Qwen/Qwen2-7B" 等
+            - HuggingFace 模型: "Qwen/Qwen2.5-7B" 等
             - 本地路径: "/path/to/model"
         backend: 强制指定后端，None 则自动检测
         output_field: 输出字段名
@@ -259,11 +392,14 @@ def messages_token_counter(
         转换函数，用于 dt.transform()
 
     Examples:
-        >>> # 使用 tiktoken (OpenAI 模型)
-        >>> dt.transform(messages_token_counter(model="gpt-4"))
+        >>> # 使用默认模型 (qwen2.5)
+        >>> dt.transform(messages_token_counter())
 
-        >>> # 使用本地 Qwen 模型
-        >>> dt.transform(messages_token_counter(model="/home/models/Qwen2-7B"))
+        >>> # 使用 Qwen3
+        >>> dt.transform(messages_token_counter(model="qwen3"))
+
+        >>> # 使用 OpenAI 模型
+        >>> dt.transform(messages_token_counter(model="gpt-4"))
 
         >>> # 详细统计
         >>> dt.transform(messages_token_counter(detailed=True))
@@ -297,7 +433,7 @@ def messages_token_filter(
     max_tokens: Optional[int] = None,
     min_turns: Optional[int] = None,
     max_turns: Optional[int] = None,
-    model: str = "gpt-4",
+    model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
 ) -> Callable:
     """
@@ -309,7 +445,7 @@ def messages_token_filter(
         max_tokens: 最大总 token 数
         min_turns: 最小对话轮数
         max_turns: 最大对话轮数
-        model: 模型名称或路径
+        model: 模型名称或别名
         backend: 后端，None 则自动检测
 
     Returns:
@@ -317,7 +453,7 @@ def messages_token_filter(
 
     Examples:
         >>> dt.filter(messages_token_filter(min_tokens=100, max_tokens=2048))
-        >>> dt.filter(messages_token_filter(min_turns=2, max_turns=10))
+        >>> dt.filter(messages_token_filter(min_turns=2, max_turns=10, model="qwen3"))
     """
     _backend = backend or _auto_backend(model)
 
@@ -346,7 +482,7 @@ def messages_token_filter(
 def messages_token_stats(
     data: List[Dict[str, Any]],
     messages_field: str = "messages",
-    model: str = "gpt-4",
+    model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -355,14 +491,15 @@ def messages_token_stats(
     Args:
         data: 数据列表
         messages_field: messages 字段名
-        model: 模型名称或路径
+        model: 模型名称或别名
         backend: 后端，None 则自动检测
 
     Returns:
         统计信息字典
 
     Examples:
-        >>> stats = messages_token_stats(dt.data, model="gpt-4")
+        >>> stats = messages_token_stats(dt.data)  # 使用默认 qwen2.5
+        >>> stats = messages_token_stats(dt.data, model="qwen3")
         >>> print(stats)
         {
             "count": 1000,

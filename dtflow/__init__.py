@@ -13,6 +13,7 @@ from .storage import save_data, load_data, sample_file
 from .tokenizers import (
     count_tokens, token_counter, token_filter, token_stats,
     messages_token_counter, messages_token_filter, messages_token_stats,
+    DEFAULT_MODEL, MODEL_ALIASES, OPENAI_MODELS, resolve_model,
 )
 from .converters import (
     to_hf_dataset, from_hf_dataset, to_hf_chat_format,
@@ -53,6 +54,10 @@ __all__ = [
     'messages_token_counter',
     'messages_token_filter',
     'messages_token_stats',
+    'DEFAULT_MODEL',
+    'MODEL_ALIASES',
+    'OPENAI_MODELS',
+    'resolve_model',
     # converters
     'to_hf_dataset',
     'from_hf_dataset',

@@ -1325,8 +1325,8 @@ def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
 
         # 类型特定统计
         if non_null:
-            # 唯一值计数
-            stat["unique"] = len(set(str(v) for v in non_null))
+            # 唯一值计数（对复杂类型使用 hash 节省内存）
+            stat["unique"] = _count_unique(non_null, field_type)
 
             # 字符串类型：计算长度统计
             if field_type == "str":
@@ -1356,6 +1356,28 @@ def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
         stats_list.append(stat)
 
     return stats_list
+
+
+def _count_unique(values: List[Any], field_type: str) -> int:
+    """
+    计算唯一值数量。
+
+    对于简单类型直接比较，对于 list/dict 使用 hash 节省内存。
+    """
+    if field_type in ("list", "dict"):
+        # 复杂类型：使用 orjson 序列化后计算 hash
+        import hashlib
+
+        import orjson
+
+        seen = set()
+        for v in values:
+            h = hashlib.md5(orjson.dumps(v, option=orjson.OPT_SORT_KEYS)).digest()
+            seen.add(h)
+        return len(seen)
+    else:
+        # 简单类型：直接比较
+        return len(set(values))
 
 
 def _infer_type(values: List[Any]) -> str:
@@ -1959,7 +1981,7 @@ def run(
 def token_stats(
     filename: str,
     field: str = "messages",
-    model: str = "gpt-4",
+    model: str = "cl100k_base",
     detailed: bool = False,
 ) -> None:
     """
@@ -1968,12 +1990,12 @@ def token_stats(
     Args:
         filename: 输入文件路径
         field: 要统计的字段（默认 messages）
-        model: 模型名称，用于选择 tokenizer
+        model: 分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等
         detailed: 是否显示详细统计
 
     Examples:
         dt token-stats data.jsonl
-        dt token-stats data.jsonl --field=text --model=gpt-4
+        dt token-stats data.jsonl --field=text --model=qwen2.5
         dt token-stats data.jsonl --detailed
     """
     filepath = Path(filename)
