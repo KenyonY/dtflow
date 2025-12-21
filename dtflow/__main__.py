@@ -299,7 +299,7 @@ def main():
     if sys.platform != 'win32':
         os.environ['PAGER'] = 'less -RXF'
 
-    _show_completion_hint()
+    # _show_completion_hint()
     app()
 
 
