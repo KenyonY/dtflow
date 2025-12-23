@@ -4,7 +4,8 @@ Token 统计模块
 提供 token 计数和基于 token 长度的过滤功能。
 支持 OpenAI (tiktoken) 和开源模型 (transformers) 两种后端。
 """
-from typing import Callable, Union, List, Dict, Any, Optional
+
+from typing import Any, Callable, Dict, List, Optional, Union
 
 # 延迟导入，避免未安装时报错
 _tokenizer_cache = {}
@@ -78,7 +79,18 @@ MODEL_ALIASES = {
 }
 
 # OpenAI 模型（使用 tiktoken）
-OPENAI_MODELS = {"gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4-turbo", "o1", "o1-mini", "o1-preview", "o3", "o3-mini"}
+OPENAI_MODELS = {
+    "gpt-4",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-3.5-turbo",
+    "gpt-4-turbo",
+    "o1",
+    "o1-mini",
+    "o1-preview",
+    "o3",
+    "o3-mini",
+}
 
 # tiktoken 编码器名称
 TIKTOKEN_ENCODINGS = {"cl100k_base", "p50k_base", "p50k_edit", "r50k_base", "o200k_base"}
@@ -102,6 +114,7 @@ def _get_tiktoken_encoder(model: str):
     if model not in _tokenizer_cache:
         try:
             import tiktoken
+
             # 直接使用编码器名称 (cl100k_base 等) 或通过模型名获取
             if model in TIKTOKEN_ENCODINGS:
                 _tokenizer_cache[model] = tiktoken.get_encoding(model)
@@ -122,8 +135,8 @@ def _get_hf_tokenizer(model: str):
     if resolved not in _tokenizer_cache:
         # 优先使用 tokenizers 库（更轻量）
         try:
-            from tokenizers import Tokenizer
             from huggingface_hub import hf_hub_download
+            from tokenizers import Tokenizer
 
             tokenizer_path = hf_hub_download(repo_id=resolved, filename="tokenizer.json")
             _tokenizer_cache[resolved] = ("tokenizers", Tokenizer.from_file(tokenizer_path))
@@ -131,6 +144,7 @@ def _get_hf_tokenizer(model: str):
             # Fallback 到 transformers（某些模型可能没有 tokenizer.json）
             try:
                 from transformers import AutoTokenizer
+
                 tokenizer = AutoTokenizer.from_pretrained(resolved, trust_remote_code=True)
                 _tokenizer_cache[resolved] = ("transformers", tokenizer)
             except ImportError:
@@ -210,10 +224,10 @@ def token_counter(
         fields = [fields]
 
     def transform(item) -> dict:
-        result = item.to_dict() if hasattr(item, 'to_dict') else dict(item)
+        result = item.to_dict() if hasattr(item, "to_dict") else dict(item)
         total = 0
         for field in fields:
-            value = item.get(field, "") if hasattr(item, 'get') else item[field]
+            value = item.get(field, "") if hasattr(item, "get") else item[field]
             if value:
                 total += count_tokens(str(value), model=model, backend=backend)
         result[output_field] = total
@@ -252,7 +266,7 @@ def token_filter(
     def filter_func(item) -> bool:
         total = 0
         for field in fields:
-            value = item.get(field, "") if hasattr(item, 'get') else item[field]
+            value = item.get(field, "") if hasattr(item, "get") else item[field]
             if value:
                 total += count_tokens(str(value), model=model, backend=backend)
 
@@ -409,7 +423,9 @@ def messages_token_counter(
 
     def transform(item) -> dict:
         result = item.to_dict() if hasattr(item, "to_dict") else dict(item)
-        messages = item.get(messages_field, []) if hasattr(item, "get") else item.get(messages_field, [])
+        messages = (
+            item.get(messages_field, []) if hasattr(item, "get") else item.get(messages_field, [])
+        )
 
         if not messages:
             result[output_field] = 0 if not detailed else {"total": 0}
@@ -458,7 +474,9 @@ def messages_token_filter(
     _backend = backend or _auto_backend(model)
 
     def filter_func(item) -> bool:
-        messages = item.get(messages_field, []) if hasattr(item, "get") else item.get(messages_field, [])
+        messages = (
+            item.get(messages_field, []) if hasattr(item, "get") else item.get(messages_field, [])
+        )
 
         if not messages:
             return False

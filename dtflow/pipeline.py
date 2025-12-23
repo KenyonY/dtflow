@@ -3,14 +3,14 @@ Pipeline 配置模块
 
 支持将数据处理流程导出为 YAML 配置，实现可复现的数据处理。
 """
+
 import random
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from .core import DataTransformer
-from .presets import get_preset, PRESETS
+from .presets import PRESETS, get_preset
 from .storage.io import load_data, save_data
-
 
 # ============ Pipeline 配置格式 ============
 
@@ -369,37 +369,47 @@ def generate_pipeline_template(
 
     # 添加示例步骤
     if preset:
-        config["steps"].append({
-            "type": "transform",
-            "preset": preset,
-        })
+        config["steps"].append(
+            {
+                "type": "transform",
+                "preset": preset,
+            }
+        )
     else:
         # 根据字段推断可能的步骤
-        config["steps"].append({
-            "type": "filter",
-            "condition": f"len({fields[0]}) > 0",
-        })
+        config["steps"].append(
+            {
+                "type": "filter",
+                "condition": f"len({fields[0]}) > 0",
+            }
+        )
 
         # 如果有 messages 或 q/a 字段，添加 transform 步骤
         if "messages" in fields:
             pass  # 已经是 messages 格式
         elif "q" in fields and "a" in fields:
-            config["steps"].append({
-                "type": "transform",
-                "preset": "openai_chat",
-                "params": {"user_field": "q", "assistant_field": "a"},
-            })
+            config["steps"].append(
+                {
+                    "type": "transform",
+                    "preset": "openai_chat",
+                    "params": {"user_field": "q", "assistant_field": "a"},
+                }
+            )
         elif "instruction" in fields and "output" in fields:
-            config["steps"].append({
-                "type": "transform",
-                "preset": "alpaca",
-            })
+            config["steps"].append(
+                {
+                    "type": "transform",
+                    "preset": "alpaca",
+                }
+            )
 
         # 添加去重步骤
-        config["steps"].append({
-            "type": "dedupe",
-            "key": fields[0] if fields else None,
-        })
+        config["steps"].append(
+            {
+                "type": "dedupe",
+                "key": fields[0] if fields else None,
+            }
+        )
 
     # 保存配置
     _save_yaml(config, output_file)

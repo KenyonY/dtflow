@@ -3,7 +3,8 @@
 
 提供与 HuggingFace datasets 等常用格式的互转功能。
 """
-from typing import List, Dict, Any, Optional, Union, Callable
+
+from typing import Any, Callable, Dict, List, Optional, Union
 
 
 def to_hf_dataset(data: List[Dict[str, Any]]):
@@ -44,7 +45,7 @@ def from_hf_dataset(dataset, split: Optional[str] = None) -> List[Dict[str, Any]
         >>> data = from_hf_dataset(my_dataset, split="train")
     """
     try:
-        from datasets import load_dataset, Dataset, DatasetDict
+        from datasets import Dataset, DatasetDict, load_dataset
     except ImportError:
         raise ImportError("需要安装 datasets: pip install datasets")
 
@@ -53,7 +54,7 @@ def from_hf_dataset(dataset, split: Optional[str] = None) -> List[Dict[str, Any]
         dataset = load_dataset(dataset, split=split)
 
     # 处理 DatasetDict
-    if hasattr(dataset, 'keys'):  # DatasetDict
+    if hasattr(dataset, "keys"):  # DatasetDict
         if split:
             dataset = dataset[split]
         else:
@@ -83,8 +84,9 @@ def to_hf_chat_format(
     Examples:
         >>> dt.transform(to_hf_chat_format())
     """
+
     def transform(item) -> dict:
-        messages = item.get(messages_field, []) if hasattr(item, 'get') else item[messages_field]
+        messages = item.get(messages_field, []) if hasattr(item, "get") else item[messages_field]
         result = {"messages": messages}
         if add_generation_prompt:
             result["add_generation_prompt"] = True
@@ -110,12 +112,14 @@ def from_openai_batch(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for item in data:
         if item.get("response", {}).get("status_code") == 200:
             body = item["response"]["body"]
-            results.append({
-                "custom_id": item.get("custom_id"),
-                "content": body["choices"][0]["message"]["content"],
-                "model": body.get("model"),
-                "usage": body.get("usage"),
-            })
+            results.append(
+                {
+                    "custom_id": item.get("custom_id"),
+                    "content": body["choices"][0]["message"]["content"],
+                    "model": body.get("model"),
+                    "usage": body.get("usage"),
+                }
+            )
     return results
 
 
@@ -138,11 +142,12 @@ def to_openai_batch(
     Examples:
         >>> batch_input = dt.to(to_openai_batch(model="gpt-4o"))
     """
+
     def transform(item, idx=[0]) -> dict:
-        messages = item.get(messages_field, []) if hasattr(item, 'get') else item[messages_field]
+        messages = item.get(messages_field, []) if hasattr(item, "get") else item[messages_field]
 
         if custom_id_field:
-            custom_id = item.get(custom_id_field) if hasattr(item, 'get') else item[custom_id_field]
+            custom_id = item.get(custom_id_field) if hasattr(item, "get") else item[custom_id_field]
         else:
             custom_id = f"request-{idx[0]}"
             idx[0] += 1
@@ -154,7 +159,7 @@ def to_openai_batch(
             "body": {
                 "model": model,
                 "messages": messages,
-            }
+            },
         }
 
     return transform
@@ -189,8 +194,9 @@ def to_llama_factory(
     Returns:
         转换函数
     """
+
     def transform(item) -> dict:
-        get = lambda f: (item.get(f, "") if hasattr(item, 'get') else item.get(f, ""))
+        get = lambda f: (item.get(f, "") if hasattr(item, "get") else item.get(f, ""))
 
         result = {
             "instruction": get(instruction_field),
@@ -237,8 +243,13 @@ def to_axolotl(
     Returns:
         转换函数
     """
+
     def transform(item) -> dict:
-        conversations = item.get(conversations_field, []) if hasattr(item, 'get') else item.get(conversations_field, [])
+        conversations = (
+            item.get(conversations_field, [])
+            if hasattr(item, "get")
+            else item.get(conversations_field, [])
+        )
 
         # 如果已经是正确格式，直接返回
         if conversations and isinstance(conversations[0], dict):
@@ -246,11 +257,14 @@ def to_axolotl(
                 return {"conversations": conversations}
 
         # 尝试从 messages 格式转换
-        messages = item.get("messages", []) if hasattr(item, 'get') else item.get("messages", [])
+        messages = item.get("messages", []) if hasattr(item, "get") else item.get("messages", [])
         if messages:
             role_map = {"user": "human", "assistant": "gpt", "system": "system"}
             conversations = [
-                {from_key: role_map.get(m.get("role", ""), m.get("role", "")), value_key: m.get("content", "")}
+                {
+                    from_key: role_map.get(m.get("role", ""), m.get("role", "")),
+                    value_key: m.get("content", ""),
+                }
                 for m in messages
             ]
 
@@ -541,10 +555,12 @@ def to_swift_messages(
 
         for msg in messages:
             # 标准化格式
-            result_messages.append({
-                "role": msg.get("role", "user"),
-                "content": msg.get("content", ""),
-            })
+            result_messages.append(
+                {
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", ""),
+                }
+            )
 
         return {"messages": result_messages}
 
@@ -749,8 +765,8 @@ def messages_to_text(
     fmt = templates[template]
 
     def transform(item) -> dict:
-        result = item.to_dict() if hasattr(item, 'to_dict') else dict(item)
-        messages = item.get(messages_field, []) if hasattr(item, 'get') else item[messages_field]
+        result = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        messages = item.get(messages_field, []) if hasattr(item, "get") else item[messages_field]
 
         parts = []
         for msg in messages:

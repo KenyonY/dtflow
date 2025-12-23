@@ -3,29 +3,32 @@ DataTransformer 核心模块
 
 专注于数据格式转换，提供简洁的 API。
 """
-from typing import List, Dict, Any, Optional, Callable, Union, Tuple, Literal
+
 from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import orjson
 
-from .storage.io import save_data, load_data
 from .lineage import LineageTracker
+from .storage.io import load_data, save_data
 
 
 def _fast_json_dumps(obj: Any) -> str:
     """快速 JSON 序列化（使用 orjson，比标准 json 快约 10 倍）"""
-    return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS).decode('utf-8')
+    return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS).decode("utf-8")
 
 
 # ============ 错误处理 ============
 
+
 @dataclass
 class TransformError:
     """转换错误信息"""
-    index: int          # 原始数据索引
-    item: Dict          # 原始数据项
-    error: Exception    # 异常对象
+
+    index: int  # 原始数据索引
+    item: Dict  # 原始数据项
+    error: Exception  # 异常对象
 
     def __repr__(self) -> str:
         return f"TransformError(index={self.index}, error={self.error!r})"
@@ -48,9 +51,11 @@ class TransformErrors(Exception):
     def _build_message(self) -> str:
         if len(self.errors) == 1:
             return str(self.errors[0])
-        return f"转换失败 {len(self.errors)} 条记录:\n" + "\n".join(
-            f"  [{e.index}] {e.error}" for e in self.errors[:5]
-        ) + (f"\n  ... 还有 {len(self.errors) - 5} 条错误" if len(self.errors) > 5 else "")
+        return (
+            f"转换失败 {len(self.errors)} 条记录:\n"
+            + "\n".join(f"  [{e.index}] {e.error}" for e in self.errors[:5])
+            + (f"\n  ... 还有 {len(self.errors) - 5} 条错误" if len(self.errors) > 5 else "")
+        )
 
     def __iter__(self):
         return iter(self.errors)
@@ -116,7 +121,7 @@ class DataTransformer:
     # ============ 加载/保存 ============
 
     @classmethod
-    def load(cls, filepath: str, track_lineage: bool = False) -> 'DataTransformer':
+    def load(cls, filepath: str, track_lineage: bool = False) -> "DataTransformer":
         """
         从文件加载数据。
 
@@ -146,6 +151,7 @@ class DataTransformer:
         if lineage and self._lineage_tracker:
             lineage_path = self._lineage_tracker.save(filepath, len(self._data))
             import sys
+
             print(f"📜 血缘记录已保存: {lineage_path}", file=sys.stderr)
 
     # ============ 核心转换 ============
@@ -224,7 +230,7 @@ class DataTransformer:
         func: Callable[[Any], Any],
         on_error: Literal["skip", "raise", "null"] = "skip",
         raw: bool = False,
-    ) -> 'DataTransformer':
+    ) -> "DataTransformer":
         """
         转换数据并返回新的 DataTransformer（支持链式调用）。
 
@@ -257,7 +263,7 @@ class DataTransformer:
         func: Callable[[Any], bool],
         on_error: Literal["skip", "raise", "keep"] = "skip",
         raw: bool = False,
-    ) -> 'DataTransformer':
+    ) -> "DataTransformer":
         """
         筛选数据。
 
@@ -306,7 +312,7 @@ class DataTransformer:
 
         return DataTransformer(filtered, _lineage_tracker=tracker)
 
-    def sample(self, n: int, seed: Optional[int] = None) -> 'DataTransformer':
+    def sample(self, n: int, seed: Optional[int] = None) -> "DataTransformer":
         """
         随机采样 n 条数据。
 
@@ -315,6 +321,7 @@ class DataTransformer:
             seed: 随机种子
         """
         import random
+
         if seed is not None:
             random.seed(seed)
 
@@ -327,7 +334,7 @@ class DataTransformer:
 
         return DataTransformer(data, _lineage_tracker=tracker)
 
-    def head(self, n: int = 10) -> 'DataTransformer':
+    def head(self, n: int = 10) -> "DataTransformer":
         """取前 n 条"""
         data = self._data[:n]
         tracker = self._lineage_tracker
@@ -335,7 +342,7 @@ class DataTransformer:
             tracker.record("head", {"n": n}, len(self._data), len(data))
         return DataTransformer(data, _lineage_tracker=tracker)
 
-    def tail(self, n: int = 10) -> 'DataTransformer':
+    def tail(self, n: int = 10) -> "DataTransformer":
         """取后 n 条"""
         data = self._data[-n:]
         tracker = self._lineage_tracker
@@ -346,7 +353,7 @@ class DataTransformer:
     def dedupe(
         self,
         key: Union[None, str, List[str], Callable[[Any], Any]] = None,
-    ) -> 'DataTransformer':
+    ) -> "DataTransformer":
         """
         数据去重。
 
@@ -408,7 +415,7 @@ class DataTransformer:
         threshold: float = 0.8,
         num_perm: int = 128,
         ngram: int = 3,
-    ) -> 'DataTransformer':
+    ) -> "DataTransformer":
         """
         基于 MinHash + LSH 的相似度去重。
 
@@ -429,9 +436,7 @@ class DataTransformer:
         try:
             from datasketch import MinHash, MinHashLSH
         except ImportError:
-            raise ImportError(
-                "相似度去重需要 datasketch 库，请安装: pip install datasketch"
-            )
+            raise ImportError("相似度去重需要 datasketch 库，请安装: pip install datasketch")
 
         if not self._data:
             return DataTransformer([])
@@ -441,10 +446,11 @@ class DataTransformer:
         # threshold=0.99 需要 num_perm>=512，threshold>=0.999 会需要极大的值(4096+)
         if threshold >= 0.999:
             import warnings
+
             warnings.warn(
                 f"阈值 {threshold} 过高，已自动调整为 0.99。"
                 f"如需更高精度，建议使用 dedupe() 精确去重。",
-                UserWarning
+                UserWarning,
             )
             threshold = 0.99
 
@@ -508,14 +514,14 @@ class DataTransformer:
         else:
             raise ValueError(f"不支持的 key 类型: {type(key)}")
 
-    def _create_minhash(self, text: str, num_perm: int, ngram: int) -> 'MinHash':
+    def _create_minhash(self, text: str, num_perm: int, ngram: int) -> "MinHash":
         """创建文本的 MinHash 签名"""
         from datasketch import MinHash
 
         m = MinHash(num_perm=num_perm)
         # 使用字符级 n-gram（对中英文都适用）
         for i in range(len(text) - ngram + 1):
-            m.update(text[i:i + ngram].encode('utf-8'))
+            m.update(text[i : i + ngram].encode("utf-8"))
         return m
 
     # ============ 数据信息 ============
@@ -536,7 +542,7 @@ class DataTransformer:
 
         return sorted(all_fields)
 
-    def _extract_fields(self, obj: Any, prefix: str = '') -> List[str]:
+    def _extract_fields(self, obj: Any, prefix: str = "") -> List[str]:
         """递归提取字段名"""
         fields = []
         if isinstance(obj, dict):
@@ -567,25 +573,21 @@ class DataTransformer:
             field_stats[key] = {
                 "count": len(values),
                 "missing": len(self._data) - len(values),
-                "type": type(values[0]).__name__ if values else "unknown"
+                "type": type(values[0]).__name__ if values else "unknown",
             }
 
-        return {
-            "total": len(self._data),
-            "fields": sorted(all_keys),
-            "field_stats": field_stats
-        }
+        return {"total": len(self._data), "fields": sorted(all_keys), "field_stats": field_stats}
 
     # ============ 工具方法 ============
 
-    def copy(self) -> 'DataTransformer':
+    def copy(self) -> "DataTransformer":
         """深拷贝"""
         return DataTransformer(deepcopy(self._data))
 
     # ============ 数据合并 ============
 
     @classmethod
-    def concat(cls, *sources: Union[str, 'DataTransformer']) -> 'DataTransformer':
+    def concat(cls, *sources: Union[str, "DataTransformer"]) -> "DataTransformer":
         """
         拼接多个数据源。
 
@@ -615,7 +617,7 @@ class DataTransformer:
 
         return cls(all_data)
 
-    def __add__(self, other: Union[str, 'DataTransformer']) -> 'DataTransformer':
+    def __add__(self, other: Union[str, "DataTransformer"]) -> "DataTransformer":
         """
         使用 + 运算符拼接数据。
 
@@ -625,9 +627,10 @@ class DataTransformer:
         """
         return DataTransformer.concat(self, other)
 
-    def shuffle(self, seed: Optional[int] = None) -> 'DataTransformer':
+    def shuffle(self, seed: Optional[int] = None) -> "DataTransformer":
         """打乱顺序（返回新实例）"""
         import random
+
         data = self._data[:]
         if seed is not None:
             random.seed(seed)
@@ -706,7 +709,7 @@ class DataTransformer:
         func: Callable[[Dict], bool],
         workers: Optional[int] = None,
         chunksize: int = 1000,
-    ) -> 'DataTransformer':
+    ) -> "DataTransformer":
         """
         并行执行过滤函数（使用多进程）。
 
@@ -765,18 +768,18 @@ class DictWrapper:
     """
 
     def __init__(self, data: Dict[str, Any]):
-        object.__setattr__(self, '_data', data)
+        object.__setattr__(self, "_data", data)
         # 构建规范化名称到原始名称的映射
         alias_map = {}
         for key in data.keys():
             sanitized = _sanitize_key(key)
             if sanitized != key:
                 alias_map[sanitized] = key
-        object.__setattr__(self, '_alias_map', alias_map)
+        object.__setattr__(self, "_alias_map", alias_map)
 
     def __getattr__(self, name: str) -> Any:
-        data = object.__getattribute__(self, '_data')
-        alias_map = object.__getattribute__(self, '_alias_map')
+        data = object.__getattribute__(self, "_data")
+        alias_map = object.__getattribute__(self, "_alias_map")
 
         # 先尝试直接匹配
         if name in data:
@@ -795,23 +798,23 @@ class DictWrapper:
         raise AttributeError(f"字段不存在: {name}")
 
     def __getitem__(self, key: str) -> Any:
-        data = object.__getattribute__(self, '_data')
+        data = object.__getattribute__(self, "_data")
         value = data[key]
         if isinstance(value, dict):
             return DictWrapper(value)
         return value
 
     def __contains__(self, key: str) -> bool:
-        data = object.__getattribute__(self, '_data')
+        data = object.__getattribute__(self, "_data")
         return key in data
 
     def __repr__(self) -> str:
-        data = object.__getattribute__(self, '_data')
+        data = object.__getattribute__(self, "_data")
         return repr(data)
 
     def get(self, key: str, default: Any = None) -> Any:
         """安全获取字段值"""
-        data = object.__getattribute__(self, '_data')
+        data = object.__getattribute__(self, "_data")
         value = data.get(key, default)
         if isinstance(value, dict):
             return DictWrapper(value)
@@ -819,4 +822,4 @@ class DictWrapper:
 
     def to_dict(self) -> Dict[str, Any]:
         """返回原始字典"""
-        return object.__getattribute__(self, '_data')
+        return object.__getattribute__(self, "_data")

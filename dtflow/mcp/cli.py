@@ -3,21 +3,26 @@
 提供 MCP 服务的安装和管理命令。
 """
 
-import orjson
 import os
 import platform
 from pathlib import Path
 from typing import Literal
 
+import orjson
+
 try:
     from rich import print
     from rich.console import Console
+
     console = Console()
 except ImportError:
     console = None
+
     def print(*args, **kwargs):
         import builtins
+
         builtins.print(*args, **kwargs)
+
 
 # 支持的目标类型
 TargetType = Literal["desktop", "code", "all"]
@@ -28,7 +33,13 @@ def get_claude_desktop_config_path() -> Path:
     system = platform.system()
 
     if system == "Darwin":  # macOS
-        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Claude"
+            / "claude_desktop_config.json"
+        )
     elif system == "Windows":
         return Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
     elif system == "Linux":
@@ -67,7 +78,9 @@ def _install_to_config(config_path: Path, name: str, target_name: str) -> bool:
                 config = orjson.loads(f.read())
         except orjson.JSONDecodeError:
             if console:
-                console.print(f"[yellow]警告:[/yellow] {target_name} 配置文件格式错误，将创建新配置")
+                console.print(
+                    f"[yellow]警告:[/yellow] {target_name} 配置文件格式错误，将创建新配置"
+                )
             else:
                 print(f"警告: {target_name} 配置文件格式错误，将创建新配置")
 
@@ -131,7 +144,9 @@ def _show_config_status(config_path: Path, target_name: str):
     if console:
         console.print(f"\n[bold]{target_name} 配置:[/bold]")
         console.print(f"  路径: [bold blue]{config_path}[/bold blue]")
-        console.print(f"  存在: {'[green]是[/green]' if config_path.exists() else '[yellow]否[/yellow]'}")
+        console.print(
+            f"  存在: {'[green]是[/green]' if config_path.exists() else '[yellow]否[/yellow]'}"
+        )
     else:
         print(f"\n{target_name} 配置:")
         print(f"  路径: {config_path}")
@@ -308,6 +323,7 @@ class MCPCommands:
 
         try:
             import mcp
+
             if console:
                 console.print(f"  mcp: [green]已安装[/green]")
             else:
@@ -333,6 +349,7 @@ class MCPCommands:
         # 检查依赖
         try:
             from dtflow.mcp import mcp
+
             if console:
                 console.print("[green]OK[/green] MCP 模块导入成功")
             else:
@@ -349,6 +366,7 @@ class MCPCommands:
         # 检查文档
         try:
             from dtflow.mcp.docs import DOCS, TOPICS
+
             if console:
                 console.print(f"[green]OK[/green] 文档加载成功 ({len(TOPICS)} 个主题)")
             else:

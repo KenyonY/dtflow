@@ -21,26 +21,25 @@ Commands:
     mcp          MCP 服务管理（install/uninstall/status）
     logs         日志查看工具使用说明
 """
+
 import os
 import sys
 from typing import List, Optional
 
 import typer
 
-from .cli.commands import (
-    sample as _sample,
-    head as _head,
-    tail as _tail,
-    transform as _transform,
-    dedupe as _dedupe,
-    concat as _concat,
-    stats as _stats,
-    clean as _clean,
-    run as _run,
-    token_stats as _token_stats,
-    diff as _diff,
-    history as _history,
-)
+from .cli.commands import clean as _clean
+from .cli.commands import concat as _concat
+from .cli.commands import dedupe as _dedupe
+from .cli.commands import diff as _diff
+from .cli.commands import head as _head
+from .cli.commands import history as _history
+from .cli.commands import run as _run
+from .cli.commands import sample as _sample
+from .cli.commands import stats as _stats
+from .cli.commands import tail as _tail
+from .cli.commands import token_stats as _token_stats
+from .cli.commands import transform as _transform
 
 # 创建主应用
 app = typer.Typer(
@@ -52,6 +51,7 @@ app = typer.Typer(
 
 
 # ============ 数据预览命令 ============
+
 
 @app.command()
 def sample(
@@ -92,6 +92,7 @@ def tail(
 
 # ============ 数据转换命令 ============
 
+
 @app.command()
 def transform(
     filename: str = typer.Argument(..., help="输入文件路径"),
@@ -115,6 +116,7 @@ def run(
 
 
 # ============ 数据处理命令 ============
+
 
 @app.command()
 def dedupe(
@@ -154,6 +156,7 @@ def clean(
 
 # ============ 数据统计命令 ============
 
+
 @app.command()
 def stats(
     filename: str = typer.Argument(..., help="输入文件路径"),
@@ -167,7 +170,9 @@ def stats(
 def token_stats(
     filename: str = typer.Argument(..., help="输入文件路径"),
     field: str = typer.Option("messages", "--field", "-f", help="统计字段"),
-    model: str = typer.Option("cl100k_base", "--model", "-m", help="分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等"),
+    model: str = typer.Option(
+        "cl100k_base", "--model", "-m", help="分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等"
+    ),
     detailed: bool = typer.Option(False, "--detailed", "-d", help="显示详细统计"),
 ):
     """统计数据集的 Token 信息"""
@@ -195,6 +200,7 @@ def history(
 
 
 # ============ 工具命令 ============
+
 
 @app.command()
 def logs():
@@ -237,6 +243,7 @@ def install(
 ):
     """安装 Datatron MCP 服务"""
     from .mcp.cli import MCPCommands
+
     MCPCommands().install(name, target)
 
 
@@ -247,6 +254,7 @@ def uninstall(
 ):
     """移除 Datatron MCP 服务"""
     from .mcp.cli import MCPCommands
+
     MCPCommands().uninstall(name, target)
 
 
@@ -254,6 +262,7 @@ def uninstall(
 def status():
     """查看 MCP 服务安装状态"""
     from .mcp.cli import MCPCommands
+
     MCPCommands().status()
 
 
@@ -261,6 +270,7 @@ def status():
 def test():
     """测试 MCP 服务是否正常"""
     from .mcp.cli import MCPCommands
+
     MCPCommands().test()
 
 
@@ -281,10 +291,9 @@ def _show_completion_hint():
 
     # 显示提示（使用 stderr 避免干扰管道输出）
     from rich.console import Console
+
     console = Console(stderr=True)
-    console.print(
-        "[dim]💡 提示: 运行 [green]dt --install-completion[/green] 启用命令补全[/dim]"
-    )
+    console.print("[dim]💡 提示: 运行 [green]dt --install-completion[/green] 启用命令补全[/dim]")
 
     # 记录已提示
     try:
@@ -296,8 +305,8 @@ def _show_completion_hint():
 
 def main():
     # less 分页器配置（仅 Unix-like 系统）
-    if sys.platform != 'win32':
-        os.environ['PAGER'] = 'less -RXF'
+    if sys.platform != "win32":
+        os.environ["PAGER"] = "less -RXF"
 
     # _show_completion_hint()
     app()

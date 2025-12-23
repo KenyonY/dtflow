@@ -1,7 +1,7 @@
 """
 CLI 命令实现
 """
-import orjson
+
 import os
 import shutil
 import tempfile
@@ -9,13 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from ..core import DataTransformer, DictWrapper
-from ..presets import get_preset, list_presets
-from ..storage.io import load_data, save_data, sample_file
-from ..pipeline import run_pipeline, validate_pipeline
-from ..lineage import load_lineage, format_lineage_report, has_lineage, get_lineage_chain
-from ..streaming import load_stream
+import orjson
 
+from ..core import DataTransformer, DictWrapper
+from ..lineage import format_lineage_report, get_lineage_chain, has_lineage, load_lineage
+from ..pipeline import run_pipeline, validate_pipeline
+from ..presets import get_preset, list_presets
+from ..storage.io import load_data, sample_file, save_data
+from ..streaming import load_stream
 
 # 支持的文件格式
 SUPPORTED_FORMATS = {".csv", ".jsonl", ".json", ".xlsx", ".xls", ".parquet", ".arrow", ".feather"}
@@ -92,9 +93,7 @@ def sample(
     # 分层采样模式
     if by:
         try:
-            sampled = _stratified_sample(
-                filepath, num, by, uniform, seed, type
-            )
+            sampled = _stratified_sample(filepath, num, by, uniform, seed, type)
         except Exception as e:
             print(f"错误: {e}")
             return
@@ -360,7 +359,7 @@ def _format_nested(
     if isinstance(value, dict):
         items = list(value.items())
         for i, (k, v) in enumerate(items):
-            is_last_item = (i == len(items) - 1)
+            is_last_item = i == len(items) - 1
             b = "└─ " if is_last_item else "├─ "
             c = "   " if is_last_item else "│  "
 
@@ -369,11 +368,12 @@ def _format_nested(
                 if isinstance(v, list):
                     # 检测是否为 messages 格式
                     is_messages = (
-                        v and isinstance(v[0], dict)
-                        and "role" in v[0] and "content" in v[0]
+                        v and isinstance(v[0], dict) and "role" in v[0] and "content" in v[0]
                     )
                     if is_messages:
-                        lines.append(f"{indent}{b}[green]{k}[/green]: ({len(v)} items) [dim]→ \\[role]: content[/dim]")
+                        lines.append(
+                            f"{indent}{b}[green]{k}[/green]: ({len(v)} items) [dim]→ \\[role]: content[/dim]"
+                        )
                     else:
                         lines.append(f"{indent}{b}[green]{k}[/green]: ({len(v)} items)")
                 else:
@@ -385,7 +385,7 @@ def _format_nested(
 
     elif isinstance(value, list):
         for i, item in enumerate(value):
-            is_last_item = (i == len(value) - 1)
+            is_last_item = i == len(value) - 1
             b = "└─ " if is_last_item else "├─ "
             c = "   " if is_last_item else "│  "
 
@@ -457,8 +457,8 @@ def _print_samples(
 
     try:
         from rich.console import Console
-        from rich.table import Table
         from rich.panel import Panel
+        from rich.table import Table
 
         console = Console()
 
@@ -475,12 +475,14 @@ def _print_samples(
             else:
                 info = f"采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
 
-            console.print(Panel(
-                f"[dim]{info}[/dim]\n[dim]字段: {field_names}[/dim]",
-                title=f"[bold]📊 {filename}[/bold]",
-                expand=False,
-                border_style="dim",
-            ))
+            console.print(
+                Panel(
+                    f"[dim]{info}[/dim]\n[dim]字段: {field_names}[/dim]",
+                    title=f"[bold]📊 {filename}[/bold]",
+                    expand=False,
+                    border_style="dim",
+                )
+            )
             console.print()
 
         # 简单数据用表格展示
@@ -514,7 +516,9 @@ def _print_samples(
 
             print(f"\n📊 {filename}")
             if total_count is not None:
-                print(f"   总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个")
+                print(
+                    f"   总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                )
             else:
                 print(f"   采样: {len(samples)} 条 | 字段: {len(all_fields)} 个")
             print(f"   字段: {', '.join(sorted(all_fields))}")
@@ -780,7 +784,7 @@ def _generate_default_transform(field_names: List[str]) -> str:
     for name in field_names[:5]:  # 最多显示 5 个字段
         safe_name, _ = _sanitize_field_name(name)
         lines.append(f'        "{name}": item.{safe_name},')
-    return "\n".join(lines) if lines else '        # 在这里定义输出字段'
+    return "\n".join(lines) if lines else "        # 在这里定义输出字段"
 
 
 def _execute_transform(
@@ -827,6 +831,7 @@ def _execute_transform(
         except Exception as e:
             print(f"错误: 转换失败 - {e}")
             import traceback
+
             traceback.print_exc()
         return
 
@@ -852,6 +857,7 @@ def _execute_transform(
     except Exception as e:
         print(f"错误: 转换失败 - {e}")
         import traceback
+
         traceback.print_exc()
         return
 
@@ -930,6 +936,7 @@ def _execute_preset_transform(
                 os.unlink(temp_path)
             print(f"错误: 转换失败 - {e}")
             import traceback
+
             traceback.print_exc()
         return
 
@@ -955,6 +962,7 @@ def _execute_preset_transform(
     except Exception as e:
         print(f"错误: 转换失败 - {e}")
         import traceback
+
         traceback.print_exc()
         return
 
@@ -1132,8 +1140,13 @@ def concat(
 
     for filepath in file_paths:
         try:
-            # 只读取第一行来获取字段
-            first_row = load_stream(str(filepath)).head(1).collect()
+            # 只读取第一行来获取字段（根据格式选择加载方式）
+            if _is_streaming_supported(filepath):
+                first_row = load_stream(str(filepath)).head(1).collect()
+            else:
+                # 非流式格式（如 .json, .xlsx）使用全量加载
+                data = load_data(str(filepath))
+                first_row = data[:1] if data else []
             if not first_row:
                 print(f"警告: 文件为空 - {filepath}")
                 fields = set()
@@ -1207,7 +1220,13 @@ def concat(
 
 def _concat_streaming(file_paths: List[Path], output: str) -> int:
     """流式拼接多个文件"""
-    from ..streaming import StreamingTransformer, _stream_jsonl, _stream_csv, _stream_parquet, _stream_arrow
+    from ..streaming import (
+        StreamingTransformer,
+        _stream_arrow,
+        _stream_csv,
+        _stream_jsonl,
+        _stream_parquet,
+    )
 
     def generator():
         for filepath in file_paths:
@@ -1413,12 +1432,16 @@ def _truncate(v: Any, max_width: int) -> str:
     result = []
     for char in s:
         # CJK 字符范围
-        if '\u4e00' <= char <= '\u9fff' or '\u3000' <= char <= '\u303f' or '\uff00' <= char <= '\uffef':
+        if (
+            "\u4e00" <= char <= "\u9fff"
+            or "\u3000" <= char <= "\u303f"
+            or "\uff00" <= char <= "\uffef"
+        ):
             char_width = 2
         else:
             char_width = 1
         if width + char_width > max_width - 3:  # 预留 ... 的宽度
-            return ''.join(result) + "..."
+            return "".join(result) + "..."
         result.append(char)
         width += char_width
     return s
@@ -1429,7 +1452,11 @@ def _display_width(s: str) -> int:
     width = 0
     for char in s:
         # CJK 字符范围
-        if '\u4e00' <= char <= '\u9fff' or '\u3000' <= char <= '\u303f' or '\uff00' <= char <= '\uffef':
+        if (
+            "\u4e00" <= char <= "\u9fff"
+            or "\u3000" <= char <= "\u303f"
+            or "\uff00" <= char <= "\uffef"
+        ):
             width += 2
         else:
             width += 1
@@ -1441,26 +1468,28 @@ def _pad_to_width(s: str, target_width: int) -> str:
     current_width = _display_width(s)
     if current_width >= target_width:
         return s
-    return s + ' ' * (target_width - current_width)
+    return s + " " * (target_width - current_width)
 
 
 def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -> None:
     """打印统计信息"""
     try:
         from rich.console import Console
-        from rich.table import Table
         from rich.panel import Panel
+        from rich.table import Table
 
         console = Console()
 
         # 概览
-        console.print(Panel(
-            f"[bold]文件:[/bold] {filename}\n"
-            f"[bold]总数:[/bold] {total:,} 条\n"
-            f"[bold]字段:[/bold] {len(field_stats)} 个",
-            title="📊 数据概览",
-            expand=False,
-        ))
+        console.print(
+            Panel(
+                f"[bold]文件:[/bold] {filename}\n"
+                f"[bold]总数:[/bold] {total:,} 条\n"
+                f"[bold]字段:[/bold] {len(field_stats)} 个",
+                title="📊 数据概览",
+                expand=False,
+            )
+        )
 
         # 字段统计表
         table = Table(title="📋 字段统计", show_header=True, header_style="bold cyan")
@@ -1477,12 +1506,18 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
             # 构建统计信息字符串
             extra = []
             if "len_avg" in stat:
-                extra.append(f"长度: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})")
+                extra.append(
+                    f"长度: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})"
+                )
             if "avg" in stat:
                 if stat["type"] == "int":
-                    extra.append(f"范围: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})")
+                    extra.append(
+                        f"范围: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})"
+                    )
                 else:
-                    extra.append(f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})")
+                    extra.append(
+                        f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})"
+                    )
 
             table.add_row(
                 stat["field"],
@@ -1509,7 +1544,9 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
             if unique_ratio > 0.9 and stat.get("unique", 0) > 100:
                 continue
 
-            console.print(f"\n[bold cyan]{stat['field']}[/bold cyan] 值分布 (Top {len(top_values)}):")
+            console.print(
+                f"\n[bold cyan]{stat['field']}[/bold cyan] 值分布 (Top {len(top_values)}):"
+            )
             max_count = max(c for _, c in top_values) if top_values else 1
             for value, count in top_values:
                 pct = count / total * 100
@@ -1666,6 +1703,7 @@ def clean(
                 os.unlink(temp_path)
             print(f"错误: 清洗失败 - {e}")
             import traceback
+
             traceback.print_exc()
         return
 
@@ -1866,6 +1904,7 @@ def _clean_streaming(
     Returns:
         处理后的数据条数
     """
+
     def clean_filter(item: Dict) -> bool:
         """过滤函数：返回 True 保留，False 过滤"""
         # 空值过滤
@@ -1908,7 +1947,9 @@ def _clean_streaming(
 
     # 如果需要 strip，先执行 strip 转换（在过滤之前，这样空值检测更准确）
     if strip:
-        st = st.transform(lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()})
+        st = st.transform(
+            lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()}
+        )
 
     # 执行过滤
     if empty_fields is not None or min_len_field is not None or max_len_field is not None:
@@ -1916,12 +1957,14 @@ def _clean_streaming(
 
     # 执行字段管理（如果没有 strip，也需要在这里处理）
     if keep_set is not None or drop_fields_set is not None:
+
         def field_transform(item):
             if keep_set is not None:
                 return {k: v for k, v in item.items() if k in keep_set}
             elif drop_fields_set is not None:
                 return {k: v for k, v in item.items() if k not in drop_fields_set}
             return item
+
         st = st.transform(field_transform)
 
     return st.save(output_path)
@@ -1972,6 +2015,7 @@ def run(
     except Exception as e:
         print(f"错误: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -2031,11 +2075,13 @@ def token_stats(
         if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
             # messages 格式
             from ..tokenizers import messages_token_stats
+
             stats = messages_token_stats(data, messages_field=field, model=model)
             _print_messages_token_stats(stats, detailed)
         else:
             # 普通文本字段
             from ..tokenizers import token_stats as compute_token_stats
+
             stats = compute_token_stats(data, fields=field, model=model)
             _print_text_token_stats(stats, detailed)
     except ImportError as e:
@@ -2044,6 +2090,7 @@ def token_stats(
     except Exception as e:
         print(f"错误: 统计失败 - {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -2051,8 +2098,8 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
     """打印 messages 格式的 token 统计"""
     try:
         from rich.console import Console
-        from rich.table import Table
         from rich.panel import Panel
+        from rich.table import Table
 
         console = Console()
 
@@ -2073,8 +2120,12 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
             table.add_column("Token 数", justify="right")
             table.add_column("占比", justify="right")
 
-            total = stats['total_tokens']
-            for role, key in [("User", "user_tokens"), ("Assistant", "assistant_tokens"), ("System", "system_tokens")]:
+            total = stats["total_tokens"]
+            for role, key in [
+                ("User", "user_tokens"),
+                ("Assistant", "assistant_tokens"),
+                ("System", "system_tokens"),
+            ]:
                 tokens = stats.get(key, 0)
                 pct = tokens / total * 100 if total > 0 else 0
                 table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
@@ -2097,8 +2148,12 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
             print(f"\n{'=' * 40}")
             print("📋 分角色统计")
             print(f"{'=' * 40}")
-            total = stats['total_tokens']
-            for role, key in [("User", "user_tokens"), ("Assistant", "assistant_tokens"), ("System", "system_tokens")]:
+            total = stats["total_tokens"]
+            for role, key in [
+                ("User", "user_tokens"),
+                ("Assistant", "assistant_tokens"),
+                ("System", "system_tokens"),
+            ]:
                 tokens = stats.get(key, 0)
                 pct = tokens / total * 100 if total > 0 else 0
                 print(f"{role}: {tokens:,} ({pct:.1f}%)")
@@ -2241,11 +2296,13 @@ def _compute_diff(
             else:
                 result["summary"]["modified"] += 1
                 if len(result["details"]["modified"]) < 10:
-                    result["details"]["modified"].append({
-                        "key": k,
-                        "before": dict1[k],
-                        "after": dict2[k],
-                    })
+                    result["details"]["modified"].append(
+                        {
+                            "key": k,
+                            "before": dict1[k],
+                            "after": dict2[k],
+                        }
+                    )
     else:
         # 基于哈希的比较
         def _hash_item(item):
@@ -2290,8 +2347,8 @@ def _print_diff_report(diff_result: Dict[str, Any], name1: str, name2: str) -> N
 
     try:
         from rich.console import Console
-        from rich.table import Table
         from rich.panel import Panel
+        from rich.table import Table
 
         console = Console()
 
@@ -2311,9 +2368,13 @@ def _print_diff_report(diff_result: Dict[str, Any], name1: str, name2: str) -> N
         if field_changes["added_fields"] or field_changes["removed_fields"]:
             console.print("\n[bold]📋 字段变化:[/bold]")
             if field_changes["added_fields"]:
-                console.print(f"  [green]+ 新增字段:[/green] {', '.join(field_changes['added_fields'])}")
+                console.print(
+                    f"  [green]+ 新增字段:[/green] {', '.join(field_changes['added_fields'])}"
+                )
             if field_changes["removed_fields"]:
-                console.print(f"  [red]- 删除字段:[/red] {', '.join(field_changes['removed_fields'])}")
+                console.print(
+                    f"  [red]- 删除字段:[/red] {', '.join(field_changes['removed_fields'])}"
+                )
 
     except ImportError:
         print(f"\n{'=' * 50}")

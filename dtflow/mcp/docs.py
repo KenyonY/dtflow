@@ -74,7 +74,6 @@ dt transform data.jsonl
 dt sample data.jsonl --num=10
 ```
 """,
-
     "basic_usage": """# Datatron 基本用法
 
 ## 加载与保存
@@ -150,7 +149,6 @@ dt.shuffle(seed=42)
 train, test = dt.split(ratio=0.8)
 ```
 """,
-
     "presets": """# 预设转换模板
 
 Datatron 提供常用的格式转换预设，可直接用于 CLI 或 Python API。
@@ -233,7 +231,6 @@ result = dt.to(transform_fn)
 }
 ```
 """,
-
     "cli": """# CLI 命令行工具
 
 Datatron 提供 `dt` 命令行工具。
@@ -295,7 +292,6 @@ dt sample data.jsonl --num=50 --seed=42
 - Excel (.xlsx, .xls) - 需要安装 pandas
 - Parquet (.parquet) - 需要安装 pyarrow
 """,
-
     "storage": """# 存储格式支持
 
 Datatron 支持多种常用数据格式。
@@ -348,7 +344,6 @@ pip install dtflow[full]
 pip install dtflow[storage]
 ```
 """,
-
     "chain_api": """# 链式 API 设计
 
 Datatron 支持流畅的链式调用。

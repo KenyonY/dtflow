@@ -4,6 +4,7 @@
 支持大文件的惰性处理，避免全量加载内存。
 支持格式：JSONL, CSV, Parquet, Arrow
 """
+
 import glob
 import os
 from pathlib import Path
@@ -12,14 +13,14 @@ from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Uni
 import orjson
 import polars as pl
 from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
-    BarColumn,
     TaskProgressColumn,
+    TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn,
 )
 
 # 支持的流式格式
@@ -85,9 +86,7 @@ class StreamingTransformer:
         self._operations: List[Dict[str, Any]] = []
 
     @classmethod
-    def load_stream(
-        cls, filepath: str, batch_size: int = 10000
-    ) -> "StreamingTransformer":
+    def load_stream(cls, filepath: str, batch_size: int = 10000) -> "StreamingTransformer":
         """
         流式加载文件。
 
@@ -123,9 +122,7 @@ class StreamingTransformer:
             raise ValueError(f"未知格式: {ext}")
 
     @classmethod
-    def load_sharded(
-        cls, pattern: str, batch_size: int = 10000
-    ) -> "StreamingTransformer":
+    def load_sharded(cls, pattern: str, batch_size: int = 10000) -> "StreamingTransformer":
         """
         加载分片文件（支持 glob 模式）。
 
@@ -173,6 +170,7 @@ class StreamingTransformer:
         Returns:
             新的 StreamingTransformer（惰性，不立即执行）
         """
+
         def filtered_iterator():
             for item in self._iterator:
                 try:
@@ -196,6 +194,7 @@ class StreamingTransformer:
         Returns:
             新的 StreamingTransformer（惰性，不立即执行）
         """
+
         def transformed_iterator():
             for item in self._iterator:
                 try:
@@ -218,6 +217,7 @@ class StreamingTransformer:
         Returns:
             新的 StreamingTransformer
         """
+
         def head_iterator():
             count = 0
             for item in self._iterator:
@@ -242,6 +242,7 @@ class StreamingTransformer:
         Returns:
             新的 StreamingTransformer
         """
+
         def skip_iterator():
             count = 0
             for item in self._iterator:
@@ -279,9 +280,7 @@ class StreamingTransformer:
         if batch:
             yield batch
 
-    def save(
-        self, filepath: str, show_progress: bool = True, batch_size: int = 10000
-    ) -> int:
+    def save(self, filepath: str, show_progress: bool = True, batch_size: int = 10000) -> int:
         """
         流式保存到文件。
 
@@ -352,9 +351,7 @@ class StreamingTransformer:
 
         return count
 
-    def _save_batched(
-        self, filepath: str, fmt: str, batch_size: int, show_progress: bool
-    ) -> int:
+    def _save_batched(self, filepath: str, fmt: str, batch_size: int, show_progress: bool) -> int:
         """
         批量流式保存（CSV/Parquet/Arrow）。
 
@@ -623,9 +620,7 @@ def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
                 yield orjson.loads(line)
 
 
-def _stream_csv(
-    filepath: str, batch_size: int = 10000
-) -> Generator[Dict[str, Any], None, None]:
+def _stream_csv(filepath: str, batch_size: int = 10000) -> Generator[Dict[str, Any], None, None]:
     """CSV 流式读取（使用 Polars BatchedCsvReader）"""
     reader = pl.read_csv_batched(filepath, batch_size=batch_size)
     while True:

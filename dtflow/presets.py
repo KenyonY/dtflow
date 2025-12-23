@@ -3,13 +3,12 @@
 
 提供常用数据格式的转换函数，可直接用于 dt.to() 或 CLI --preset。
 """
-from typing import Callable, Any
+
+from typing import Any, Callable
 
 
 def openai_chat(
-    user_field: str = "q",
-    assistant_field: str = "a",
-    system_prompt: str = None
+    user_field: str = "q", assistant_field: str = "a", system_prompt: str = None
 ) -> Callable:
     """
     OpenAI Chat 格式。
@@ -28,6 +27,7 @@ def openai_chat(
         assistant_field: 助手回复字段名
         system_prompt: 系统提示词（可选）
     """
+
     def transform(item: Any) -> dict:
         messages = []
         if system_prompt:
@@ -45,9 +45,7 @@ def openai_chat(
 
 
 def alpaca(
-    instruction_field: str = "instruction",
-    input_field: str = "input",
-    output_field: str = "output"
+    instruction_field: str = "instruction", input_field: str = "input", output_field: str = "output"
 ) -> Callable:
     """
     Alpaca 格式。
@@ -59,9 +57,11 @@ def alpaca(
         "output": "..."
     }
     """
+
     def transform(item: Any) -> dict:
         return {
-            "instruction": getattr(item, instruction_field, None) or item.get(instruction_field, ""),
+            "instruction": getattr(item, instruction_field, None)
+            or item.get(instruction_field, ""),
             "input": getattr(item, input_field, None) or item.get(input_field, ""),
             "output": getattr(item, output_field, None) or item.get(output_field, ""),
         }
@@ -69,10 +69,7 @@ def alpaca(
     return transform
 
 
-def sharegpt(
-    conversations_field: str = "conversations",
-    role_mapping: dict = None
-) -> Callable:
+def sharegpt(conversations_field: str = "conversations", role_mapping: dict = None) -> Callable:
     """
     ShareGPT 多轮对话格式。
 
@@ -87,7 +84,9 @@ def sharegpt(
     role_mapping = role_mapping or {"user": "human", "assistant": "gpt"}
 
     def transform(item: Any) -> dict:
-        conversations = getattr(item, conversations_field, None) or item.get(conversations_field, [])
+        conversations = getattr(item, conversations_field, None) or item.get(
+            conversations_field, []
+        )
 
         # 如果已经是对话格式，直接返回
         if conversations:
@@ -95,8 +94,14 @@ def sharegpt(
 
         # 尝试从 q/a 构建
         result = []
-        for field, role in [("q", "human"), ("question", "human"), ("instruction", "human"),
-                           ("a", "gpt"), ("answer", "gpt"), ("output", "gpt")]:
+        for field, role in [
+            ("q", "human"),
+            ("question", "human"),
+            ("instruction", "human"),
+            ("a", "gpt"),
+            ("answer", "gpt"),
+            ("output", "gpt"),
+        ]:
             value = getattr(item, field, None) or item.get(field, None)
             if value:
                 result.append({"from": role, "value": value})
@@ -107,9 +112,7 @@ def sharegpt(
 
 
 def dpo_pair(
-    prompt_field: str = "prompt",
-    chosen_field: str = "chosen",
-    rejected_field: str = "rejected"
+    prompt_field: str = "prompt", chosen_field: str = "chosen", rejected_field: str = "rejected"
 ) -> Callable:
     """
     DPO 偏好对格式。
@@ -121,6 +124,7 @@ def dpo_pair(
         "rejected": "..."
     }
     """
+
     def transform(item: Any) -> dict:
         return {
             "prompt": getattr(item, prompt_field, None) or item.get(prompt_field, ""),
@@ -131,10 +135,7 @@ def dpo_pair(
     return transform
 
 
-def simple_qa(
-    question_field: str = "q",
-    answer_field: str = "a"
-) -> Callable:
+def simple_qa(question_field: str = "q", answer_field: str = "a") -> Callable:
     """
     简单问答格式。
 
@@ -144,6 +145,7 @@ def simple_qa(
         "answer": "..."
     }
     """
+
     def transform(item: Any) -> dict:
         return {
             "question": getattr(item, question_field, None) or item.get(question_field, ""),

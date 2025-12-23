@@ -3,15 +3,16 @@
 
 记录数据处理的完整历史，支持数据溯源和版本对比。
 """
+
 import hashlib
 import os
-
-import orjson
 import platform
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+import orjson
 
 # 血缘元数据版本
 LINEAGE_VERSION = "1.0"
@@ -198,7 +199,9 @@ class LineageTracker:
         if self.source_path:
             source_info = {
                 "path": str(self.source_path),
-                "hash": _get_file_hash(self.source_path) if os.path.exists(self.source_path) else None,
+                "hash": (
+                    _get_file_hash(self.source_path) if os.path.exists(self.source_path) else None
+                ),
             }
             # 如果源文件有血缘，记录血缘链
             if self.source_lineage:

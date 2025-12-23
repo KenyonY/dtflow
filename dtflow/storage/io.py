@@ -4,16 +4,15 @@ Input/Output utilities for saving and loading data.
 使用 Polars 作为主要 I/O 引擎，性能比 Pandas 快 3-5 倍。
 使用 orjson 作为 JSON 解析引擎，性能比标准 json 快 10 倍。
 """
-import orjson
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import orjson
 import polars as pl
 
 
-def save_data(
-    data: List[Dict[str, Any]], filepath: str, file_format: Optional[str] = None
-) -> None:
+def save_data(data: List[Dict[str, Any]], filepath: str, file_format: Optional[str] = None) -> None:
     """
     Save data to file.
 
@@ -223,6 +222,7 @@ def _save_excel(data: List[Dict[str, Any]], filepath: Path) -> None:
         # 空数据
         try:
             import xlsxwriter
+
             workbook = xlsxwriter.Workbook(str(filepath))
             workbook.close()
         except ImportError:
@@ -418,7 +418,11 @@ def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
     except Exception as e:
         # 回退到 Python 实现
         import sys
-        print(f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}", file=sys.stderr)
+
+        print(
+            f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
+            file=sys.stderr,
+        )
 
         result = []
         with open(filepath, "rb") as f:
@@ -467,7 +471,11 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
     except Exception as e:
         # 回退到 Python 两遍遍历实现
         import sys
-        print(f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}", file=sys.stderr)
+
+        print(
+            f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
+            file=sys.stderr,
+        )
 
         total_lines = 0
         with open(filepath, "rb") as f:
@@ -587,7 +595,10 @@ def _stream_random_jsonl(
         return _clean_null_fields(sampled.to_dicts())
     except Exception as e:
         import sys
-        print(f"[Warning] Polars ndjson 解析失败，回退到流式采样: {type(e).__name__}", file=sys.stderr)
+
+        print(
+            f"[Warning] Polars ndjson 解析失败，回退到流式采样: {type(e).__name__}", file=sys.stderr
+        )
         return _count_sample_jsonl(filepath, num, seed)
 
 
@@ -627,9 +638,7 @@ def _stream_random_arrow(
 # ============ Additional Utilities ============
 
 
-def append_to_file(
-    data: List[Dict[str, Any]], filepath: str, file_format: str = "jsonl"
-) -> None:
+def append_to_file(data: List[Dict[str, Any]], filepath: str, file_format: str = "jsonl") -> None:
     """Append data to an existing file (only JSONL supported)."""
     filepath = Path(filepath)
 

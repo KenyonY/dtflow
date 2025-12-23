@@ -20,6 +20,7 @@ def __getattr__(name):
     if name in ("main", "mcp"):
         try:
             from .server import main, mcp
+
             return main if name == "main" else mcp
         except ImportError as e:
             raise ImportError(

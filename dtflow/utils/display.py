@@ -1,15 +1,18 @@
 """
 Data display utilities.
 """
-from typing import List, Dict, Any, Optional
+
+from typing import Any, Dict, List, Optional
 
 import orjson
 
 
-def display_data(data: List[Dict[str, Any]],
-                 fields: Optional[List[str]] = None,
-                 start_index: int = 0,
-                 use_rich: bool = True) -> None:
+def display_data(
+    data: List[Dict[str, Any]],
+    fields: Optional[List[str]] = None,
+    start_index: int = 0,
+    use_rich: bool = True,
+) -> None:
     """
     Display data in a readable format.
 
@@ -32,15 +35,15 @@ def display_data(data: List[Dict[str, Any]],
         _display_plain(data, fields, start_index)
 
 
-def _display_with_rich(data: List[Dict[str, Any]],
-                       fields: Optional[List[str]],
-                       start_index: int) -> None:
+def _display_with_rich(
+    data: List[Dict[str, Any]], fields: Optional[List[str]], start_index: int
+) -> None:
     """Display using rich library for pretty formatting."""
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.json import JSON
-    from rich.table import Table
     from rich import box
+    from rich.console import Console
+    from rich.json import JSON
+    from rich.panel import Panel
+    from rich.table import Table
 
     console = Console()
 
@@ -59,16 +62,16 @@ def _display_with_rich(data: List[Dict[str, Any]],
             JSON(json_str, indent=2),
             title=f"[bold cyan]Item {index}[/bold cyan]",
             border_style="cyan",
-            box=box.ROUNDED
+            box=box.ROUNDED,
         )
 
         console.print(panel)
         console.print()
 
 
-def _display_plain(data: List[Dict[str, Any]],
-                   fields: Optional[List[str]],
-                   start_index: int) -> None:
+def _display_plain(
+    data: List[Dict[str, Any]], fields: Optional[List[str]], start_index: int
+) -> None:
     """Display using plain text formatting."""
     separator = "=" * 80
 
@@ -148,9 +151,9 @@ def print_stats(stats: Dict[str, Any]) -> None:
         stats: Statistics dictionary from DataTransformer.stats()
     """
     try:
+        from rich import box
         from rich.console import Console
         from rich.table import Table
-        from rich import box
 
         console = Console()
 
@@ -160,19 +163,16 @@ def print_stats(stats: Dict[str, Any]) -> None:
         console.print(f"Total fields: [green]{len(stats['fields'])}[/green]\n")
 
         # Field stats table
-        if stats.get('field_stats'):
+        if stats.get("field_stats"):
             table = Table(title="Field Statistics", box=box.ROUNDED, show_header=True)
             table.add_column("Field", style="cyan", no_wrap=True)
             table.add_column("Count", style="green", justify="right")
             table.add_column("Missing", style="yellow", justify="right")
             table.add_column("Type", style="magenta")
 
-            for field, field_stat in stats['field_stats'].items():
+            for field, field_stat in stats["field_stats"].items():
                 table.add_row(
-                    field,
-                    str(field_stat['count']),
-                    str(field_stat['missing']),
-                    field_stat['type']
+                    field, str(field_stat["count"]), str(field_stat["missing"]), field_stat["type"]
                 )
 
             console.print(table)
@@ -186,10 +186,10 @@ def print_stats(stats: Dict[str, Any]) -> None:
         print(f"Total fields: {len(stats['fields'])}")
         print(f"\nFields: {', '.join(stats['fields'])}")
 
-        if stats.get('field_stats'):
+        if stats.get("field_stats"):
             print("\nField Statistics:")
             print("-" * 60)
-            for field, field_stat in stats['field_stats'].items():
+            for field, field_stat in stats["field_stats"].items():
                 print(f"\n{field}:")
                 print(f"  Count: {field_stat['count']}")
                 print(f"  Missing: {field_stat['missing']}")
