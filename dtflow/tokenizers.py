@@ -7,6 +7,8 @@ Token 统计模块
 
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from .utils.field_path import get_field_with_spec
+
 # 延迟导入，避免未安装时报错
 _tokenizer_cache = {}
 
@@ -290,7 +292,7 @@ def token_stats(
 
     Args:
         data: 数据列表
-        fields: 要统计的字段
+        fields: 要统计的字段，支持嵌套路径语法（如 meta.text, messages[-1].content）
         model: 模型名称或别名，如 "qwen2.5", "gpt-4" 等
         backend: 后端选择，None 则自动检测
 
@@ -307,7 +309,7 @@ def token_stats(
     for item in data:
         total = 0
         for field in fields:
-            value = item.get(field, "")
+            value = get_field_with_spec(item, field, default="")
             if value:
                 total += count_tokens(str(value), model=model, backend=backend)
         counts.append(total)
@@ -508,7 +510,7 @@ def messages_token_stats(
 
     Args:
         data: 数据列表
-        messages_field: messages 字段名
+        messages_field: messages 字段名，支持嵌套路径语法（如 conversation.messages）
         model: 模型名称或别名
         backend: 后端，None 则自动检测
 
@@ -538,7 +540,7 @@ def messages_token_stats(
 
     all_stats = []
     for item in data:
-        messages = item.get(messages_field, [])
+        messages = get_field_with_spec(item, messages_field, default=[])
         if messages:
             all_stats.append(_count_messages_tokens(messages, model=model, backend=_backend))
 

@@ -26,6 +26,7 @@ docs/
 | **流式处理** | `streaming.py` | 大文件惰性处理，O(1) 内存，支持 JSONL/CSV/Parquet/Arrow |
 | **Pipeline** | `pipeline.py` | YAML 配置的可复现数据处理流程 |
 | **数据血缘** | `lineage.py` | 操作追踪与历史记录 |
+| **字段路径** | `utils/field_path.py` | 嵌套字段访问语法（`a.b`、`a[0].b`、`a.#`、`a[*].b`） |
 | **文件 I/O** | `storage/io.py` | JSONL, JSON, CSV, Parquet, Arrow 等格式（Polars 引擎） |
 
 ## 版本进度

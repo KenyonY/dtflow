@@ -1,0 +1,19 @@
+Looking in indexes: https://pypi.org/simple/
+Collecting toolong
+  Downloading toolong-1.5.0-py3-none-any.whl.metadata (6.4 kB)
+Requirement already satisfied: click<9.0.0,>=8.1.7 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from toolong) (8.2.1)
+Collecting textual<0.59.0,>=0.58.0 (from toolong)
+  Downloading textual-0.58.1-py3-none-any.whl.metadata (5.6 kB)
+Requirement already satisfied: typing-extensions<5.0.0,>=4.9.0 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from toolong) (4.15.0)
+Requirement already satisfied: markdown-it-py>=2.1.0 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from markdown-it-py[linkify,plugins]>=2.1.0->textual<0.59.0,>=0.58.0->toolong) (4.0.0)
+Requirement already satisfied: rich>=13.3.3 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from textual<0.59.0,>=0.58.0->toolong) (14.2.0)
+Requirement already satisfied: mdurl~=0.1 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from markdown-it-py>=2.1.0->markdown-it-py[linkify,plugins]>=2.1.0->textual<0.59.0,>=0.58.0->toolong) (0.1.2)
+Requirement already satisfied: linkify-it-py<3,>=1 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from markdown-it-py[linkify,plugins]>=2.1.0->textual<0.59.0,>=0.58.0->toolong) (2.0.3)
+Collecting mdit-py-plugins>=0.5.0 (from markdown-it-py[linkify,plugins]>=2.1.0->textual<0.59.0,>=0.58.0->toolong)
+  Downloading mdit_py_plugins-0.5.0-py3-none-any.whl.metadata (2.8 kB)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from rich>=13.3.3->textual<0.59.0,>=0.58.0->toolong) (2.19.2)
+Requirement already satisfied: uc-micro-py in /home/kunyuan/miniconda3/envs/py12/lib/python3.12/site-packages (from linkify-it-py<3,>=1->markdown-it-py[linkify,plugins]>=2.1.0->textual<0.59.0,>=0.58.0->toolong) (1.0.3)
+Downloading toolong-1.5.0-py3-none-any.whl (35 kB)
+Downloading textual-0.58.1-py3-none-any.whl (549 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 549.8/549.8 kB 1.2 MB/s eta 0:00:00
+Downloading mdit_py_plugins-0.5.0-py3-none-any.whl (57 kB)

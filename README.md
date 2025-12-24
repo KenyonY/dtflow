@@ -225,6 +225,8 @@ dt.shuffle(seed=42)
 dt sample data.jsonl --num=10
 dt sample data.csv --num=100 --sample_type=head
 dt sample data.jsonl 1000 --by=category           # 分层采样
+dt sample data.jsonl 1000 --by=meta.source        # 按嵌套字段分层采样
+dt sample data.jsonl 1000 --by=messages.#         # 按消息数量分层采样
 
 # 数据转换 - 预设模式
 dt transform data.jsonl --preset=openai_chat
@@ -241,25 +243,30 @@ dt run pipeline.yaml --input=new_data.jsonl --output=result.jsonl
 
 # Token 统计
 dt token-stats data.jsonl --field=messages --model=gpt-4
+dt token-stats data.jsonl --field=messages[-1].content   # 统计最后一条消息
 dt token-stats data.jsonl --field=text --detailed
 
 # 数据对比
 dt diff v1/train.jsonl v2/train.jsonl
 dt diff a.jsonl b.jsonl --key=id
+dt diff a.jsonl b.jsonl --key=meta.uuid    # 按嵌套字段匹配
 
 # 数据清洗
 dt clean data.jsonl --drop-empty                    # 删除任意空值记录
 dt clean data.jsonl --drop-empty=text,answer        # 删除指定字段为空的记录
+dt clean data.jsonl --drop-empty=meta.source        # 删除嵌套字段为空的记录
 dt clean data.jsonl --min-len=text:10               # text 字段最少 10 字符
-dt clean data.jsonl --max-len=text:1000             # text 字段最多 1000 字符
+dt clean data.jsonl --min-len=messages.#:2          # 至少 2 条消息
+dt clean data.jsonl --max-len=messages[-1].content:500  # 最后一条消息最多 500 字符
 dt clean data.jsonl --keep=question,answer          # 只保留这些字段
 dt clean data.jsonl --drop=metadata                 # 删除指定字段
 dt clean data.jsonl --strip                         # 去除字符串首尾空白
-dt clean data.jsonl --strip --drop-empty=text --min-len=text:10 -o clean.jsonl  # 组合使用
 
 # 数据去重
 dt dedupe data.jsonl                            # 全量精确去重
 dt dedupe data.jsonl --key=text                 # 按字段精确去重
+dt dedupe data.jsonl --key=meta.id              # 按嵌套字段去重
+dt dedupe data.jsonl --key=messages[0].content  # 按第一条消息内容去重
 dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
 
 # 文件拼接
@@ -268,6 +275,44 @@ dt concat a.jsonl b.jsonl -o merged.jsonl
 # 数据统计
 dt stats data.jsonl
 ```
+
+### 字段路径语法
+
+CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的数据：
+
+| 语法 | 含义 | 示例 |
+|------|------|------|
+| `a.b.c` | 嵌套字段 | `meta.source` |
+| `a[0].b` | 数组索引 | `messages[0].role` |
+| `a[-1].b` | 负索引 | `messages[-1].content` |
+| `a.#` | 数组长度 | `messages.#` |
+| `a[*].b` | 展开所有元素 | `messages[*].role` |
+| `a[*].b:join` | 展开并用 `\|` 拼接 | `messages[*].role:join` |
+| `a[*].b:unique` | 展开去重后拼接 | `messages[*].role:unique` |
+
+支持字段路径的命令参数：
+
+| 命令 | 参数 | 示例 |
+|------|------|------|
+| `sample` | `--by=` | `--by=meta.source`、`--by=messages.#` |
+| `dedupe` | `--key=` | `--key=meta.id`、`--key=messages[0].content` |
+| `clean` | `--drop-empty=` | `--drop-empty=meta.source` |
+| `clean` | `--min-len=` | `--min-len=messages.#:2` |
+| `clean` | `--max-len=` | `--max-len=messages[-1].content:500` |
+| `token-stats` | `--field=` | `--field=messages[-1].content` |
+| `diff` | `--key=` | `--key=meta.uuid` |
+
+示例数据：
+```json
+{"meta": {"source": "wiki"}, "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
+```
+
+- `meta.source` → `"wiki"`
+- `messages[0].role` → `"user"`
+- `messages[-1].content` → `"hello"`
+- `messages.#` → `2`
+- `messages[*].role` → `"user"` (默认取第一个)
+- `messages[*].role:join` → `"user|assistant"`
 
 ### Pipeline 配置
 

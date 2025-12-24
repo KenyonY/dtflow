@@ -12,6 +12,7 @@ import orjson
 
 from .lineage import LineageTracker
 from .storage.io import load_data, save_data
+from .utils.field_path import get_field_with_spec
 
 
 def _fast_json_dumps(obj: Any) -> str:
@@ -393,16 +394,35 @@ class DataTransformer:
         item: Dict[str, Any],
         key: Union[None, str, List[str], Callable[[Any], Any]],
     ) -> Any:
-        """获取去重用的 key"""
+        """
+        获取去重用的 key。
+
+        支持字段路径语法：
+            - meta.source        嵌套字段
+            - messages[0].role   数组索引
+            - messages[-1].role  负索引
+            - messages.#         数组长度
+            - messages[*].role   展开所有元素（可加 :join/:unique 模式）
+        """
         if key is None:
             # 全量去重：使用快速 JSON 序列化
             return _fast_json_dumps(item)
         elif isinstance(key, str):
-            # 单字段
-            return item.get(key)
+            # 单字段（支持嵌套路径）
+            val = get_field_with_spec(item, key)
+            # 确保可哈希
+            if isinstance(val, list):
+                return tuple(val)
+            return val
         elif isinstance(key, list):
-            # 多字段组合
-            return tuple(item.get(k) for k in key)
+            # 多字段组合（每个字段都支持嵌套路径）
+            vals = []
+            for k in key:
+                v = get_field_with_spec(item, k)
+                if isinstance(v, list):
+                    v = tuple(v)
+                vals.append(v)
+            return tuple(vals)
         elif callable(key):
             # 自定义函数
             return key(DictWrapper(item))
@@ -506,9 +526,14 @@ class DataTransformer:
         item: Dict[str, Any],
         key: Union[str, Callable[[Any], str]],
     ) -> str:
-        """获取用于相似度比较的文本"""
+        """
+        获取用于相似度比较的文本。
+
+        支持字段路径语法（同 _get_dedupe_key）。
+        """
         if isinstance(key, str):
-            return str(item.get(key, ""))
+            val = get_field_with_spec(item, key, default="")
+            return str(val) if val else ""
         elif callable(key):
             return str(key(DictWrapper(item)))
         else:

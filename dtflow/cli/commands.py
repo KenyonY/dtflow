@@ -17,6 +17,7 @@ from ..pipeline import run_pipeline, validate_pipeline
 from ..presets import get_preset, list_presets
 from ..storage.io import load_data, sample_file, save_data
 from ..streaming import load_stream
+from ..utils.field_path import get_field_with_spec
 
 # 支持的文件格式
 SUPPORTED_FORMATS = {".csv", ".jsonl", ".json", ".xlsx", ".xls", ".parquet", ".arrow", ".feather"}
@@ -137,7 +138,12 @@ def _stratified_sample(
     Args:
         filepath: 文件路径
         num: 目标采样总数
-        stratify_field: 分层字段
+        stratify_field: 分层字段，支持嵌套路径语法：
+            - meta.source        嵌套字段
+            - messages[0].role   数组索引
+            - messages[-1].role  负索引
+            - messages.#         数组长度
+            - messages[*].role   展开所有元素（可加 :join/:unique 模式）
         uniform: 是否均匀采样（各组相同数量）
         seed: 随机种子
         sample_type: 采样方式（用于组内采样）
@@ -158,10 +164,13 @@ def _stratified_sample(
     if num <= 0 or num > total:
         num = total
 
-    # 按字段分组
+    # 按字段分组（支持嵌套路径语法）
     groups: Dict[Any, List[Dict]] = defaultdict(list)
     for item in data:
-        key = item.get(stratify_field, "__null__")
+        key = get_field_with_spec(item, stratify_field, default="__null__")
+        # 确保 key 可哈希
+        if isinstance(key, list):
+            key = tuple(key)
         groups[key].append(item)
 
     group_keys = list(groups.keys())
@@ -1006,7 +1015,13 @@ def dedupe(
 
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
-        key: 去重依据字段，多个字段用逗号分隔。不指定则全量去重
+        key: 去重依据字段，支持嵌套路径语法：
+            - meta.source        嵌套字段
+            - messages[0].role   数组索引
+            - messages[-1].content  负索引
+            - messages.#         数组长度
+            - messages[*].role:join  展开所有元素
+            多个字段用逗号分隔。不指定则全量去重
         similar: 相似度阈值（0-1），指定后启用相似度去重模式，需要指定 --key
         output: 输出文件路径，不指定则覆盖原文件
 
@@ -1014,8 +1029,9 @@ def dedupe(
         dt dedupe data.jsonl                       # 全量精确去重
         dt dedupe data.jsonl --key=text            # 按 text 字段精确去重
         dt dedupe data.jsonl --key=user,timestamp  # 按多字段组合精确去重
-        dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
-        dt dedupe data.jsonl --output=clean.jsonl  # 指定输出文件
+        dt dedupe data.jsonl --key=meta.id         # 按嵌套字段去重
+        dt dedupe data.jsonl --key=messages[0].content   # 按第一条消息内容去重
+        dt dedupe data.jsonl --key=text --similar=0.8    # 相似度去重
     """
     filepath = Path(filename)
 
@@ -1596,25 +1612,26 @@ def clean(
 
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
-        drop_empty: 删除空值记录
+        drop_empty: 删除空值记录，支持嵌套路径语法
             - 不带值：删除任意字段为空的记录
             - 指定字段：删除指定字段为空的记录（逗号分隔）
-        min_len: 最小长度过滤，格式 "字段:长度"（如 text:10）
-        max_len: 最大长度过滤，格式 "字段:长度"（如 text:1000）
-        keep: 只保留指定字段（逗号分隔）
-        drop: 删除指定字段（逗号分隔）
+        min_len: 最小长度过滤，格式 "字段:长度"，字段支持嵌套路径
+        max_len: 最大长度过滤，格式 "字段:长度"，字段支持嵌套路径
+        keep: 只保留指定字段（逗号分隔，仅支持顶层字段）
+        drop: 删除指定字段（逗号分隔，仅支持顶层字段）
         strip: 去除所有字符串字段的首尾空白
         output: 输出文件路径，不指定则覆盖原文件
 
     Examples:
         dt clean data.jsonl --drop-empty                    # 删除任意空值记录
         dt clean data.jsonl --drop-empty=text,answer        # 删除指定字段为空的记录
+        dt clean data.jsonl --drop-empty=meta.source        # 删除嵌套字段为空的记录
         dt clean data.jsonl --min-len=text:10               # text 字段最少 10 字符
-        dt clean data.jsonl --max-len=text:1000             # text 字段最多 1000 字符
+        dt clean data.jsonl --min-len=messages.#:2          # 至少 2 条消息
+        dt clean data.jsonl --max-len=messages[-1].content:500  # 最后一条消息最多 500 字符
         dt clean data.jsonl --keep=question,answer          # 只保留这些字段
         dt clean data.jsonl --drop=metadata,timestamp       # 删除这些字段
         dt clean data.jsonl --strip                         # 去除字符串首尾空白
-        dt clean data.jsonl --drop-empty --strip -o out.jsonl
     """
     filepath = Path(filename)
 
@@ -1784,9 +1801,18 @@ def _is_empty_value(v: Any) -> bool:
 
 
 def _get_value_len(value: Any) -> int:
-    """获取值的长度"""
+    """
+    获取值的长度。
+
+    - str/list/dict: 返回 len()
+    - int/float: 直接返回该数值（用于 messages.# 这种返回数量的场景）
+    - None: 返回 0
+    - 其他: 转为字符串后返回长度
+    """
     if value is None:
         return 0
+    if isinstance(value, (int, float)):
+        return int(value)
     if isinstance(value, (str, list, dict)):
         return len(value)
     return len(str(value))
@@ -1809,13 +1835,13 @@ def _clean_data_single_pass(
     Args:
         data: 原始数据列表
         strip: 是否去除字符串首尾空白
-        empty_fields: 检查空值的字段列表，空列表表示检查所有字段，None 表示不检查
-        min_len_field: 最小长度检查的字段
+        empty_fields: 检查空值的字段列表（支持嵌套路径），空列表表示检查所有字段，None 表示不检查
+        min_len_field: 最小长度检查的字段（支持嵌套路径）
         min_len_value: 最小长度值
-        max_len_field: 最大长度检查的字段
+        max_len_field: 最大长度检查的字段（支持嵌套路径）
         max_len_value: 最大长度值
-        keep_fields: 只保留的字段列表
-        drop_fields: 要删除的字段集合
+        keep_fields: 只保留的字段列表（仅支持顶层字段）
+        drop_fields: 要删除的字段集合（仅支持顶层字段）
 
     Returns:
         (清洗后的数据, 统计信息列表)
@@ -1843,20 +1869,20 @@ def _clean_data_single_pass(
                     stats["drop_empty"] += 1
                     continue
             else:
-                # 检查指定字段
-                if any(_is_empty_value(item.get(f)) for f in empty_fields):
+                # 检查指定字段（支持嵌套路径）
+                if any(_is_empty_value(get_field_with_spec(item, f)) for f in empty_fields):
                     stats["drop_empty"] += 1
                     continue
 
-        # 3. 最小长度过滤
+        # 3. 最小长度过滤（支持嵌套路径）
         if min_len_field is not None:
-            if _get_value_len(item.get(min_len_field, "")) < min_len_value:
+            if _get_value_len(get_field_with_spec(item, min_len_field, default="")) < min_len_value:
                 stats["min_len"] += 1
                 continue
 
-        # 4. 最大长度过滤
+        # 4. 最大长度过滤（支持嵌套路径）
         if max_len_field is not None:
-            if _get_value_len(item.get(max_len_field, "")) > max_len_value:
+            if _get_value_len(get_field_with_spec(item, max_len_field, default="")) > max_len_value:
                 stats["max_len"] += 1
                 continue
 
@@ -1906,24 +1932,25 @@ def _clean_streaming(
     """
 
     def clean_filter(item: Dict) -> bool:
-        """过滤函数：返回 True 保留，False 过滤"""
+        """过滤函数：返回 True 保留，False 过滤（支持嵌套路径）"""
         # 空值过滤
         if empty_fields is not None:
             if len(empty_fields) == 0:
                 if any(_is_empty_value(v) for v in item.values()):
                     return False
             else:
-                if any(_is_empty_value(item.get(f)) for f in empty_fields):
+                # 支持嵌套路径
+                if any(_is_empty_value(get_field_with_spec(item, f)) for f in empty_fields):
                     return False
 
-        # 最小长度过滤
+        # 最小长度过滤（支持嵌套路径）
         if min_len_field is not None:
-            if _get_value_len(item.get(min_len_field, "")) < min_len_value:
+            if _get_value_len(get_field_with_spec(item, min_len_field, default="")) < min_len_value:
                 return False
 
-        # 最大长度过滤
+        # 最大长度过滤（支持嵌套路径）
         if max_len_field is not None:
-            if _get_value_len(item.get(max_len_field, "")) > max_len_value:
+            if _get_value_len(get_field_with_spec(item, max_len_field, default="")) > max_len_value:
                 return False
 
         return True
@@ -2033,13 +2060,15 @@ def token_stats(
 
     Args:
         filename: 输入文件路径
-        field: 要统计的字段（默认 messages）
+        field: 要统计的字段（默认 messages），支持嵌套路径语法
         model: 分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等
         detailed: 是否显示详细统计
 
     Examples:
         dt token-stats data.jsonl
         dt token-stats data.jsonl --field=text --model=qwen2.5
+        dt token-stats data.jsonl --field=conversation.messages
+        dt token-stats data.jsonl --field=messages[-1].content   # 统计最后一条消息
         dt token-stats data.jsonl --detailed
     """
     filepath = Path(filename)
@@ -2067,9 +2096,9 @@ def token_stats(
     print(f"   共 {total} 条数据")
     print(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
 
-    # 检查字段类型并选择合适的统计方法
+    # 检查字段类型并选择合适的统计方法（支持嵌套路径）
     sample = data[0]
-    field_value = sample.get(field)
+    field_value = get_field_with_spec(sample, field)
 
     try:
         if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
@@ -2203,12 +2232,13 @@ def diff(
     Args:
         file1: 第一个文件路径
         file2: 第二个文件路径
-        key: 用于匹配的键字段（可选）
+        key: 用于匹配的键字段，支持嵌套路径语法（可选）
         output: 差异报告输出路径（可选）
 
     Examples:
         dt diff v1/train.jsonl v2/train.jsonl
         dt diff a.jsonl b.jsonl --key=id
+        dt diff a.jsonl b.jsonl --key=meta.uuid   # 按嵌套字段匹配
         dt diff a.jsonl b.jsonl --output=diff_report.json
     """
     path1 = Path(file1)
@@ -2271,9 +2301,9 @@ def _compute_diff(
     }
 
     if key:
-        # 基于 key 的精确匹配
-        dict1 = {item.get(key): item for item in data1 if item.get(key) is not None}
-        dict2 = {item.get(key): item for item in data2 if item.get(key) is not None}
+        # 基于 key 的精确匹配（支持嵌套路径）
+        dict1 = {get_field_with_spec(item, key): item for item in data1 if get_field_with_spec(item, key) is not None}
+        dict2 = {get_field_with_spec(item, key): item for item in data2 if get_field_with_spec(item, key) is not None}
 
         keys1 = set(dict1.keys())
         keys2 = set(dict2.keys())

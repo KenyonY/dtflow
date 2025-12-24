@@ -26,6 +26,7 @@ dtflow/                    # 核心库
 ├── pipeline.py           # Pipeline YAML 执行器
 ├── storage/io.py         # 文件 I/O (JSONL, JSON, CSV, Parquet, Arrow) - 使用 Polars
 ├── cli/commands.py       # CLI 命令实现 (所有命令逻辑都在这里)
+├── utils/field_path.py   # 字段路径解析 (a.b, a[0].b, a.#, a[*].b 语法)
 └── mcp/                  # MCP 服务 (Claude Code 集成)
 ```
 
@@ -63,10 +64,10 @@ hatch run lint:all     # 运行所有检查
 ### CLI 命令 (dt)
 
 ```bash
-# 数据采样
+# 数据采样（支持字段路径语法）
 dt sample data.jsonl --num=10
-dt head data.jsonl 20
-dt tail data.jsonl 20
+dt sample data.jsonl 1000 --by=meta.source       # 按嵌套字段分层采样
+dt sample data.jsonl 1000 --by=messages.#        # 按消息数量分层采样
 
 # 数据转换
 dt transform data.jsonl --preset=openai_chat    # 使用预设
@@ -75,21 +76,29 @@ dt transform data.jsonl                          # 生成配置文件模式
 # Pipeline 执行
 dt run pipeline.yaml
 
-# 数据去重
+# 数据去重（支持字段路径语法）
 dt dedupe data.jsonl --key=text                  # 精确去重
-dt dedupe data.jsonl --key=text --similar=0.8    # 相似度去重
+dt dedupe data.jsonl --key=meta.id               # 按嵌套字段去重
+dt dedupe data.jsonl --key=messages[0].content   # 按第一条消息内容去重
 
-# 数据拼接/统计/清洗
+# 数据清洗（支持字段路径语法）
 dt concat a.jsonl b.jsonl -o merged.jsonl
 dt stats data.jsonl
-dt clean data.jsonl --drop-empty --strip --min-len=text:10
+dt clean data.jsonl --drop-empty=meta.source     # 删除嵌套字段为空的记录
+dt clean data.jsonl --min-len=messages.#:2       # 至少 2 条消息
 
-# Token 统计
+# Token 统计（支持字段路径语法）
 dt token-stats data.jsonl --field=messages --model=gpt-4
+dt token-stats data.jsonl --field=messages[-1].content   # 统计最后一条消息
+
+# 数据对比（支持字段路径语法）
+dt diff a.jsonl b.jsonl --key=meta.uuid
 
 # 数据血缘
 dt history processed.jsonl
 ```
+
+**字段路径语法**: `a.b`(嵌套)、`a[0].b`(索引)、`a[-1].b`(负索引)、`a.#`(长度)、`a[*].b`(展开)
 
 ## 关键约定
 
