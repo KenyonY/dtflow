@@ -279,3 +279,22 @@ class TestEdgeCases:
         items2 = st.collect()
         assert len(items2) == 0
         os.unlink(temp_jsonl)
+
+    def test_transform_error_tracking(self, temp_jsonl, tmp_path):
+        """测试转换错误跟踪"""
+        st = load_stream(temp_jsonl)
+
+        def bad_transform(x):
+            if x["id"] % 10 == 5:  # 5, 15, 25, ... 共 10 条会出错
+                raise KeyError("missing_key")
+            return {"new_id": x["id"]}
+
+        transformed = st.transform(bad_transform)
+        output_path = tmp_path / "output.jsonl"
+        count = transformed.save(str(output_path), show_progress=False)
+
+        # 验证结果
+        assert count == 90  # 100 - 10 = 90
+        assert transformed._error_count == 10
+        assert "KeyError" in transformed._first_error
+        os.unlink(temp_jsonl)

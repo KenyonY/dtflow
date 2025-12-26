@@ -796,6 +796,17 @@ def _generate_default_transform(field_names: List[str]) -> str:
     return "\n".join(lines) if lines else "        # 在这里定义输出字段"
 
 
+def _unwrap(obj: Any) -> Any:
+    """递归将 DictWrapper 转换为普通 dict"""
+    if hasattr(obj, "to_dict"):
+        return _unwrap(obj.to_dict())
+    if isinstance(obj, dict):
+        return {k: _unwrap(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_unwrap(v) for v in obj]
+    return obj
+
+
 def _execute_transform(
     input_path: Path,
     config_path: Path,
@@ -829,7 +840,8 @@ def _execute_transform(
         try:
             # 包装转换函数以支持属性访问（配置文件中定义的 Item 类）
             def wrapped_transform(item):
-                return transform_func(DictWrapper(item))
+                result = transform_func(DictWrapper(item))
+                return _unwrap(result)
 
             st = load_stream(str(input_path))
             if num:
@@ -926,7 +938,8 @@ def _execute_preset_transform(
         try:
             # 包装转换函数以支持属性访问
             def wrapped_transform(item):
-                return transform_func(DictWrapper(item))
+                result = transform_func(DictWrapper(item))
+                return _unwrap(result)
 
             st = load_stream(str(input_path))
             if num:

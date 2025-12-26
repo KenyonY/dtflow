@@ -84,6 +84,8 @@ class StreamingTransformer:
         self._source_path = source_path
         self._total = total
         self._operations: List[Dict[str, Any]] = []
+        self._error_count = 0
+        self._first_error: Optional[str] = None
 
     @classmethod
     def load_stream(cls, filepath: str, batch_size: int = 10000) -> "StreamingTransformer":
@@ -194,17 +196,20 @@ class StreamingTransformer:
         Returns:
             新的 StreamingTransformer（惰性，不立即执行）
         """
+        # transform 是 1:1 转换，保留 total
+        new_st = StreamingTransformer(iter([]), self._source_path, total=self._total)
+        new_st._operations = self._operations + [{"type": "transform", "func": func}]
 
         def transformed_iterator():
             for item in self._iterator:
                 try:
                     yield func(item)
-                except Exception:
-                    pass  # 跳过错误
+                except Exception as e:
+                    new_st._error_count += 1
+                    if new_st._first_error is None:
+                        new_st._first_error = f"{type(e).__name__}: {e}"
 
-        # transform 是 1:1 转换，保留 total
-        new_st = StreamingTransformer(transformed_iterator(), self._source_path, total=self._total)
-        new_st._operations = self._operations + [{"type": "transform", "func": func}]
+        new_st._iterator = transformed_iterator()
         return new_st
 
     def head(self, n: int) -> "StreamingTransformer":
@@ -299,16 +304,21 @@ class StreamingTransformer:
         ext = path.suffix.lower()
 
         if ext == ".jsonl":
-            return self._save_jsonl(filepath, show_progress)
+            count = self._save_jsonl(filepath, show_progress)
         elif ext == ".csv":
-            return self._save_batched(filepath, "csv", batch_size, show_progress)
+            count = self._save_batched(filepath, "csv", batch_size, show_progress)
         elif ext == ".parquet":
-            return self._save_batched(filepath, "parquet", batch_size, show_progress)
+            count = self._save_batched(filepath, "parquet", batch_size, show_progress)
         elif ext in (".arrow", ".feather"):
-            return self._save_batched(filepath, "arrow", batch_size, show_progress)
+            count = self._save_batched(filepath, "arrow", batch_size, show_progress)
         else:
-            # 默认 JSONL
-            return self._save_jsonl(filepath, show_progress)
+            count = self._save_jsonl(filepath, show_progress)
+
+        # 打印错误摘要
+        if self._error_count > 0:
+            print(f"⚠️  跳过 {self._error_count} 条错误记录: {self._first_error}")
+
+        return count
 
     def _save_jsonl(self, filepath: str, show_progress: bool) -> int:
         """JSONL 逐行流式保存（使用 orjson）"""

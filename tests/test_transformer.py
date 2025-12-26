@@ -610,5 +610,54 @@ class TestConcat:
         assert len(dt2) == 1
 
 
+class TestUnwrap:
+    """测试 _unwrap 函数（DictWrapper 转 dict）"""
+
+    def test_unwrap_simple(self):
+        """测试简单 DictWrapper 转换"""
+        from dtflow.cli.commands import _unwrap
+
+        wrapper = DictWrapper({"a": 1, "b": "text"})
+        result = _unwrap(wrapper)
+
+        assert result == {"a": 1, "b": "text"}
+        assert type(result) is dict
+
+    def test_unwrap_nested(self):
+        """测试嵌套 DictWrapper 转换"""
+        from dtflow.cli.commands import _unwrap
+
+        data = {"outer": {"inner": {"value": 123}}}
+        wrapper = DictWrapper(data)
+        # 访问嵌套会产生新的 DictWrapper
+        nested_wrapper = wrapper.outer.inner
+
+        result = _unwrap({"data": nested_wrapper, "list": [wrapper.outer]})
+
+        assert result == {"data": {"value": 123}, "list": [{"inner": {"value": 123}}]}
+        assert type(result["data"]) is dict
+        assert type(result["list"][0]) is dict
+
+    def test_unwrap_in_list(self):
+        """测试列表中的 DictWrapper 转换"""
+        from dtflow.cli.commands import _unwrap
+
+        wrapper = DictWrapper({"x": 1})
+        result = _unwrap([wrapper, {"y": 2}, wrapper])
+
+        assert result == [{"x": 1}, {"y": 2}, {"x": 1}]
+        assert all(type(item) is dict for item in result)
+
+    def test_unwrap_plain_dict(self):
+        """测试普通 dict 不受影响"""
+        from dtflow.cli.commands import _unwrap
+
+        data = {"a": 1, "nested": {"b": 2}}
+        result = _unwrap(data)
+
+        assert result == data
+        assert type(result) is dict
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
