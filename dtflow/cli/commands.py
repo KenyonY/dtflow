@@ -1289,17 +1289,23 @@ def _concat_streaming(file_paths: List[Path], output: str) -> int:
 def stats(
     filename: str,
     top: int = 10,
+    full: bool = False,
 ) -> None:
     """
-    显示数据文件的统计信息（类似 pandas df.info() + df.describe()）。
+    显示数据文件的统计信息。
+
+    默认快速模式：只统计行数和字段结构。
+    完整模式（--full）：统计值分布、唯一值、长度等详细信息。
 
     Args:
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
-        top: 显示频率最高的前 N 个值，默认 10
+        top: 显示频率最高的前 N 个值，默认 10（仅完整模式）
+        full: 完整模式，统计值分布、唯一值等详细信息
 
     Examples:
-        dt stats data.jsonl
-        dt stats data.csv --top=5
+        dt stats data.jsonl            # 快速模式（默认）
+        dt stats data.jsonl --full     # 完整模式
+        dt stats data.csv -f --top=5   # 完整模式，显示 Top 5
     """
     filepath = Path(filename)
 
@@ -1308,6 +1314,10 @@ def stats(
         return
 
     if not _check_file_format(filepath):
+        return
+
+    if not full:
+        _quick_stats(filepath)
         return
 
     # 加载数据
@@ -1327,6 +1337,142 @@ def stats(
 
     # 输出统计信息
     _print_stats(filepath.name, total, field_stats)
+
+
+def _quick_stats(filepath: Path) -> None:
+    """
+    快速统计模式：只统计行数和字段结构，不遍历全部数据。
+
+    特点:
+    - 使用流式计数，不加载全部数据到内存
+    - 只读取前几条数据来推断字段结构
+    - 不计算值分布、唯一值等耗时统计
+    """
+    import orjson
+
+    from ..streaming import _count_rows_fast
+
+    ext = filepath.suffix.lower()
+    file_size = filepath.stat().st_size
+
+    # 格式化文件大小
+    def format_size(size: int) -> str:
+        for unit in ["B", "KB", "MB", "GB"]:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TB"
+
+    # 快速统计行数
+    total = _count_rows_fast(str(filepath))
+    if total is None:
+        # 回退：手动计数
+        total = 0
+        try:
+            with open(filepath, "rb") as f:
+                for line in f:
+                    if line.strip():
+                        total += 1
+        except Exception:
+            total = -1
+
+    # 读取前几条数据推断字段结构
+    sample_data = []
+    sample_size = 5
+    try:
+        if ext == ".jsonl":
+            with open(filepath, "rb") as f:
+                for i, line in enumerate(f):
+                    if i >= sample_size:
+                        break
+                    line = line.strip()
+                    if line:
+                        sample_data.append(orjson.loads(line))
+        elif ext == ".csv":
+            import polars as pl
+
+            df = pl.scan_csv(str(filepath)).head(sample_size).collect()
+            sample_data = df.to_dicts()
+        elif ext == ".parquet":
+            import polars as pl
+
+            df = pl.scan_parquet(str(filepath)).head(sample_size).collect()
+            sample_data = df.to_dicts()
+        elif ext in (".arrow", ".feather"):
+            import polars as pl
+
+            df = pl.scan_ipc(str(filepath)).head(sample_size).collect()
+            sample_data = df.to_dicts()
+        elif ext == ".json":
+            with open(filepath, "rb") as f:
+                data = orjson.loads(f.read())
+                if isinstance(data, list):
+                    sample_data = data[:sample_size]
+    except Exception:
+        pass
+
+    # 分析字段结构
+    fields = []
+    if sample_data:
+        all_keys = set()
+        for item in sample_data:
+            all_keys.update(item.keys())
+
+        for key in sorted(all_keys):
+            # 从采样数据中推断类型
+            sample_values = [item.get(key) for item in sample_data if key in item]
+            non_null = [v for v in sample_values if v is not None]
+            if non_null:
+                field_type = _infer_type(non_null)
+            else:
+                field_type = "unknown"
+            fields.append({"field": key, "type": field_type})
+
+    # 输出
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.table import Table
+
+        console = Console()
+
+        # 概览
+        console.print(
+            Panel(
+                f"[bold]文件:[/bold] {filepath.name}\n"
+                f"[bold]大小:[/bold] {format_size(file_size)}\n"
+                f"[bold]总数:[/bold] {total:,} 条\n"
+                f"[bold]字段:[/bold] {len(fields)} 个",
+                title="📊 快速统计",
+                expand=False,
+            )
+        )
+
+        if fields:
+            table = Table(title="📋 字段结构", show_header=True, header_style="bold cyan")
+            table.add_column("#", style="dim", justify="right")
+            table.add_column("字段", style="green")
+            table.add_column("类型", style="yellow")
+
+            for i, f in enumerate(fields, 1):
+                table.add_row(str(i), f["field"], f["type"])
+
+            console.print(table)
+
+    except ImportError:
+        # 没有 rich，使用普通打印
+        print(f"\n{'=' * 40}")
+        print("📊 快速统计")
+        print(f"{'=' * 40}")
+        print(f"文件: {filepath.name}")
+        print(f"大小: {format_size(file_size)}")
+        print(f"总数: {total:,} 条")
+        print(f"字段: {len(fields)} 个")
+
+        if fields:
+            print(f"\n📋 字段结构:")
+            for i, f in enumerate(fields, 1):
+                print(f"  {i}. {f['field']} ({f['type']})")
 
 
 def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
@@ -1410,22 +1556,34 @@ def _count_unique(values: List[Any], field_type: str) -> int:
     """
     计算唯一值数量。
 
-    对于简单类型直接比较，对于 list/dict 使用 hash 节省内存。
+    对于简单类型直接比较，对于 list/dict 或混合类型使用 hash。
     """
     if field_type in ("list", "dict"):
-        # 复杂类型：使用 orjson 序列化后计算 hash
-        import hashlib
+        return _count_unique_by_hash(values)
+    else:
+        # 简单类型：尝试直接比较，失败则回退到 hash 方式
+        try:
+            return len(set(values))
+        except TypeError:
+            # 混合类型（如字段中既有 str 又有 dict），回退到 hash
+            return _count_unique_by_hash(values)
 
-        import orjson
 
-        seen = set()
-        for v in values:
+def _count_unique_by_hash(values: List[Any]) -> int:
+    """使用 orjson 序列化后计算 hash 来统计唯一值"""
+    import hashlib
+
+    import orjson
+
+    seen = set()
+    for v in values:
+        try:
             h = hashlib.md5(orjson.dumps(v, option=orjson.OPT_SORT_KEYS)).digest()
             seen.add(h)
-        return len(seen)
-    else:
-        # 简单类型：直接比较
-        return len(set(values))
+        except TypeError:
+            # 无法序列化的值，用 repr 兜底
+            seen.add(repr(v))
+    return len(seen)
 
 
 def _infer_type(values: List[Any]) -> str:

@@ -71,7 +71,7 @@ def sample(
 @app.command()
 def head(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    num: int = typer.Argument(10, help="显示数量"),
+    num: int = typer.Option(10, "--num", "-n", help="显示数量"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
 ):
@@ -82,7 +82,7 @@ def head(
 @app.command()
 def tail(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    num: int = typer.Argument(10, help="显示数量"),
+    num: int = typer.Option(10, "--num", "-n", help="显示数量"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
 ):
@@ -161,9 +161,10 @@ def clean(
 def stats(
     filename: str = typer.Argument(..., help="输入文件路径"),
     top: int = typer.Option(10, "--top", "-n", help="显示 Top N 值"),
+    full: bool = typer.Option(False, "--full", "-f", help="完整模式：统计值分布、唯一值等详细信息"),
 ):
     """显示数据文件的统计信息"""
-    _stats(filename, top)
+    _stats(filename, top, full)
 
 
 @app.command("token-stats")
