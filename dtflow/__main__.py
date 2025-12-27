@@ -56,7 +56,8 @@ app = typer.Typer(
 @app.command()
 def sample(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    num: int = typer.Argument(10, help="采样数量"),
+    num_arg: Optional[int] = typer.Argument(None, help="采样数量", metavar="NUM"),
+    num: int = typer.Option(10, "--num", "-n", help="采样数量", show_default=True),
     type: str = typer.Option("head", "--type", "-t", help="采样方式: random/head/tail"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
@@ -65,7 +66,8 @@ def sample(
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段（逗号分隔）"),
 ):
     """从数据文件中采样指定数量的数据"""
-    _sample(filename, num, type, output, seed, by, uniform, fields)
+    actual_num = num_arg if num_arg is not None else num
+    _sample(filename, actual_num, type, output, seed, by, uniform, fields)
 
 
 @app.command()
