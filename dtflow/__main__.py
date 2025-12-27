@@ -71,23 +71,29 @@ def sample(
 @app.command()
 def head(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    num: int = typer.Option(10, "--num", "-n", help="显示数量"),
+    num_arg: Optional[int] = typer.Argument(None, help="显示数量", metavar="NUM"),
+    num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
 ):
     """显示文件的前 N 条数据"""
-    _head(filename, num, output, fields)
+    # 位置参数优先于选项参数
+    actual_num = num_arg if num_arg is not None else num
+    _head(filename, actual_num, output, fields)
 
 
 @app.command()
 def tail(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    num: int = typer.Option(10, "--num", "-n", help="显示数量"),
+    num_arg: Optional[int] = typer.Argument(None, help="显示数量", metavar="NUM"),
+    num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
 ):
     """显示文件的后 N 条数据"""
-    _tail(filename, num, output, fields)
+    # 位置参数优先于选项参数
+    actual_num = num_arg if num_arg is not None else num
+    _tail(filename, actual_num, output, fields)
 
 
 # ============ 数据转换命令 ============
