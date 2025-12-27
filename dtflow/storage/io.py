@@ -115,13 +115,40 @@ def _save_jsonl(data: List[Dict[str, Any]], filepath: Path) -> None:
 
 
 def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
-    """Load data from JSONL format."""
+    """Load data from JSONL format.
+
+    使用 orjson 解析，如果失败（如遇到 NaN 等非标准 JSON）则回退到标准 json。
+    """
+    import json
+    import sys
+
     data = []
+    use_fallback = False
+
     with open(filepath, "rb") as f:
-        for line in f:
+        for i, line in enumerate(f):
             line = line.strip()
-            if line:
-                data.append(orjson.loads(line))
+            if not line:
+                continue
+
+            if use_fallback:
+                # 已确认需要回退，直接用标准 json
+                data.append(json.loads(line))
+            else:
+                try:
+                    data.append(orjson.loads(line))
+                except orjson.JSONDecodeError:
+                    # orjson 解析失败，尝试标准 json（支持 NaN/Infinity）
+                    try:
+                        data.append(json.loads(line))
+                        use_fallback = True
+                        print(
+                            f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                            file=sys.stderr,
+                        )
+                    except json.JSONDecodeError:
+                        raise  # 标准 json 也失败，抛出原始错误
+
     return data
 
 
@@ -135,9 +162,25 @@ def _save_json(data: List[Dict[str, Any]], filepath: Path) -> None:
 
 
 def _load_json(filepath: Path) -> List[Dict[str, Any]]:
-    """Load data from JSON format."""
+    """Load data from JSON format.
+
+    使用 orjson 解析，如果失败（如遇到 NaN 等非标准 JSON）则回退到标准 json。
+    """
+    import json
+    import sys
+
     with open(filepath, "rb") as f:
-        data = orjson.loads(f.read())
+        content = f.read()
+
+    try:
+        data = orjson.loads(content)
+    except orjson.JSONDecodeError:
+        # orjson 解析失败，回退到标准 json
+        print(
+            f"[Warning] 文件包含非标准 JSON（如 NaN），使用标准 json 解析",
+            file=sys.stderr,
+        )
+        data = json.loads(content)
 
     if not isinstance(data, list):
         data = [data]

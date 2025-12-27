@@ -622,12 +622,33 @@ def process_shards(
 
 
 def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
-    """JSONL 流式读取（使用 orjson）"""
+    """JSONL 流式读取（使用 orjson，失败时回退到标准 json）"""
+    import json
+    import sys
+
+    use_fallback = False
+
     with open(filepath, "rb") as f:
-        for line in f:
+        for i, line in enumerate(f):
             line = line.strip()
-            if line:
-                yield orjson.loads(line)
+            if not line:
+                continue
+
+            if use_fallback:
+                yield json.loads(line)
+            else:
+                try:
+                    yield orjson.loads(line)
+                except orjson.JSONDecodeError:
+                    try:
+                        yield json.loads(line)
+                        use_fallback = True
+                        print(
+                            f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                            file=sys.stderr,
+                        )
+                    except json.JSONDecodeError:
+                        raise
 
 
 def _stream_csv(filepath: str, batch_size: int = 10000) -> Generator[Dict[str, Any], None, None]:
