@@ -149,6 +149,35 @@ class TestDataTransformer:
         result = dt.to(lambda x: {"author": x.meta.author})
         assert result[0]["author"] == "test"
 
+    def test_validate_all_pass(self):
+        """Test validate() when all records pass."""
+        dt = DataTransformer([{"a": 1}, {"a": 2}, {"a": 3}])
+        errors = dt.validate(lambda x: x.a > 0)
+        assert len(errors) == 0
+
+    def test_validate_some_fail(self):
+        """Test validate() when some records fail."""
+        dt = DataTransformer([{"a": 1}, {"a": -1}, {"a": 2}])
+        errors = dt.validate(lambda x: x.a > 0)
+        assert len(errors) == 1
+        assert errors[0].index == 1
+        assert errors[0].item == {"a": -1}
+
+    def test_validate_with_exception(self):
+        """Test validate() when validation function raises exception."""
+        dt = DataTransformer([{"a": 1}, {"b": 2}])  # 第二条缺少 a
+        errors = dt.validate(lambda x: x.a > 0)
+        assert len(errors) == 1
+        assert errors[0].index == 1
+        assert isinstance(errors[0].error, AttributeError)
+
+    def test_validate_raw_mode(self):
+        """Test validate() with raw=True."""
+        dt = DataTransformer([{"a": 1}, {"a": -1}])
+        errors = dt.validate(lambda x: x["a"] > 0, raw=True)
+        assert len(errors) == 1
+        assert errors[0].index == 1
+
 
 class TestDictWrapper:
     """Test cases for DictWrapper class."""

@@ -351,6 +351,41 @@ class DataTransformer:
             tracker.record("tail", {"n": n}, len(self._data), len(data))
         return DataTransformer(data, _lineage_tracker=tracker)
 
+    def validate(
+        self,
+        func: Callable[[Any], bool],
+        raw: bool = False,
+    ) -> List[TransformError]:
+        """
+        验证数据，返回不通过的记录列表。
+
+        Args:
+            func: 验证函数，返回 True 表示通过，False 表示失败
+            raw: 原始模式，跳过 DictWrapper 包装
+
+        Returns:
+            验证失败的记录列表（TransformError）
+
+        Examples:
+            >>> dt = DataTransformer([{"a": 1}, {"a": -1}])
+            >>> errors = dt.validate(lambda x: x.a > 0)
+            >>> len(errors)  # 1
+            >>> errors[0].index  # 1
+        """
+        errors = []
+        wrapper_func = (lambda x: x) if raw else DictWrapper
+
+        for i, item in enumerate(self._data):
+            try:
+                if not func(wrapper_func(item)):
+                    errors.append(
+                        TransformError(index=i, item=item, error=ValueError("验证未通过"))
+                    )
+            except Exception as e:
+                errors.append(TransformError(index=i, item=item, error=e))
+
+        return errors
+
     def dedupe(
         self,
         key: Union[None, str, List[str], Callable[[Any], Any]] = None,

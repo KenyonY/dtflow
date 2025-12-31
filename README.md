@@ -50,6 +50,17 @@ dt.filter(lambda x: x.score > 0.8)
 dt.filter(lambda x: x.language == "zh")
 ```
 
+### 数据验证
+
+```python
+# 验证数据，返回不通过的记录列表
+errors = dt.validate(lambda x: len(x.messages) >= 2)
+
+if errors:
+    for e in errors[:5]:
+        print(f"第 {e.index} 行: {e.error}")
+```
+
 ### 数据转换
 
 ```python
