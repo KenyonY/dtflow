@@ -64,10 +64,11 @@ def sample(
     by: Optional[str] = typer.Option(None, "--by", help="分层采样字段"),
     uniform: bool = typer.Option(False, "--uniform", help="均匀采样模式"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段（逗号分隔）"),
+    raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
 ):
     """从数据文件中采样指定数量的数据"""
     actual_num = num_arg if num_arg is not None else num
-    _sample(filename, actual_num, type, output, seed, by, uniform, fields)
+    _sample(filename, actual_num, type, output, seed, by, uniform, fields, raw)
 
 
 @app.command()
@@ -77,11 +78,12 @@ def head(
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
+    raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
 ):
     """显示文件的前 N 条数据"""
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
-    _head(filename, actual_num, output, fields)
+    _head(filename, actual_num, output, fields, raw)
 
 
 @app.command()
@@ -91,11 +93,12 @@ def tail(
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
+    raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
 ):
     """显示文件的后 N 条数据"""
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
-    _tail(filename, actual_num, output, fields)
+    _tail(filename, actual_num, output, fields, raw)
 
 
 # ============ 数据转换命令 ============

@@ -5,6 +5,8 @@ CLI 采样相关命令
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
+import orjson
+
 from ..storage.io import load_data, sample_file, save_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
@@ -24,6 +26,7 @@ def sample(
     by: Optional[str] = None,
     uniform: bool = False,
     fields: Optional[str] = None,
+    raw: bool = False,
 ) -> None:
     """
     从数据文件中采样指定数量的数据。
@@ -40,6 +43,7 @@ def sample(
         by: 分层采样字段名，按该字段的值分组采样
         uniform: 均匀采样模式（需配合 --by 使用），各组采样相同数量
         fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
+        raw: 输出原始 JSON 格式（不截断，完整显示所有内容）
 
     Examples:
         dt sample data.jsonl 5
@@ -90,6 +94,10 @@ def sample(
     if output:
         save_data(sampled, output)
         print(f"已保存 {len(sampled)} 条数据到 {output}")
+    elif raw:
+        # 原始 JSON 输出（不截断）
+        for item in sampled:
+            print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
     else:
         # 获取文件总行数用于显示
         total_count = _get_file_row_count(filepath)
@@ -229,6 +237,7 @@ def head(
     num: int = 10,
     output: Optional[str] = None,
     fields: Optional[str] = None,
+    raw: bool = False,
 ) -> None:
     """
     显示文件的前 N 条数据（dt sample --type=head 的快捷方式）。
@@ -241,6 +250,7 @@ def head(
             - num < 0: Python 切片风格（如 -10 表示最后 10 条）
         output: 输出文件路径，不指定则打印到控制台
         fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
+        raw: 输出原始 JSON 格式（不截断，完整显示所有内容）
 
     Examples:
         dt head data.jsonl          # 显示前 10 条
@@ -248,8 +258,9 @@ def head(
         dt head data.csv 0          # 显示所有数据
         dt head data.xlsx --output=head.jsonl
         dt head data.jsonl --fields=question,answer
+        dt head data.jsonl 1 --raw  # 完整 JSON 输出
     """
-    sample(filename, num=num, type="head", output=output, fields=fields)
+    sample(filename, num=num, type="head", output=output, fields=fields, raw=raw)
 
 
 def tail(
@@ -257,6 +268,7 @@ def tail(
     num: int = 10,
     output: Optional[str] = None,
     fields: Optional[str] = None,
+    raw: bool = False,
 ) -> None:
     """
     显示文件的后 N 条数据（dt sample --type=tail 的快捷方式）。
@@ -269,6 +281,7 @@ def tail(
             - num < 0: Python 切片风格（如 -10 表示最后 10 条）
         output: 输出文件路径，不指定则打印到控制台
         fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
+        raw: 输出原始 JSON 格式（不截断，完整显示所有内容）
 
     Examples:
         dt tail data.jsonl          # 显示后 10 条
@@ -276,5 +289,6 @@ def tail(
         dt tail data.csv 0          # 显示所有数据
         dt tail data.xlsx --output=tail.jsonl
         dt tail data.jsonl --fields=question,answer
+        dt tail data.jsonl 1 --raw  # 完整 JSON 输出
     """
-    sample(filename, num=num, type="tail", output=output, fields=fields)
+    sample(filename, num=num, type="tail", output=output, fields=fields, raw=raw)

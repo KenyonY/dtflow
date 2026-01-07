@@ -25,14 +25,23 @@ dtflow/                    # 核心库
 ├── lineage.py            # 数据血缘追踪
 ├── pipeline.py           # Pipeline YAML 执行器
 ├── storage/io.py         # 文件 I/O (JSONL, JSON, CSV, Parquet, Arrow) - 使用 Polars
-├── cli/commands.py       # CLI 命令实现 (所有命令逻辑都在这里)
+├── cli/                  # CLI 命令实现（模块化）
+│   ├── commands.py       # 命令汇总导出
+│   ├── sample.py         # sample/head/tail 命令
+│   ├── transform.py      # transform 命令
+│   ├── clean.py          # clean 命令
+│   ├── stats.py          # stats/token-stats/diff 命令
+│   ├── io_ops.py         # concat/dedupe 命令
+│   ├── pipeline.py       # run 命令
+│   ├── lineage.py        # history 命令
+│   └── common.py         # 公共工具函数
 ├── utils/field_path.py   # 字段路径解析 (a.b, a[0].b, a.#, a[*].b 语法)
 └── mcp/                  # MCP 服务 (Claude Code 集成)
 ```
 
 **CLI 结构**: 使用 typer 框架，支持自动补全
-- `__main__.py` - 定义命令参数、帮助信息，调用 commands.py
-- `cli/commands.py` - 实际命令逻辑
+- `__main__.py` - 定义命令入口和参数
+- `cli/` - 各命令实现已模块化拆分
 - 安装补全: `dt --install-completion`
 
 ## 常用命令
