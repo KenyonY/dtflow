@@ -386,6 +386,88 @@ class DataTransformer:
 
         return errors
 
+    def validate_schema(
+        self,
+        schema: "Schema",
+        on_error: Literal["skip", "raise", "filter"] = "skip",
+        max_errors: int = 100,
+    ) -> Union["DataTransformer", List[tuple]]:
+        """
+        使用 Schema 验证数据结构。
+
+        Args:
+            schema: Schema 对象，定义数据结构验证规则
+            on_error: 错误处理方式
+                - "skip": 打印警告，返回验证失败的记录列表
+                - "raise": 第一个错误时抛出异常
+                - "filter": 过滤掉验证失败的记录，返回新的 DataTransformer
+            max_errors: 最大错误数量（on_error="skip" 时生效）
+
+        Returns:
+            - on_error="skip": 返回 [(index, ValidationResult), ...] 失败记录列表
+            - on_error="raise": 无返回（成功）或抛出 ValueError
+            - on_error="filter": 返回过滤后的新 DataTransformer
+
+        Examples:
+            >>> from dtflow import Schema, Field
+            >>> schema = Schema({
+            ...     "messages": Field(type="list", required=True, min_length=1),
+            ...     "messages[*].role": Field(type="str", choices=["user", "assistant"]),
+            ... })
+
+            >>> # 获取验证失败的记录
+            >>> errors = dt.validate_schema(schema)
+            >>> for idx, result in errors:
+            ...     print(f"第 {idx} 行验证失败: {result.errors}")
+
+            >>> # 过滤掉无效记录
+            >>> valid_dt = dt.validate_schema(schema, on_error="filter")
+
+            >>> # 遇到错误立即停止
+            >>> dt.validate_schema(schema, on_error="raise")
+        """
+        from .schema import Schema, ValidationResult
+
+        failed: List[tuple] = []
+        valid_data: List[dict] = []
+        error_count = 0
+
+        for i, item in enumerate(self._data):
+            result = schema.validate(item)
+            if result.valid:
+                valid_data.append(item)
+            else:
+                failed.append((i, result))
+                error_count += len(result.errors)
+
+                if on_error == "raise":
+                    error_msgs = [str(e) for e in result.errors[:3]]
+                    raise ValueError(
+                        f"第 {i} 行验证失败:\n  " + "\n  ".join(error_msgs)
+                    )
+
+                if on_error == "skip" and error_count >= max_errors:
+                    print(f"⚠️ 已达到最大错误数 {max_errors}，停止验证")
+                    break
+
+        if on_error == "skip":
+            if failed:
+                print(f"⚠️ 验证失败 {len(failed)} 条记录（共 {error_count} 个错误）")
+            return failed
+
+        if on_error == "filter":
+            tracker = self._lineage_tracker
+            if tracker:
+                tracker.record(
+                    "validate_schema",
+                    {"schema": repr(schema), "on_error": on_error},
+                    len(self._data),
+                    len(valid_data),
+                )
+            return DataTransformer(valid_data, _lineage_tracker=tracker)
+
+        return failed
+
     def dedupe(
         self,
         key: Union[None, str, List[str], Callable[[Any], Any]] = None,
@@ -800,6 +882,78 @@ class DataTransformer:
 
         filtered = [item for item, keep in zip(self._data, mask) if keep]
         return DataTransformer(filtered)
+
+    # ============ 训练框架集成 ============
+
+    def check_compatibility(
+        self,
+        framework: Literal["llama-factory", "swift", "axolotl"],
+    ) -> "CompatibilityResult":
+        """
+        检查数据与目标训练框架的兼容性。
+
+        Args:
+            framework: 目标框架名称
+                - "llama-factory": LLaMA-Factory
+                - "swift": ms-swift (ModelScope)
+                - "axolotl": Axolotl
+
+        Returns:
+            CompatibilityResult 对象，包含 valid, errors, warnings, suggestions
+
+        Examples:
+            >>> result = dt.check_compatibility("llama-factory")
+            >>> if result.valid:
+            ...     print("兼容!")
+            >>> else:
+            ...     print(result.errors)
+        """
+        from .framework import check_compatibility
+
+        return check_compatibility(self._data, framework)
+
+    def export_for(
+        self,
+        framework: Literal["llama-factory", "swift", "axolotl"],
+        output_dir: str,
+        dataset_name: str = "custom_dataset",
+        **kwargs,
+    ) -> Dict[str, str]:
+        """
+        一键导出数据和配置文件到目标训练框架。
+
+        Args:
+            framework: 目标框架名称
+            output_dir: 输出目录
+            dataset_name: 数据集名称
+            **kwargs: 框架特定参数（如 model_name）
+
+        Returns:
+            生成的文件路径字典 {"data": "...", "config": "...", ...}
+
+        Examples:
+            >>> # 导出到 LLaMA-Factory
+            >>> dt.export_for("llama-factory", "./llama_ready")
+            # 生成:
+            # - ./llama_ready/custom_dataset.json
+            # - ./llama_ready/dataset_info.json
+            # - ./llama_ready/train_args.yaml
+
+            >>> # 导出到 ms-swift
+            >>> dt.export_for("swift", "./swift_ready", dataset_name="my_data")
+
+            >>> # 导出到 Axolotl
+            >>> dt.export_for("axolotl", "./axolotl_ready")
+        """
+        from .framework import export_for
+
+        return export_for(
+            self._data,
+            framework,
+            output_dir,
+            dataset_name=dataset_name,
+            **kwargs,
+        )
 
 
 def _sanitize_key(name: str) -> str:

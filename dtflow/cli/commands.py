@@ -33,6 +33,9 @@ from .pipeline import run
 # 血缘追踪命令
 from .lineage import history
 
+# 验证命令
+from .validate import validate
+
 __all__ = [
     # 采样
     "sample",
@@ -53,4 +56,6 @@ __all__ = [
     "run",
     # 血缘
     "history",
+    # 验证
+    "validate",
 ]

@@ -1,7 +1,7 @@
 # dtflow 进化路线图
 
-> 版本：v0.7.0 → v1.0
-> 更新日期：2025-12-20
+> 版本：v0.5.0 → v1.0
+> 更新日期：2026-01-08
 
 ## 现状总结
 
@@ -168,80 +168,189 @@ dt history output.jsonl --json
 
 ---
 
-### 方向五：数据质量控制 ⭐⭐⭐⭐
+### 方向五：数据质量控制 ⭐⭐⭐⭐⭐ 【P0 优先级】
 
-**痛点**：缺少数据结构验证和质量检测。
+**痛点**：缺少数据结构验证和质量检测，导致训练失败或模型效果差。
 
 **期望 API**：
 ```python
+from dtflow import Schema, Field
+
+# 1. Schema 验证
+schema = Schema({
+    "messages": Field(type="list", required=True, min_length=1),
+    "messages[*].role": Field(type="str", choices=["user", "assistant", "system"]),
+    "messages[*].content": Field(type="str", min_length=1),
+    "score": Field(type="float", min=0, max=1),
+})
+
 dt.load("data.jsonl")
-  .validate(schema=SFTSchema)      # Schema 验证
-  .detect_quality(                 # 质量检测
-      pii_detection=True,
-  )
-  .filter_quality(min_score=0.7)
-  .report()
+  .validate_schema(schema)  # 返回验证结果
+  .save("valid.jsonl")
+
+# 2. PII 检测
+dt.load("data.jsonl")
+  .detect_pii(fields=["content"])      # 检测敏感信息
+  .mask_pii(fields=["content"])        # 脱敏处理
+  .save("safe.jsonl")
+
+# 3. 数据质量评分
+report = dt.quality_report()
+# {
+#   "total": 1000,
+#   "valid": 950,
+#   "invalid": 50,
+#   "completeness": 0.95,    # 完整性
+#   "uniqueness": 0.88,      # 唯一性（去重后比例）
+#   "field_stats": {...}
+# }
+
+# 4. 异常值检测
+anomalies = dt.detect_anomalies(field="token_count", method="zscore", threshold=3)
 ```
 
 **关键能力**：
-| 能力 | 说明 | 实现思路 |
-|------|------|----------|
-| Schema 验证 | 数据结构验证 | pydantic |
-| PII 检测 | 敏感信息识别 | 正则 + presidio |
+| 能力 | 说明 | 状态 | 优先级 |
+|------|------|------|--------|
+| Schema 验证 | 数据结构验证（类型、范围、必填） | ✅ | P0 |
+| PII 检测 | 敏感信息识别（邮箱、电话、身份证） | 🔲 | P0 |
+| 数据质量评分 | 完整性、一致性、唯一性 | 🔲 | P1 |
+| 异常值检测 | 统计异常（zscore/IQR） | 🔲 | P1 |
 
-**优先级**：⭐⭐⭐⭐
+**实现思路**：
+- Schema 验证：轻量级自研（不依赖 pydantic，保持简洁）
+- PII 检测：正则表达式 + 可选 presidio 集成
+- 质量评分：基于 stats() 扩展
 
 ---
 
-### 方向六：数据平衡 ⭐⭐⭐
+### 方向六：数据平衡 ⭐⭐⭐⭐ 【P1 优先级】
 
 **痛点**：训练数据类别不平衡影响模型效果。
 
 **期望 API**：
 ```python
+# 1. 类别平衡
 dt.load("data.jsonl")
-  .balance("category", strategy="oversample")  # 过采样
+  .balance("category", strategy="oversample")   # 过采样（复制少数类）
   .save("balanced.jsonl")
 
 dt.load("data.jsonl")
-  .balance("category", strategy="undersample", target_ratio=0.5)
+  .balance("category", strategy="undersample")  # 欠采样（减少多数类）
+  .save("balanced.jsonl")
+
+# 2. 长度平衡
+dt.load("data.jsonl")
+  .balance_length("content", bins=[0, 100, 500, 2000, float("inf")])
+  .save("balanced.jsonl")
+
+# 3. 分布可视化
+dt.plot_distribution("category")           # 类别分布直方图
+dt.plot_length_distribution("content")     # 长度分布图
 ```
 
-**优先级**：⭐⭐⭐
+**关键能力**：
+| 能力 | 说明 | 状态 | 优先级 |
+|------|------|------|--------|
+| 类别过采样 | 复制少数类样本 | 🔲 | P1 |
+| 类别欠采样 | 减少多数类样本 | 🔲 | P1 |
+| 长度平衡 | 按长度区间平衡 | 🔲 | P2 |
+| 分布可视化 | 直方图展示 | 🔲 | P2 |
 
 ---
 
-### 方向七：训练框架深度集成 ⭐⭐⭐
+### 方向七：数据增强 ⭐⭐⭐⭐ 【P2 优先级】
 
-**现状**：`converters.py` 已支持格式转换，但缺少一站式导出。
+**痛点**：小数据集需要扩充，提高模型泛化能力。
 
 **期望 API**：
 ```python
-dt.load("raw_data.jsonl")
-  .prepare_for("llama-factory",
-      template="qwen2",
-      max_length=4096,
-      pack_sequences=True,
-      train_split=0.9,
-  )
-  .export("./llama_factory_dataset/")  # 生成配置 + 数据
+# 1. 文本增强
+dt.load("data.jsonl")
+  .augment("content", method="synonym_replace", ratio=0.1)  # 同义词替换
+  .augment("content", method="random_swap", ratio=0.1)      # 随机交换
+  .save("augmented.jsonl")
+
+# 2. 基于 LLM 的增强（需要 maque 库）
+dt.load("data.jsonl")
+  .augment("content", method="paraphrase", model="qwen2.5")  # 改写
+  .augment("content", method="backtranslation", lang="en")   # 回译
+  .save("augmented.jsonl")
+
+# 3. 对话增强
+dt.load("data.jsonl")
+  .augment_conversation(method="role_swap")     # user/assistant 互换
+  .augment_conversation(method="truncate")      # 随机截断对话
+  .save("augmented.jsonl")
 ```
 
-**优先级**：⭐⭐⭐
+**关键能力**：
+| 能力 | 说明 | 状态 | 优先级 |
+|------|------|------|--------|
+| 同义词替换 | 基于词表的增强 | 🔲 | P2 |
+| 随机交换/删除 | 简单的数据扰动 | 🔲 | P2 |
+| LLM 改写 | 使用 maque 调用 LLM | 🔲 | P3 |
+| 对话增强 | 多轮对话特化 | 🔲 | P3 |
+
+---
+
+### 方向八：训练框架深度集成 ⭐⭐⭐ 【P2 优先级】✅ 已完成
+
+**实现**：`dtflow/framework.py`
+
+**API 用法**：
+```python
+from dtflow import DataTransformer
+
+dt = DataTransformer.load("data.jsonl")
+
+# 1. 兼容性检查
+result = dt.check_compatibility("llama-factory")
+print(result)  # ✅ 兼容 - LLaMA-Factory (openai_chat)
+
+# 2. 一键导出
+dt.export_for("llama-factory", output_dir="./llama_ready/")
+# 生成:
+# - ./llama_ready/custom_dataset.json
+# - ./llama_ready/dataset_info.json
+# - ./llama_ready/train_args.yaml
+
+# 3. 导出到 ms-swift
+dt.export_for("swift", "./swift_ready/")
+
+# 4. 导出到 Axolotl
+dt.export_for("axolotl", "./axolotl_ready/")
+```
+
+**支持的框架**：
+| 框架 | 导出内容 | 状态 |
+|------|---------|------|
+| LLaMA-Factory | data.json + dataset_info.json + train_args.yaml | ✅ |
+| ms-swift | data.jsonl + train.sh | ✅ |
+| Axolotl | data.jsonl + config.yaml | ✅ |
+
+**关键能力**：
+| 能力 | 说明 | 状态 |
+|------|------|------|
+| 一键导出 | 数据 + 配置文件 | ✅ |
+| 兼容性检查 | 验证数据格式 | ✅ |
+| 格式自动检测 | openai_chat/alpaca/sharegpt/dpo | ✅ |
+| 配置推荐 | 自动生成训练参数模板 | ✅ |
 
 ---
 
 ## 优先级总览
 
-| 方向 | 状态 | 说明 |
-|------|------|------|
-| 可复现性/Pipeline | ✅ 完成 | `pipeline.py`，`dt run` |
-| 数据血缘/版本 | ✅ 完成 | `lineage.py`，`dt history` |
-| 大文件流式处理 | ✅ 完成 | `streaming.py`，O(1) 内存 |
-| CLI 增强 | ✅ 完成 | `token-stats`, `diff`, `run`, `history` |
-| 数据质量控制 | 🔲 待开发 | Schema 验证、PII 检测 |
-| 数据平衡 | 🔲 待开发 | 过采样/欠采样 |
-| 训练框架集成 | 🔲 待开发 | 一站式导出 |
+| 方向 | 状态 | 优先级 | 说明 |
+|------|------|--------|------|
+| 可复现性/Pipeline | ✅ 完成 | - | `pipeline.py`，`dt run` |
+| 数据血缘/版本 | ✅ 完成 | - | `lineage.py`，`dt history` |
+| 大文件流式处理 | ✅ 完成 | - | `streaming.py`，O(1) 内存 |
+| CLI 增强 | ✅ 完成 | - | `token-stats`, `diff`, `run`, `history` |
+| **数据质量控制** | 🚧 开发中 | **P0** | Schema 验证 ✅、PII 检测 🔲 |
+| **训练框架集成** | ✅ 完成 | P2 | `export_for()`, `check_compatibility()` |
+| 数据平衡 | 🔲 待开发 | P1 | 过采样/欠采样 |
+| 数据增强 | 🔲 待开发 | P2 | 文本增强、对话增强 |
 
 ---
 
@@ -251,33 +360,33 @@ dt.load("raw_data.jsonl")
 - [x] Pipeline YAML 配置格式设计
 - [x] `dt run pipeline.yaml` 命令
 - [x] 全局随机种子管理
-
-### v0.5.0 - CLI 增强 ✅
-- [x] `dt token-stats` 命令
-- [x] `dt diff` 数据集对比
-- [ ] `dt explore` 交互式探索（可选）
-
-### v0.6.0 - 数据血缘 ✅
 - [x] 血缘元数据记录（.lineage.json sidecar 文件）
 - [x] `dt history` 命令
-- [ ] `dt trace` 数据溯源（可选）
-
-### v0.7.0 - 大文件流式处理 ✅
 - [x] 惰性 filter/transform（StreamingTransformer + generator）
 - [x] `load_sharded()` / `save_sharded()`
-- [x] `process_shards()` 分片处理函数
+- [x] `dt token-stats` 命令
+- [x] `dt diff` 数据集对比
 
-### v0.8.0 - 数据质量
-- [ ] Schema 验证（pydantic）
-- [ ] PII 检测
+### v0.5.0 - 数据质量控制 + 框架集成（当前开发版本）🚧
+- [x] Schema 验证（轻量级自研，支持字段路径语法）
+- [x] `dt validate` CLI 命令
+- [x] `check_compatibility()` 兼容性检查
+- [x] `export_for()` 一键导出（LLaMA-Factory/ms-swift/Axolotl）
+- [ ] PII 检测（正则 + 可选 presidio）
 - [ ] 质量报告生成
 
-### v0.9.0 - 数据平衡 & 训练集成
-- [ ] `balance()` 过采样/欠采样
-- [ ] `prepare_for()` 一站式导出
+### v0.6.0 - 数据平衡
+- [ ] `balance()` 类别过采样/欠采样
+- [ ] `balance_length()` 长度平衡
+- [ ] 分布可视化
+
+### v0.7.0 - 数据增强
+- [ ] 文本增强（同义词替换、随机扰动）
+- [ ] 对话增强（截断、角色交换）
+- [ ] LLM 增强（maque 集成）
 
 ### v1.0.0 - 生产就绪
-- [ ] 完整文档
+- [ ] 完整文档和使用案例
 - [ ] 性能基准测试
 - [ ] 稳定 API
 

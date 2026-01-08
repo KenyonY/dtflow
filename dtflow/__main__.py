@@ -18,6 +18,7 @@ Commands:
     clean        数据清洗
     run          执行 Pipeline 配置文件
     history      显示数据血缘历史
+    validate     使用 Schema 验证数据格式
     mcp          MCP 服务管理（install/uninstall/status）
     logs         日志查看工具使用说明
 """
@@ -40,6 +41,7 @@ from .cli.commands import stats as _stats
 from .cli.commands import tail as _tail
 from .cli.commands import token_stats as _token_stats
 from .cli.commands import transform as _transform
+from .cli.commands import validate as _validate
 
 # 创建主应用
 app = typer.Typer(
@@ -209,6 +211,26 @@ def history(
 ):
     """显示数据文件的血缘历史"""
     _history(filename, json)
+
+
+# ============ 验证命令 ============
+
+
+@app.command()
+def validate(
+    filename: str = typer.Argument(..., help="输入文件路径"),
+    preset: Optional[str] = typer.Option(
+        None, "--preset", "-p", help="预设 Schema: openai_chat, alpaca, dpo, sharegpt"
+    ),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出有效数据的文件路径"),
+    filter: bool = typer.Option(
+        False, "--filter", "-f", help="过滤无效数据并保存"
+    ),
+    max_errors: int = typer.Option(20, "--max-errors", help="最多显示的错误数量"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="显示详细信息"),
+):
+    """使用预设 Schema 验证数据格式"""
+    _validate(filename, preset, output, filter, max_errors, verbose)
 
 
 # ============ 工具命令 ============

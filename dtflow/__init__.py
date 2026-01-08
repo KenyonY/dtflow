@@ -4,6 +4,7 @@ DataTransformer: 简洁的数据格式转换工具
 核心功能:
 - DataTransformer: 数据加载、转换、保存
 - presets: 预设转换模板 (openai_chat, alpaca, sharegpt, dpo_pair, simple_qa)
+- schema: 数据结构验证 (Schema, Field)
 - tokenizers: Token 统计和过滤
 - converters: HuggingFace/OpenAI 等格式转换
 """
@@ -26,6 +27,23 @@ from .converters import (  # LLaMA-Factory 扩展; ms-swift
 )
 from .core import DataTransformer, DictWrapper, TransformError, TransformErrors
 from .presets import get_preset, list_presets
+from .schema import (
+    Field,
+    Schema,
+    ValidationError,
+    ValidationResult,
+    alpaca_schema,
+    dpo_schema,
+    openai_chat_schema,
+    sharegpt_schema,
+    validate_data,
+)
+from .framework import (
+    CompatibilityResult,
+    check_compatibility,
+    detect_format,
+    export_for,
+)
 from .storage import load_data, sample_file, save_data
 from .streaming import StreamingTransformer, load_sharded, load_stream, process_shards
 from .tokenizers import (
@@ -53,6 +71,21 @@ __all__ = [
     # presets
     "get_preset",
     "list_presets",
+    # schema
+    "Schema",
+    "Field",
+    "ValidationResult",
+    "ValidationError",
+    "validate_data",
+    "openai_chat_schema",
+    "alpaca_schema",
+    "dpo_schema",
+    "sharegpt_schema",
+    # framework
+    "CompatibilityResult",
+    "check_compatibility",
+    "detect_format",
+    "export_for",
     # storage
     "save_data",
     "load_data",

@@ -53,13 +53,60 @@ dt.filter(lambda x: x.language == "zh")
 ### 数据验证
 
 ```python
-# 验证数据，返回不通过的记录列表
+# 简单验证，返回不通过的记录列表
 errors = dt.validate(lambda x: len(x.messages) >= 2)
 
 if errors:
     for e in errors[:5]:
         print(f"第 {e.index} 行: {e.error}")
 ```
+
+### Schema 验证
+
+使用 Schema 进行结构化数据验证：
+
+```python
+from dtflow import Schema, Field, openai_chat_schema
+
+# 使用预设 Schema
+result = dt.validate_schema(openai_chat_schema)
+print(result)  # ValidationResult(valid=950, invalid=50, errors=[...])
+
+# 自定义 Schema
+schema = Schema({
+    "messages": Field(type="list", required=True, min_length=1),
+    "messages[*].role": Field(type="str", choices=["user", "assistant", "system"]),
+    "messages[*].content": Field(type="str", min_length=1),
+    "score": Field(type="float", min=0, max=1),
+})
+
+result = dt.validate_schema(schema)
+
+# 过滤出有效数据
+valid_dt = dt.validate_schema(schema, filter_invalid=True)
+valid_dt.save("valid.jsonl")
+```
+
+**预设 Schema**：
+
+| Schema 名称 | 用途 |
+|------------|------|
+| `openai_chat_schema` | OpenAI messages 格式验证 |
+| `alpaca_schema` | Alpaca instruction/output 格式 |
+| `sharegpt_schema` | ShareGPT conversations 格式 |
+| `dpo_schema` | DPO prompt/chosen/rejected 格式 |
+
+**Field 参数**：
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `type` | 类型验证 | `"str"`, `"int"`, `"float"`, `"bool"`, `"list"`, `"dict"` |
+| `required` | 是否必填 | `True` / `False` |
+| `min` / `max` | 数值范围 | `min=0, max=1` |
+| `min_length` / `max_length` | 长度范围 | `min_length=1` |
+| `choices` | 枚举值 | `choices=["user", "assistant"]` |
+| `pattern` | 正则匹配 | `pattern=r"^\d{4}-\d{2}-\d{2}$"` |
+| `custom` | 自定义验证 | `custom=lambda x: x > 0` |
 
 ### 数据转换
 
@@ -210,6 +257,58 @@ dt.transform(to_swift_vlm(images_field="images")).save("swift_vlm.jsonl")
 # 输出: {"messages": [...], "images": ["/path/to/img.jpg"]}
 ```
 
+### 训练框架一键导出
+
+将数据导出为目标训练框架可直接使用的格式，自动生成配置文件：
+
+```python
+from dtflow import DataTransformer
+
+dt = DataTransformer.load("data.jsonl")
+
+# 1. 检查框架兼容性
+result = dt.check_compatibility("llama-factory")
+print(result)
+# ✅ 兼容 - LLaMA-Factory (openai_chat)
+# 或
+# ❌ 不兼容 - 错误: xxx
+
+# 2. 一键导出到 LLaMA-Factory
+files = dt.export_for("llama-factory", "./llama_ready/")
+# 生成文件:
+# - ./llama_ready/custom_dataset.json      # 数据文件
+# - ./llama_ready/dataset_info.json        # 数据集配置
+# - ./llama_ready/train_args.yaml          # 训练参数模板
+
+# 3. 导出到 ms-swift
+files = dt.export_for("swift", "./swift_ready/")
+# 生成: data.jsonl + train_swift.sh
+
+# 4. 导出到 Axolotl
+files = dt.export_for("axolotl", "./axolotl_ready/")
+# 生成: data.jsonl + config.yaml
+
+# 指定数据集名称
+dt.export_for("llama-factory", "./output/", dataset_name="my_sft_data")
+```
+
+**支持的框架**：
+
+| 框架 | 导出内容 | 使用方式 |
+|------|---------|---------|
+| `llama-factory` | data.json + dataset_info.json + train_args.yaml | `llamafactory-cli train train_args.yaml` |
+| `swift` | data.jsonl + train_swift.sh | `bash train_swift.sh` |
+| `axolotl` | data.jsonl + config.yaml | `accelerate launch -m axolotl.cli.train config.yaml` |
+
+**自动格式检测**：
+
+| 检测到的格式 | 数据结构 |
+|------------|---------|
+| `openai_chat` | `{"messages": [{"role": "user", ...}]}` |
+| `alpaca` | `{"instruction": ..., "output": ...}` |
+| `sharegpt` | `{"conversations": [{"from": "human", ...}]}` |
+| `dpo` | `{"prompt": ..., "chosen": ..., "rejected": ...}` |
+
 ### 其他操作
 
 ```python
@@ -285,6 +384,12 @@ dt concat a.jsonl b.jsonl -o merged.jsonl
 
 # 数据统计
 dt stats data.jsonl
+
+# 数据验证
+dt validate data.jsonl --preset=openai_chat           # 使用预设 schema 验证
+dt validate data.jsonl --preset=alpaca --verbose      # 详细输出
+dt validate data.jsonl --preset=sharegpt --filter-invalid -o valid.jsonl  # 过滤出有效数据
+dt validate data.jsonl --preset=dpo --max-errors=100  # 限制错误输出数量
 ```
 
 ### 字段路径语法
