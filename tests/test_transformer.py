@@ -688,5 +688,82 @@ class TestUnwrap:
         assert type(result) is dict
 
 
+# 模块级函数用于并行处理测试（必须可 pickle）
+def _transform_func(item):
+    """测试用转换函数"""
+    return {"id": item["id"], "value": item["value"] * 2}
+
+
+def _filter_func(item):
+    """测试用过滤函数"""
+    return item["value"] > 5
+
+
+def _error_func(item):
+    """测试用错误函数"""
+    raise ValueError("Test error")
+
+
+class TestParallel:
+    """Test cases for parallel processing."""
+
+    def test_map_parallel_basic(self):
+        """Test basic map_parallel functionality."""
+        dt = DataTransformer([{"id": i, "value": i} for i in range(10)])
+
+        results = dt.map_parallel(_transform_func, workers=2)
+
+        assert len(results) == 10
+        assert results[0] == {"id": 0, "value": 0}
+        assert results[5] == {"id": 5, "value": 10}
+
+    def test_map_parallel_empty(self):
+        """Test map_parallel with empty data."""
+        dt = DataTransformer([])
+
+        results = dt.map_parallel(_transform_func)
+
+        assert results == []
+
+    def test_map_parallel_lambda_error(self):
+        """Test map_parallel raises TypeError for lambda."""
+        dt = DataTransformer([{"id": 1}])
+
+        with pytest.raises(TypeError, match="无法被 pickle"):
+            dt.map_parallel(lambda x: x)
+
+    def test_filter_parallel_basic(self):
+        """Test basic filter_parallel functionality."""
+        dt = DataTransformer([{"id": i, "value": i} for i in range(10)])
+
+        result = dt.filter_parallel(_filter_func, workers=2)
+
+        assert isinstance(result, DataTransformer)
+        assert len(result) == 4  # values 6, 7, 8, 9 > 5
+        assert all(item["value"] > 5 for item in result.data)
+
+    def test_filter_parallel_empty(self):
+        """Test filter_parallel with empty data."""
+        dt = DataTransformer([])
+
+        result = dt.filter_parallel(_filter_func)
+
+        assert len(result) == 0
+
+    def test_filter_parallel_lambda_error(self):
+        """Test filter_parallel raises TypeError for lambda."""
+        dt = DataTransformer([{"id": 1}])
+
+        with pytest.raises(TypeError, match="无法被 pickle"):
+            dt.filter_parallel(lambda x: True)
+
+    def test_map_parallel_with_error_in_func(self):
+        """Test map_parallel handles errors in function."""
+        dt = DataTransformer([{"id": 1}])
+
+        with pytest.raises(RuntimeError, match="并行处理失败"):
+            dt.map_parallel(_error_func, workers=1)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

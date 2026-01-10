@@ -237,6 +237,23 @@ class LineageTracker:
 
         return lineage_path
 
+    def copy(self) -> "LineageTracker":
+        """
+        创建追踪器的深拷贝。
+
+        用于 split() 等场景，确保子数据集有独立的血缘追踪。
+
+        Returns:
+            新的 LineageTracker 实例
+        """
+        import copy as copy_module
+
+        new_tracker = LineageTracker.__new__(LineageTracker)
+        new_tracker.source_path = self.source_path
+        new_tracker.source_lineage = self.source_lineage  # LineageRecord 是不可变的，可共享
+        new_tracker.operations = copy_module.deepcopy(self.operations)
+        return new_tracker
+
 
 def _sanitize_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """

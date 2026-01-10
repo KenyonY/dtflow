@@ -365,50 +365,108 @@ class StreamingTransformer:
         """
         批量流式保存（CSV/Parquet/Arrow）。
 
-        读取和处理是流式的，写入时收集后一次性写入。
+        真正的流式写入：分批处理，每批写入后释放内存。
+        内存占用 O(batch_size) 而非 O(n)。
         """
         path = Path(filepath)
-        all_items = []
+        count = 0
+        batch = []
+        first_batch = True
 
-        if show_progress:
-            # 根据是否有总数选择进度条样式
-            if self._total is not None:
-                columns = [
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(),
-                    TaskProgressColumn(),
-                    MofNCompleteColumn(),
-                    TimeElapsedColumn(),
-                    TimeRemainingColumn(),
-                ]
-            else:
-                columns = [
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    MofNCompleteColumn(),
-                    TimeElapsedColumn(),
-                ]
+        # 进度条配置
+        progress_columns = self._get_progress_columns()
 
-            with Progress(*columns) as progress:
-                task = progress.add_task("处理中", total=self._total)
-                for item in self._iterator:
-                    all_items.append(item)
-                    progress.update(task, advance=1)
-        else:
-            for item in self._iterator:
-                all_items.append(item)
+        def write_batch(items: List[Dict], is_first: bool, writer_state: Dict):
+            """写入一批数据"""
+            if not items:
+                return
 
-        if all_items:
-            df = pl.DataFrame(all_items)
+            df = pl.DataFrame(items)
+
             if fmt == "csv":
-                df.write_csv(path)
-            elif fmt == "parquet":
-                df.write_parquet(path)
-            elif fmt == "arrow":
-                df.write_ipc(path)
+                if is_first:
+                    df.write_csv(path)
+                else:
+                    # CSV 追加模式：不写表头
+                    with open(path, "ab") as f:
+                        f.write(df.write_csv(include_header=False).encode("utf-8"))
 
-        return len(all_items)
+            elif fmt == "parquet":
+                import pyarrow as pa
+                import pyarrow.parquet as pq
+
+                table = df.to_arrow()
+                if is_first:
+                    writer_state["writer"] = pq.ParquetWriter(str(path), table.schema)
+                writer_state["writer"].write_table(table)
+
+            elif fmt == "arrow":
+                import pyarrow as pa
+
+                table = df.to_arrow()
+                if is_first:
+                    writer_state["writer"] = pa.ipc.new_file(str(path), table.schema)
+                for record_batch in table.to_batches():
+                    writer_state["writer"].write_batch(record_batch)
+
+        writer_state: Dict[str, Any] = {}
+
+        try:
+            if show_progress:
+                with Progress(*progress_columns) as progress:
+                    task = progress.add_task("处理中", total=self._total)
+                    for item in self._iterator:
+                        batch.append(item)
+                        count += 1
+                        progress.update(task, advance=1)
+
+                        if len(batch) >= batch_size:
+                            write_batch(batch, first_batch, writer_state)
+                            first_batch = False
+                            batch = []  # 释放内存
+
+                    # 写入最后一批
+                    if batch:
+                        write_batch(batch, first_batch, writer_state)
+            else:
+                for item in self._iterator:
+                    batch.append(item)
+                    count += 1
+
+                    if len(batch) >= batch_size:
+                        write_batch(batch, first_batch, writer_state)
+                        first_batch = False
+                        batch = []
+
+                if batch:
+                    write_batch(batch, first_batch, writer_state)
+
+        finally:
+            # 关闭 writer
+            if "writer" in writer_state:
+                writer_state["writer"].close()
+
+        return count
+
+    def _get_progress_columns(self):
+        """获取进度条列配置"""
+        if self._total is not None:
+            return [
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ]
+        else:
+            return [
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+            ]
 
     def save_sharded(
         self,

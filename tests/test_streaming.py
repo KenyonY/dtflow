@@ -298,3 +298,83 @@ class TestEdgeCases:
         assert transformed._error_count == 10
         assert "KeyError" in transformed._first_error
         os.unlink(temp_jsonl)
+
+
+class TestBatchedSave:
+    """测试批量保存（CSV/Parquet/Arrow）的流式写入"""
+
+    def test_save_csv_streaming(self, temp_jsonl, tmp_path):
+        """测试流式保存到 CSV"""
+        import polars as pl
+
+        output_path = tmp_path / "output.csv"
+
+        st = load_stream(temp_jsonl)
+        count = st.filter(lambda x: x["id"] < 50).save(
+            str(output_path), show_progress=False, batch_size=10
+        )
+
+        assert count == 50
+
+        # 验证 CSV 内容
+        df = pl.read_csv(output_path)
+        assert len(df) == 50
+        assert "id" in df.columns
+        assert df["id"].min() == 0
+        assert df["id"].max() == 49
+        os.unlink(temp_jsonl)
+
+    def test_save_parquet_streaming(self, temp_jsonl, tmp_path):
+        """测试流式保存到 Parquet"""
+        import polars as pl
+
+        output_path = tmp_path / "output.parquet"
+
+        st = load_stream(temp_jsonl)
+        count = st.filter(lambda x: x["id"] < 30).save(
+            str(output_path), show_progress=False, batch_size=10
+        )
+
+        assert count == 30
+
+        # 验证 Parquet 内容
+        df = pl.read_parquet(output_path)
+        assert len(df) == 30
+        os.unlink(temp_jsonl)
+
+    def test_save_arrow_streaming(self, temp_jsonl, tmp_path):
+        """测试流式保存到 Arrow"""
+        import polars as pl
+
+        output_path = tmp_path / "output.arrow"
+
+        st = load_stream(temp_jsonl)
+        count = st.filter(lambda x: x["id"] < 20).save(
+            str(output_path), show_progress=False, batch_size=5
+        )
+
+        assert count == 20
+
+        # 验证 Arrow 内容
+        df = pl.read_ipc(output_path)
+        assert len(df) == 20
+        os.unlink(temp_jsonl)
+
+    def test_save_csv_large_batch(self, tmp_path):
+        """测试大批量数据的流式保存（验证不会 OOM）"""
+        # 创建大文件
+        large_file = tmp_path / "large.jsonl"
+        with open(large_file, 'w') as f:
+            for i in range(1000):
+                f.write(json.dumps({"id": i, "value": i * 2}) + "\n")
+
+        output_path = tmp_path / "large_output.csv"
+
+        st = load_stream(str(large_file))
+        count = st.save(str(output_path), show_progress=False, batch_size=100)
+
+        assert count == 1000
+
+        import polars as pl
+        df = pl.read_csv(output_path)
+        assert len(df) == 1000

@@ -175,9 +175,11 @@ def _get_value_by_segments(
 
             return values
 
-        # 字典字段访问
+        # 字典字段访问（支持 dict 和类 dict 对象如 DictWrapper）
         if isinstance(seg, str):
             if isinstance(current, dict):
+                current = current.get(seg)
+            elif hasattr(current, "get"):
                 current = current.get(seg)
             else:
                 return None

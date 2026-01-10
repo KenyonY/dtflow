@@ -210,7 +210,10 @@ def token_counter(
     创建 token 计数转换函数。
 
     Args:
-        fields: 要统计的字段（单个或多个）
+        fields: 要统计的字段（单个或多个），支持嵌套路径语法
+            - 简单字段: "text"
+            - 嵌套字段: "meta.content", "data.text"
+            - 索引: "messages[0].content", "messages[-1].content"
         model: 模型名称或别名，如 "qwen2.5", "gpt-4", "llama3" 等
         backend: 后端选择，None 则自动检测
         output_field: 输出字段名
@@ -221,6 +224,7 @@ def token_counter(
     Examples:
         >>> dt.transform(token_counter("text"))
         >>> dt.transform(token_counter(["question", "answer"], model="qwen3"))
+        >>> dt.transform(token_counter("messages[-1].content"))  # 最后一条消息
     """
     if isinstance(fields, str):
         fields = [fields]
@@ -229,7 +233,7 @@ def token_counter(
         result = item.to_dict() if hasattr(item, "to_dict") else dict(item)
         total = 0
         for field in fields:
-            value = item.get(field, "") if hasattr(item, "get") else item[field]
+            value = get_field_with_spec(item, field, default="")
             if value:
                 total += count_tokens(str(value), model=model, backend=backend)
         result[output_field] = total
@@ -249,7 +253,10 @@ def token_filter(
     创建基于 token 长度的过滤函数。
 
     Args:
-        fields: 要统计的字段（单个或多个）
+        fields: 要统计的字段（单个或多个），支持嵌套路径语法
+            - 简单字段: "text"
+            - 嵌套字段: "meta.content", "data.text"
+            - 索引: "messages[0].content", "messages[-1].content"
         min_tokens: 最小 token 数（包含）
         max_tokens: 最大 token 数（包含）
         model: 模型名称
@@ -261,6 +268,7 @@ def token_filter(
     Examples:
         >>> dt.filter(token_filter("text", min_tokens=10, max_tokens=512))
         >>> dt.filter(token_filter(["q", "a"], max_tokens=2048))
+        >>> dt.filter(token_filter("messages[-1].content", max_tokens=1024))
     """
     if isinstance(fields, str):
         fields = [fields]
@@ -268,7 +276,7 @@ def token_filter(
     def filter_func(item) -> bool:
         total = 0
         for field in fields:
-            value = item.get(field, "") if hasattr(item, "get") else item[field]
+            value = get_field_with_spec(item, field, default="")
             if value:
                 total += count_tokens(str(value), model=model, backend=backend)
 
@@ -281,11 +289,32 @@ def token_filter(
     return filter_func
 
 
+def _percentile(sorted_data: List[int], p: float) -> int:
+    """计算百分位数"""
+    n = len(sorted_data)
+    if n == 0:
+        return 0
+    idx = (n - 1) * p / 100
+    lower = int(idx)
+    upper = min(lower + 1, n - 1)
+    weight = idx - lower
+    return int(sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight)
+
+
+def _std(counts: List[int], avg: float) -> float:
+    """计算标准差"""
+    if len(counts) < 2:
+        return 0.0
+    variance = sum((x - avg) ** 2 for x in counts) / len(counts)
+    return variance ** 0.5
+
+
 def token_stats(
     data: List[Dict[str, Any]],
     fields: Union[str, List[str]],
     model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, Any]:
     """
     统计数据集的 token 信息。
@@ -295,9 +324,17 @@ def token_stats(
         fields: 要统计的字段，支持嵌套路径语法（如 meta.text, messages[-1].content）
         model: 模型名称或别名，如 "qwen2.5", "gpt-4" 等
         backend: 后端选择，None 则自动检测
+        progress_callback: 进度回调函数，接收 (current, total) 两个参数
 
     Returns:
-        统计信息字典
+        统计信息字典，包含:
+        - total_tokens: 总 token 数
+        - count: 样本数
+        - avg_tokens: 平均 token 数
+        - std_tokens: 标准差
+        - min_tokens, max_tokens: 最小/最大值
+        - median_tokens: 中位数 (p50)
+        - p25, p75, p90, p95, p99: 百分位数
     """
     if isinstance(fields, str):
         fields = [fields]
@@ -306,21 +343,33 @@ def token_stats(
         return {"total_tokens": 0, "count": 0}
 
     counts = []
-    for item in data:
+    total_items = len(data)
+    for i, item in enumerate(data):
         total = 0
         for field in fields:
             value = get_field_with_spec(item, field, default="")
             if value:
                 total += count_tokens(str(value), model=model, backend=backend)
         counts.append(total)
+        if progress_callback:
+            progress_callback(i + 1, total_items)
+
+    sorted_counts = sorted(counts)
+    avg = sum(counts) / len(counts)
 
     return {
         "total_tokens": sum(counts),
         "count": len(counts),
-        "avg_tokens": sum(counts) / len(counts),
+        "avg_tokens": avg,
+        "std_tokens": _std(counts, avg),
         "min_tokens": min(counts),
         "max_tokens": max(counts),
-        "median_tokens": sorted(counts)[len(counts) // 2],
+        "median_tokens": _percentile(sorted_counts, 50),
+        "p25": _percentile(sorted_counts, 25),
+        "p75": _percentile(sorted_counts, 75),
+        "p90": _percentile(sorted_counts, 90),
+        "p95": _percentile(sorted_counts, 95),
+        "p99": _percentile(sorted_counts, 99),
     }
 
 
@@ -504,6 +553,7 @@ def messages_token_stats(
     messages_field: str = "messages",
     model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, Any]:
     """
     统计数据集中 messages 的 token 信息。
@@ -513,25 +563,18 @@ def messages_token_stats(
         messages_field: messages 字段名，支持嵌套路径语法（如 conversation.messages）
         model: 模型名称或别名
         backend: 后端，None 则自动检测
+        progress_callback: 进度回调函数，接收 (current, total) 两个参数
 
     Returns:
-        统计信息字典
-
-    Examples:
-        >>> stats = messages_token_stats(dt.data)  # 使用默认 qwen2.5
-        >>> stats = messages_token_stats(dt.data, model="qwen3")
-        >>> print(stats)
-        {
-            "count": 1000,
-            "total_tokens": 500000,
-            "user_tokens": 200000,
-            "assistant_tokens": 290000,
-            "system_tokens": 10000,
-            "avg_tokens": 500,
-            "max_tokens": 2048,
-            "min_tokens": 50,
-            "avg_turns": 4,
-        }
+        统计信息字典，包含:
+        - count: 样本数
+        - total_tokens: 总 token 数
+        - user_tokens, assistant_tokens, system_tokens: 各角色 token 数
+        - avg_tokens, std_tokens: 平均值和标准差
+        - min_tokens, max_tokens: 最小/最大值
+        - median_tokens: 中位数
+        - p25, p75, p90, p95, p99: 百分位数
+        - avg_turns: 平均对话轮数
     """
     _backend = backend or _auto_backend(model)
 
@@ -539,24 +582,36 @@ def messages_token_stats(
         return {"count": 0, "total_tokens": 0}
 
     all_stats = []
-    for item in data:
+    total_items = len(data)
+    for i, item in enumerate(data):
         messages = get_field_with_spec(item, messages_field, default=[])
         if messages:
             all_stats.append(_count_messages_tokens(messages, model=model, backend=_backend))
+        if progress_callback:
+            progress_callback(i + 1, total_items)
 
     if not all_stats:
         return {"count": 0, "total_tokens": 0}
 
     totals = [s["total"] for s in all_stats]
+    sorted_totals = sorted(totals)
+    avg = sum(totals) / len(totals)
+
     return {
         "count": len(all_stats),
         "total_tokens": sum(totals),
         "user_tokens": sum(s["user"] for s in all_stats),
         "assistant_tokens": sum(s["assistant"] for s in all_stats),
         "system_tokens": sum(s["system"] for s in all_stats),
-        "avg_tokens": sum(totals) // len(totals),
-        "max_tokens": max(totals),
+        "avg_tokens": int(avg),
+        "std_tokens": _std(totals, avg),
         "min_tokens": min(totals),
-        "median_tokens": sorted(totals)[len(totals) // 2],
+        "max_tokens": max(totals),
+        "median_tokens": _percentile(sorted_totals, 50),
+        "p25": _percentile(sorted_totals, 25),
+        "p75": _percentile(sorted_totals, 75),
+        "p90": _percentile(sorted_totals, 90),
+        "p95": _percentile(sorted_totals, 95),
+        "p99": _percentile(sorted_totals, 99),
         "avg_turns": sum(s["turns"] for s in all_stats) // len(all_stats),
     }

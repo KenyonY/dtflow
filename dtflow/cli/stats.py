@@ -465,34 +465,60 @@ def token_stats(
         return
 
     total = len(data)
-    print(f"   共 {total} 条数据")
-    print(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
+    print(f"   共 {total:,} 条数据")
 
     # 检查字段类型并选择合适的统计方法（支持嵌套路径）
     sample = data[0]
     field_value = get_field_with_spec(sample, field)
 
+    # 尝试使用 rich 进度条
     try:
-        if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
-            # messages 格式
-            from ..tokenizers import messages_token_stats
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-            stats_result = messages_token_stats(data, messages_field=field, model=model)
-            _print_messages_token_stats(stats_result, detailed)
-        else:
-            # 普通文本字段
-            from ..tokenizers import token_stats as compute_token_stats
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]统计 Token"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn(f"(模型: {model})"),
+        ) as progress:
+            task = progress.add_task("", total=total)
 
-            stats_result = compute_token_stats(data, fields=field, model=model)
-            _print_text_token_stats(stats_result, detailed)
-    except ImportError as e:
-        print(f"错误: {e}")
-        return
-    except Exception as e:
-        print(f"错误: 统计失败 - {e}")
-        import traceback
+            def update_progress(current: int, total_count: int):
+                progress.update(task, completed=current)
 
-        traceback.print_exc()
+            if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
+                from ..tokenizers import messages_token_stats
+                stats_result = messages_token_stats(
+                    data, messages_field=field, model=model, progress_callback=update_progress
+                )
+                _print_messages_token_stats(stats_result, detailed)
+            else:
+                from ..tokenizers import token_stats as compute_token_stats
+                stats_result = compute_token_stats(
+                    data, fields=field, model=model, progress_callback=update_progress
+                )
+                _print_text_token_stats(stats_result, detailed)
+
+    except ImportError:
+        # 没有 rich，显示简单进度
+        print(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
+        try:
+            if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
+                from ..tokenizers import messages_token_stats
+                stats_result = messages_token_stats(data, messages_field=field, model=model)
+                _print_messages_token_stats(stats_result, detailed)
+            else:
+                from ..tokenizers import token_stats as compute_token_stats
+                stats_result = compute_token_stats(data, fields=field, model=model)
+                _print_text_token_stats(stats_result, detailed)
+        except ImportError as e:
+            print(f"错误: {e}")
+            return
+        except Exception as e:
+            print(f"错误: 统计失败 - {e}")
+            import traceback
+            traceback.print_exc()
 
 
 def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
@@ -505,21 +531,39 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
         console = Console()
 
         # 概览
+        std = stats.get("std_tokens", 0)
         overview = (
             f"[bold]总样本数:[/bold] {stats['count']:,}\n"
             f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
-            f"[bold]平均 Token:[/bold] {stats['avg_tokens']:,}\n"
-            f"[bold]中位数:[/bold] {stats['median_tokens']:,}\n"
+            f"[bold]平均 Token:[/bold] {stats['avg_tokens']:,} (std: {std:.1f})\n"
             f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
         )
         console.print(Panel(overview, title="📊 Token 统计概览", expand=False))
 
+        # 百分位数表格
+        table = Table(title="📈 分布统计")
+        table.add_column("百分位", style="cyan", justify="center")
+        table.add_column("Token 数", justify="right")
+        percentiles = [
+            ("Min", stats["min_tokens"]),
+            ("P25", stats.get("p25", "-")),
+            ("P50 (中位数)", stats.get("median_tokens", "-")),
+            ("P75", stats.get("p75", "-")),
+            ("P90", stats.get("p90", "-")),
+            ("P95", stats.get("p95", "-")),
+            ("P99", stats.get("p99", "-")),
+            ("Max", stats["max_tokens"]),
+        ]
+        for name, val in percentiles:
+            table.add_row(name, f"{val:,}" if isinstance(val, int) else str(val))
+        console.print(table)
+
         if detailed:
-            # 详细统计
-            table = Table(title="📋 分角色统计")
-            table.add_column("角色", style="cyan")
-            table.add_column("Token 数", justify="right")
-            table.add_column("占比", justify="right")
+            # 分角色统计
+            role_table = Table(title="📋 分角色统计")
+            role_table.add_column("角色", style="cyan")
+            role_table.add_column("Token 数", justify="right")
+            role_table.add_column("占比", justify="right")
 
             total = stats["total_tokens"]
             for role, key in [
@@ -529,21 +573,26 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
             ]:
                 tokens = stats.get(key, 0)
                 pct = tokens / total * 100 if total > 0 else 0
-                table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
+                role_table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
 
-            console.print(table)
+            console.print(role_table)
             console.print(f"\n平均对话轮数: {stats.get('avg_turns', 0)}")
 
     except ImportError:
         # 没有 rich，使用普通打印
+        std = stats.get("std_tokens", 0)
         print(f"\n{'=' * 40}")
         print("📊 Token 统计概览")
         print(f"{'=' * 40}")
         print(f"总样本数: {stats['count']:,}")
         print(f"总 Token: {stats['total_tokens']:,}")
-        print(f"平均 Token: {stats['avg_tokens']:,}")
-        print(f"中位数: {stats['median_tokens']:,}")
+        print(f"平均 Token: {stats['avg_tokens']:,} (std: {std:.1f})")
         print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
+
+        print(f"\n📈 百分位分布:")
+        print(f"  P25: {stats.get('p25', '-'):,}  P50: {stats.get('median_tokens', '-'):,}")
+        print(f"  P75: {stats.get('p75', '-'):,}  P90: {stats.get('p90', '-'):,}")
+        print(f"  P95: {stats.get('p95', '-'):,}  P99: {stats.get('p99', '-'):,}")
 
         if detailed:
             print(f"\n{'=' * 40}")
@@ -566,24 +615,48 @@ def _print_text_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
     try:
         from rich.console import Console
         from rich.panel import Panel
+        from rich.table import Table
 
         console = Console()
 
+        std = stats.get("std_tokens", 0)
         overview = (
             f"[bold]总样本数:[/bold] {stats['count']:,}\n"
             f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
-            f"[bold]平均 Token:[/bold] {stats['avg_tokens']:.1f}\n"
-            f"[bold]中位数:[/bold] {stats['median_tokens']:,}\n"
+            f"[bold]平均 Token:[/bold] {stats['avg_tokens']:.1f} (std: {std:.1f})\n"
             f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
         )
         console.print(Panel(overview, title="📊 Token 统计", expand=False))
 
+        # 百分位数表格
+        table = Table(title="📈 分布统计")
+        table.add_column("百分位", style="cyan", justify="center")
+        table.add_column("Token 数", justify="right")
+        percentiles = [
+            ("Min", stats["min_tokens"]),
+            ("P25", stats.get("p25", "-")),
+            ("P50 (中位数)", stats.get("median_tokens", "-")),
+            ("P75", stats.get("p75", "-")),
+            ("P90", stats.get("p90", "-")),
+            ("P95", stats.get("p95", "-")),
+            ("P99", stats.get("p99", "-")),
+            ("Max", stats["max_tokens"]),
+        ]
+        for name, val in percentiles:
+            table.add_row(name, f"{val:,}" if isinstance(val, int) else str(val))
+        console.print(table)
+
     except ImportError:
+        std = stats.get("std_tokens", 0)
         print(f"\n{'=' * 40}")
         print("📊 Token 统计")
         print(f"{'=' * 40}")
         print(f"总样本数: {stats['count']:,}")
         print(f"总 Token: {stats['total_tokens']:,}")
-        print(f"平均 Token: {stats['avg_tokens']:.1f}")
-        print(f"中位数: {stats['median_tokens']:,}")
+        print(f"平均 Token: {stats['avg_tokens']:.1f} (std: {std:.1f})")
         print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
+
+        print(f"\n📈 百分位分布:")
+        print(f"  P25: {stats.get('p25', '-'):,}  P50: {stats.get('median_tokens', '-'):,}")
+        print(f"  P75: {stats.get('p75', '-'):,}  P90: {stats.get('p90', '-'):,}")
+        print(f"  P95: {stats.get('p95', '-'):,}  P99: {stats.get('p99', '-'):,}")

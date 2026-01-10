@@ -793,19 +793,29 @@ class DataTransformer:
             seed: 随机种子
 
         Returns:
-            (train, test) 两个 DataTransformer
+            (train, test) 两个 DataTransformer，各自拥有独立的血缘追踪器
         """
         data = self.shuffle(seed).data
         split_idx = int(len(data) * ratio)
 
-        # 分割后血缘追踪器各自独立
+        # 分割后血缘追踪器各自独立（使用深拷贝避免相互影响）
         tracker = self._lineage_tracker
+        train_tracker = None
+        test_tracker = None
+
         if tracker:
             tracker.record("split", {"ratio": ratio, "seed": seed}, len(self._data), len(data))
+            # 为每个子数据集创建独立的追踪器副本
+            train_tracker = tracker.copy()
+            train_tracker.record("split_part", {"part": "train", "ratio": ratio}, len(data), split_idx)
+            test_tracker = tracker.copy()
+            test_tracker.record(
+                "split_part", {"part": "test", "ratio": 1 - ratio}, len(data), len(data) - split_idx
+            )
 
         return (
-            DataTransformer(data[:split_idx], _lineage_tracker=tracker),
-            DataTransformer(data[split_idx:], _lineage_tracker=tracker),
+            DataTransformer(data[:split_idx], _lineage_tracker=train_tracker),
+            DataTransformer(data[split_idx:], _lineage_tracker=test_tracker),
         )
 
     # ============ 并行处理 ============
@@ -815,6 +825,7 @@ class DataTransformer:
         func: Callable[[Dict], Any],
         workers: Optional[int] = None,
         chunksize: int = 1000,
+        timeout: Optional[float] = None,
     ) -> List[Any]:
         """
         并行执行转换函数（使用多进程）。
@@ -825,24 +836,46 @@ class DataTransformer:
             func: 转换函数，接收原始 dict，返回转换结果
             workers: 进程数，默认为 CPU 核心数
             chunksize: 每个进程处理的数据块大小
+            timeout: 超时时间（秒），None 表示无超时
 
         Returns:
             转换后的结果列表
+
+        Raises:
+            TypeError: 如果 func 无法被 pickle（如 lambda 函数）
+            RuntimeError: 如果子进程执行出错或超时
 
         Examples:
             >>> def transform(item):
             ...     return {"id": item["id"], "text": item["text"].upper()}
             >>> results = dt.map_parallel(transform)
         """
-        from multiprocessing import Pool, cpu_count
+        from multiprocessing import Pool, TimeoutError, cpu_count
+        import pickle
 
         if not self._data:
             return []
 
+        # 检查函数是否可 pickle
+        try:
+            pickle.dumps(func)
+        except (pickle.PicklingError, AttributeError, TypeError) as e:
+            func_name = getattr(func, "__name__", str(func))
+            raise TypeError(
+                f"函数 '{func_name}' 无法被 pickle，不能用于并行处理。"
+                f"请使用模块级函数而非 lambda 或闭包。错误: {e}"
+            ) from e
+
         workers = workers or cpu_count()
 
-        with Pool(workers) as pool:
-            results = pool.map(func, self._data, chunksize=chunksize)
+        try:
+            with Pool(workers) as pool:
+                async_result = pool.map_async(func, self._data, chunksize=chunksize)
+                results = async_result.get(timeout=timeout)
+        except TimeoutError:
+            raise RuntimeError(f"并行处理超时（{timeout}秒）")
+        except Exception as e:
+            raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
 
         return results
 
@@ -851,6 +884,7 @@ class DataTransformer:
         func: Callable[[Dict], bool],
         workers: Optional[int] = None,
         chunksize: int = 1000,
+        timeout: Optional[float] = None,
     ) -> "DataTransformer":
         """
         并行执行过滤函数（使用多进程）。
@@ -861,24 +895,46 @@ class DataTransformer:
             func: 过滤函数，接收原始 dict，返回 True 保留
             workers: 进程数，默认为 CPU 核心数
             chunksize: 每个进程处理的数据块大小
+            timeout: 超时时间（秒），None 表示无超时
 
         Returns:
             过滤后的新 DataTransformer
+
+        Raises:
+            TypeError: 如果 func 无法被 pickle（如 lambda 函数）
+            RuntimeError: 如果子进程执行出错或超时
 
         Examples:
             >>> def is_valid(item):
             ...     return len(item["text"]) > 10
             >>> filtered = dt.filter_parallel(is_valid)
         """
-        from multiprocessing import Pool, cpu_count
+        from multiprocessing import Pool, TimeoutError, cpu_count
+        import pickle
 
         if not self._data:
             return DataTransformer([])
 
+        # 检查函数是否可 pickle
+        try:
+            pickle.dumps(func)
+        except (pickle.PicklingError, AttributeError, TypeError) as e:
+            func_name = getattr(func, "__name__", str(func))
+            raise TypeError(
+                f"函数 '{func_name}' 无法被 pickle，不能用于并行处理。"
+                f"请使用模块级函数而非 lambda 或闭包。错误: {e}"
+            ) from e
+
         workers = workers or cpu_count()
 
-        with Pool(workers) as pool:
-            mask = pool.map(func, self._data, chunksize=chunksize)
+        try:
+            with Pool(workers) as pool:
+                async_result = pool.map_async(func, self._data, chunksize=chunksize)
+                mask = async_result.get(timeout=timeout)
+        except TimeoutError:
+            raise RuntimeError(f"并行处理超时（{timeout}秒）")
+        except Exception as e:
+            raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
 
         filtered = [item for item, keep in zip(self._data, mask) if keep]
         return DataTransformer(filtered)
