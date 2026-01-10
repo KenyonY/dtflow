@@ -30,6 +30,7 @@ from dtflow.cli.stats import stats, token_stats
 from dtflow.cli.io_ops import concat, diff
 from dtflow.cli.clean import dedupe, clean
 from dtflow.cli.transform import transform
+from dtflow.cli.validate import validate
 from dtflow.storage.io import save_data
 
 
@@ -199,11 +200,25 @@ class TestSampleBenchmark:
             head(str(large_data_file), num=5000, output=str(output))
         assert output.exists()
 
+    def test_sample_tail_small(self, small_data_file, temp_dir):
+        """tail 采样小数据集"""
+        output = temp_dir / "sample_tail_small.jsonl"
+        with Timer("tail 1000条 取100条"):
+            tail(str(small_data_file), num=100, output=str(output))
+        assert output.exists()
+
     def test_sample_tail_medium(self, medium_data_file, temp_dir):
         """tail 采样中等数据集"""
         output = temp_dir / "sample_tail_medium.jsonl"
         with Timer("tail 10000条 取1000条"):
             tail(str(medium_data_file), num=1000, output=str(output))
+        assert output.exists()
+
+    def test_sample_tail_large(self, large_data_file, temp_dir):
+        """tail 采样大数据集"""
+        output = temp_dir / "sample_tail_large.jsonl"
+        with Timer("tail 50000条 取5000条"):
+            tail(str(large_data_file), num=5000, output=str(output))
         assert output.exists()
 
     def test_sample_random_small(self, small_data_file, temp_dir):
@@ -272,6 +287,41 @@ class TestStatsBenchmark:
         """完整统计中等数据集"""
         with Timer("完整统计 10000条"):
             stats(str(medium_data_file), full=True)
+
+
+# ============ Token Stats 命令性能测试 ============
+
+
+class TestTokenStatsBenchmark:
+    """token_stats 命令性能测试"""
+
+    def test_token_stats_messages_small(self, messages_data_file, capsys):
+        """消息格式 token 统计小数据集"""
+        with Timer("token统计 5000条消息格式"):
+            token_stats(str(messages_data_file), field="messages", model="cl100k_base")
+
+    def test_token_stats_text_medium(self, medium_data_file, capsys):
+        """文本字段 token 统计"""
+        with Timer("token统计 10000条 text字段"):
+            token_stats(str(medium_data_file), field="text", model="cl100k_base")
+
+
+# ============ Validate 命令性能测试 ============
+
+
+class TestValidateBenchmark:
+    """validate 命令性能测试"""
+
+    def test_validate_openai_chat(self, messages_data_file, capsys):
+        """验证 OpenAI Chat 格式"""
+        with Timer("验证 5000条 preset=openai_chat"):
+            validate(str(messages_data_file), preset="openai_chat")
+
+    def test_validate_sharegpt(self, messages_data_file, temp_dir):
+        """验证 ShareGPT 格式并过滤"""
+        output = temp_dir / "validate_valid.jsonl"
+        with Timer("验证过滤 5000条 preset=sharegpt"):
+            validate(str(messages_data_file), preset="sharegpt", output=str(output), filter_invalid=True)
 
 
 # ============ Clean 命令性能测试 ============
@@ -485,16 +535,18 @@ def test_performance_summary():
     print("=" * 60)
     print("""
 测试覆盖的核心 CLI 方法:
-  - sample/head/tail: 数据采样
-  - stats: 数据统计
+  - sample/head/tail: 数据采样 (random/head/tail/stratified)
+  - stats/token-stats: 数据统计和 Token 统计
   - clean/dedupe: 数据清洗和去重
   - concat/diff: 数据合并和对比
   - transform: 数据转换
+  - validate: 数据格式验证
 
 测试数据规模:
   - 小数据集: 1,000 条
   - 中等数据集: 10,000 条
   - 大数据集: 50,000 条
+  - 消息格式: 5,000 条
 
 运行完整性能测试:
   pytest tests/test_cli_benchmark.py -v
@@ -502,6 +554,8 @@ def test_performance_summary():
 运行特定测试:
   pytest tests/test_cli_benchmark.py -v -k "sample"
   pytest tests/test_cli_benchmark.py -v -k "stats"
+  pytest tests/test_cli_benchmark.py -v -k "token"
+  pytest tests/test_cli_benchmark.py -v -k "validate"
   pytest tests/test_cli_benchmark.py -v -k "clean"
 
 使用 pytest-benchmark (可选):
