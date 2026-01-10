@@ -489,12 +489,14 @@ def token_stats(
 
             if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
                 from ..tokenizers import messages_token_stats
+
                 stats_result = messages_token_stats(
                     data, messages_field=field, model=model, progress_callback=update_progress
                 )
                 _print_messages_token_stats(stats_result, detailed)
             else:
                 from ..tokenizers import token_stats as compute_token_stats
+
                 stats_result = compute_token_stats(
                     data, fields=field, model=model, progress_callback=update_progress
                 )
@@ -506,10 +508,12 @@ def token_stats(
         try:
             if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
                 from ..tokenizers import messages_token_stats
+
                 stats_result = messages_token_stats(data, messages_field=field, model=model)
                 _print_messages_token_stats(stats_result, detailed)
             else:
                 from ..tokenizers import token_stats as compute_token_stats
+
                 stats_result = compute_token_stats(data, fields=field, model=model)
                 _print_text_token_stats(stats_result, detailed)
         except ImportError as e:
@@ -518,6 +522,7 @@ def token_stats(
         except Exception as e:
             print(f"错误: 统计失败 - {e}")
             import traceback
+
             traceback.print_exc()
 
 

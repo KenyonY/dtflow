@@ -96,7 +96,9 @@ def _parse_path(path: str) -> List[Union[str, int, Literal["*", "#"]]]:
             continue
 
         # 解析 field[index] 格式
-        match = re.match(r"([a-zA-Z_\u4e00-\u9fff][a-zA-Z0-9_\u4e00-\u9fff]*)?(?:\[(-?\d+|\*)\])?", part)
+        match = re.match(
+            r"([a-zA-Z_\u4e00-\u9fff][a-zA-Z0-9_\u4e00-\u9fff]*)?(?:\[(-?\d+|\*)\])?", part
+        )
         if match:
             field_name, index = match.groups()
 

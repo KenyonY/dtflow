@@ -306,7 +306,7 @@ def _std(counts: List[int], avg: float) -> float:
     if len(counts) < 2:
         return 0.0
     variance = sum((x - avg) ** 2 for x in counts) / len(counts)
-    return variance ** 0.5
+    return variance**0.5
 
 
 def token_stats(
