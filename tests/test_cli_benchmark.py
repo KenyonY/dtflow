@@ -206,11 +206,32 @@ class TestSampleBenchmark:
             tail(str(medium_data_file), num=1000, output=str(output))
         assert output.exists()
 
+    def test_sample_random_small(self, small_data_file, temp_dir):
+        """随机采样小数据集"""
+        output = temp_dir / "sample_random_small.jsonl"
+        with Timer("random 1000条 取100条"):
+            sample(str(small_data_file), num=100, type="random", output=str(output), seed=42)
+        assert output.exists()
+
     def test_sample_random_medium(self, medium_data_file, temp_dir):
         """随机采样中等数据集"""
         output = temp_dir / "sample_random_medium.jsonl"
         with Timer("random 10000条 取1000条"):
             sample(str(medium_data_file), num=1000, type="random", output=str(output), seed=42)
+        assert output.exists()
+
+    def test_sample_random_large(self, large_data_file, temp_dir):
+        """随机采样大数据集"""
+        output = temp_dir / "sample_random_large.jsonl"
+        with Timer("random 50000条 取5000条"):
+            sample(str(large_data_file), num=5000, type="random", output=str(output), seed=42)
+        assert output.exists()
+
+    def test_sample_random_high_ratio(self, medium_data_file, temp_dir):
+        """随机采样高比例 (50%)"""
+        output = temp_dir / "sample_random_high.jsonl"
+        with Timer("random 10000条 取5000条 (50%)"):
+            sample(str(medium_data_file), num=5000, type="random", output=str(output), seed=42)
         assert output.exists()
 
     def test_sample_stratified(self, medium_data_file, temp_dir):
