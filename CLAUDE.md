@@ -19,8 +19,10 @@ dtflow/                    # 核心库
 ├── __main__.py           # CLI 入口 (typer，定义命令参数和帮助信息)
 ├── core.py               # DataTransformer 核心类 + DictWrapper
 ├── presets.py            # 预设转换函数 (openai_chat, alpaca, sharegpt, dpo_pair, simple_qa)
+├── schema.py             # Schema 验证 (Field, Schema, openai_chat_schema 等)
 ├── tokenizers.py         # Token 统计和过滤 (tiktoken/transformers 后端)
 ├── converters.py         # 格式转换器 (HuggingFace, OpenAI Batch, LLaMA-Factory, ms-swift)
+├── framework.py          # 训练框架导出 (export_for, check_compatibility)
 ├── streaming.py          # 大文件流式处理 (StreamingTransformer, load_stream, load_sharded)
 ├── lineage.py            # 数据血缘追踪
 ├── pipeline.py           # Pipeline YAML 执行器
