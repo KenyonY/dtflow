@@ -57,7 +57,7 @@ def _get_file_row_count(filepath: Path) -> Optional[int]:
     return None
 
 
-def _format_value(value: Any, max_len: int = 80) -> str:
+def _format_value(value: Any, max_len: int = 120) -> str:
     """格式化单个值，长文本截断。"""
     if value is None:
         return "[dim]null[/dim]"
@@ -66,18 +66,22 @@ def _format_value(value: Any, max_len: int = 80) -> str:
     if isinstance(value, (int, float)):
         return f"[cyan]{value}[/cyan]"
     if isinstance(value, str):
+        half_len = max_len // 2
         # 处理多行文本
         if "\n" in value:
             lines = value.split("\n")
-            if len(lines) > 3:
-                preview = lines[0][:max_len] + f"... [dim]({len(lines)} 行)[/dim]"
-            else:
-                preview = value.replace("\n", "\\n")
-                if len(preview) > max_len:
-                    preview = preview[:max_len] + "..."
+            preview = value.replace("\n", "\\n")
+            if len(preview) > max_len:
+                # 前半 + 省略标记 + 后半
+                head = preview[:half_len]
+                tail = preview[-half_len:]
+                return f'"{head} [yellow]<<<{len(lines)}行>>>[/yellow] {tail}"'
             return f'"{preview}"'
         if len(value) > max_len:
-            return f'"{value[:max_len]}..." [dim]({len(value)} 字符)[/dim]'
+            # 前半 + 省略标记 + 后半
+            head = value[:half_len]
+            tail = value[-half_len:]
+            return f'"{head} [yellow]<<<{len(value)}字符>>>[/yellow] {tail}"'
         return f'"{value}"'
     return str(value)
 
@@ -86,7 +90,7 @@ def _format_nested(
     value: Any,
     indent: str = "",
     is_last: bool = True,
-    max_len: int = 80,
+    max_len: int = 120,
 ) -> List[str]:
     """
     递归格式化嵌套结构，返回行列表。
