@@ -26,6 +26,12 @@ from .converters import (  # LLaMA-Factory 扩展; ms-swift
     to_swift_vlm,
 )
 from .core import DataTransformer, DictWrapper, TransformError, TransformErrors
+from .framework import (
+    CompatibilityResult,
+    check_compatibility,
+    detect_format,
+    export_for,
+)
 from .presets import get_preset, list_presets
 from .schema import (
     Field,
@@ -37,12 +43,6 @@ from .schema import (
     openai_chat_schema,
     sharegpt_schema,
     validate_data,
-)
-from .framework import (
-    CompatibilityResult,
-    check_compatibility,
-    detect_format,
-    export_for,
 )
 from .storage import load_data, sample_file, save_data
 from .streaming import StreamingTransformer, load_sharded, load_stream, process_shards
