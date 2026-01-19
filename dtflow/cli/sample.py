@@ -99,11 +99,15 @@ def sample(
         for item in sampled:
             print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
     else:
-        # 获取文件总行数用于显示
-        total_count = _get_file_row_count(filepath)
+        # 大文件跳过行数统计（50MB 阈值）
+        file_size = filepath.stat().st_size
+        if file_size < 50 * 1024 * 1024:
+            total_count = _get_file_row_count(filepath)
+        else:
+            total_count = None
         # 解析 fields 参数
         field_list = _parse_field_list(fields) if fields else None
-        _print_samples(sampled, filepath.name, total_count, field_list)
+        _print_samples(sampled, filepath.name, total_count, field_list, file_size)
 
 
 def _stratified_sample(
@@ -196,7 +200,7 @@ def _stratified_sample(
 
     # 执行各组采样
     result = []
-    print(f"🔄 执行采样...")
+    print("🔄 执行采样...")
     for key in group_keys:
         group_data = groups[key]
         target = min(sample_counts[key], len(group_data))
@@ -215,7 +219,7 @@ def _stratified_sample(
         result.extend(sampled)
 
     # 打印采样结果
-    print(f"\n📋 采样结果:")
+    print("\n📋 采样结果:")
     result_groups: Dict[Any, int] = defaultdict(int)
     for item in result:
         key = item.get(stratify_field, "__null__")

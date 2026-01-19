@@ -100,8 +100,6 @@ def _format_nested(
     └─ 最后一项
     """
     lines = []
-    branch = "└─ " if is_last else "├─ "
-    cont = "   " if is_last else "│  "
 
     if isinstance(value, dict):
         items = list(value.items())
@@ -183,6 +181,7 @@ def _print_samples(
     filename: Optional[str] = None,
     total_count: Optional[int] = None,
     fields: Optional[List[str]] = None,
+    file_size: Optional[int] = None,
 ) -> None:
     """
     打印采样结果。
@@ -190,8 +189,9 @@ def _print_samples(
     Args:
         samples: 采样数据列表
         filename: 文件名（用于显示概览）
-        total_count: 文件总行数（用于显示概览）
+        total_count: 文件总行数（用于显示概览），大文件时可能为 None
         fields: 只显示指定字段
+        file_size: 文件大小（字节），当 total_count 为 None 时显示
     """
     if not samples:
         print("没有数据")
@@ -219,6 +219,8 @@ def _print_samples(
 
             if total_count is not None:
                 info = f"总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+            elif file_size is not None:
+                info = f"文件大小: {_format_file_size(file_size)} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
             else:
                 info = f"采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
 
@@ -266,6 +268,10 @@ def _print_samples(
                 print(
                     f"   总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
                 )
+            elif file_size is not None:
+                print(
+                    f"   文件大小: {_format_file_size(file_size)} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                )
             else:
                 print(f"   采样: {len(samples)} 条 | 字段: {len(all_fields)} 个")
             print(f"   字段: {', '.join(sorted(all_fields))}")
@@ -285,6 +291,15 @@ def _parse_field_list(value: Any) -> List[str]:
         return [f.strip() for f in value.split(",")]
     else:
         return [str(value)]
+
+
+def _format_file_size(size: int) -> str:
+    """格式化文件大小"""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 def _is_empty_value(v: Any) -> bool:
