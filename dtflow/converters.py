@@ -23,8 +23,8 @@ def to_hf_dataset(data: List[Dict[str, Any]]):
     """
     try:
         from datasets import Dataset
-    except ImportError:
-        raise ImportError("需要安装 datasets: pip install datasets")
+    except ImportError as e:
+        raise ImportError("需要安装 datasets: pip install datasets") from e
 
     return Dataset.from_list(data)
 
@@ -45,9 +45,9 @@ def from_hf_dataset(dataset, split: Optional[str] = None) -> List[Dict[str, Any]
         >>> data = from_hf_dataset(my_dataset, split="train")
     """
     try:
-        from datasets import Dataset, DatasetDict, load_dataset
-    except ImportError:
-        raise ImportError("需要安装 datasets: pip install datasets")
+        from datasets import load_dataset
+    except ImportError as e:
+        raise ImportError("需要安装 datasets: pip install datasets") from e
 
     # 如果是字符串，加载数据集
     if isinstance(dataset, str):
@@ -198,7 +198,8 @@ def to_llama_factory(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f, "") if hasattr(item, "get") else getattr(item, f, "")
+        def get(f):
+            return item.get(f, "") if hasattr(item, "get") else getattr(item, f, "")
 
         result = {
             "instruction": get(instruction_field),
@@ -316,7 +317,9 @@ def to_llama_factory_sharegpt(
     }
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f, "") if hasattr(item, "get") else getattr(item, f, "")
+        def get(f):
+            return item.get(f, "") if hasattr(item, "get") else getattr(item, f, "")
+
         messages = get(messages_field) or []
 
         conversations = []
@@ -389,7 +392,9 @@ def to_llama_factory_vlm(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+        def get(f):
+            return item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+
         messages = get(messages_field) or []
 
         instruction = ""
@@ -471,7 +476,9 @@ def to_llama_factory_vlm_sharegpt(
     role_map = {"user": "human", "assistant": "gpt", "system": "system"}
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+        def get(f):
+            return item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+
         messages = get(messages_field) or []
 
         conversations = []
@@ -545,7 +552,9 @@ def to_swift_messages(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+        def get(f):
+            return item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+
         messages = get(messages_field) or []
 
         # 复制 messages，避免修改原数据
@@ -604,7 +613,8 @@ def to_swift_query_response(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+        def get(f):
+            return item.get(f) if hasattr(item, "get") else getattr(item, f, None)
 
         query = get(query_field)
         response = get(response_field)
@@ -617,7 +627,7 @@ def to_swift_query_response(
             current_query = ""
             current_response = ""
 
-            for i, msg in enumerate(messages):
+            for _i, msg in enumerate(messages):
                 role = msg.get("role", "")
                 content = msg.get("content", "")
 
@@ -697,7 +707,9 @@ def to_swift_vlm(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+        def get(f):
+            return item.get(f) if hasattr(item, "get") else getattr(item, f, None)
+
         messages = get(messages_field) or []
 
         result_messages = []
