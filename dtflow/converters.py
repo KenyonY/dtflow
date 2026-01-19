@@ -4,7 +4,7 @@
 提供与 HuggingFace datasets 等常用格式的互转功能。
 """
 
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
 
 def to_hf_dataset(data: List[Dict[str, Any]]):
@@ -143,14 +143,16 @@ def to_openai_batch(
         >>> batch_input = dt.to(to_openai_batch(model="gpt-4o"))
     """
 
-    def transform(item, idx=[0]) -> dict:
+    counter = {"idx": 0}
+
+    def transform(item) -> dict:
         messages = item.get(messages_field, []) if hasattr(item, "get") else item[messages_field]
 
         if custom_id_field:
             custom_id = item.get(custom_id_field) if hasattr(item, "get") else item[custom_id_field]
         else:
-            custom_id = f"request-{idx[0]}"
-            idx[0] += 1
+            custom_id = f"request-{counter['idx']}"
+            counter["idx"] += 1
 
         return {
             "custom_id": str(custom_id),
@@ -196,7 +198,7 @@ def to_llama_factory(
     """
 
     def transform(item) -> dict:
-        get = lambda f: (item.get(f, "") if hasattr(item, "get") else item.get(f, ""))
+        get = lambda f: item.get(f, "") if hasattr(item, "get") else getattr(item, f, "")
 
         result = {
             "instruction": get(instruction_field),
@@ -248,7 +250,7 @@ def to_axolotl(
         conversations = (
             item.get(conversations_field, [])
             if hasattr(item, "get")
-            else item.get(conversations_field, [])
+            else getattr(item, conversations_field, [])
         )
 
         # 如果已经是正确格式，直接返回
@@ -257,7 +259,9 @@ def to_axolotl(
                 return {"conversations": conversations}
 
         # 尝试从 messages 格式转换
-        messages = item.get("messages", []) if hasattr(item, "get") else item.get("messages", [])
+        messages = (
+            item.get("messages", []) if hasattr(item, "get") else getattr(item, "messages", [])
+        )
         if messages:
             role_map = {"user": "human", "assistant": "gpt", "system": "system"}
             conversations = [
@@ -312,7 +316,7 @@ def to_llama_factory_sharegpt(
     }
 
     def transform(item) -> dict:
-        get = lambda f: (item.get(f, "") if hasattr(item, "get") else item.get(f, ""))
+        get = lambda f: item.get(f, "") if hasattr(item, "get") else getattr(item, f, "")
         messages = get(messages_field) or []
 
         conversations = []
@@ -385,7 +389,7 @@ def to_llama_factory_vlm(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
         messages = get(messages_field) or []
 
         instruction = ""
@@ -467,7 +471,7 @@ def to_llama_factory_vlm_sharegpt(
     role_map = {"user": "human", "assistant": "gpt", "system": "system"}
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
         messages = get(messages_field) or []
 
         conversations = []
@@ -541,7 +545,7 @@ def to_swift_messages(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
         messages = get(messages_field) or []
 
         # 复制 messages，避免修改原数据
@@ -600,7 +604,7 @@ def to_swift_query_response(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
 
         query = get(query_field)
         response = get(response_field)
@@ -693,7 +697,7 @@ def to_swift_vlm(
     """
 
     def transform(item) -> dict:
-        get = lambda f: item.get(f) if hasattr(item, "get") else item.get(f)
+        get = lambda f: item.get(f) if hasattr(item, "get") else getattr(item, f, None)
         messages = get(messages_field) or []
 
         result_messages = []

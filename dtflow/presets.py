@@ -6,6 +6,8 @@
 
 from typing import Any, Callable
 
+from dtflow.utils.helpers import get_field_value
+
 
 def openai_chat(
     user_field: str = "q", assistant_field: str = "a", system_prompt: str = None
@@ -33,8 +35,8 @@ def openai_chat(
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        user_content = getattr(item, user_field, None) or item.get(user_field, "")
-        assistant_content = getattr(item, assistant_field, None) or item.get(assistant_field, "")
+        user_content = get_field_value(item, user_field)
+        assistant_content = get_field_value(item, assistant_field)
 
         messages.append({"role": "user", "content": user_content})
         messages.append({"role": "assistant", "content": assistant_content})
@@ -60,10 +62,9 @@ def alpaca(
 
     def transform(item: Any) -> dict:
         return {
-            "instruction": getattr(item, instruction_field, None)
-            or item.get(instruction_field, ""),
-            "input": getattr(item, input_field, None) or item.get(input_field, ""),
-            "output": getattr(item, output_field, None) or item.get(output_field, ""),
+            "instruction": get_field_value(item, instruction_field),
+            "input": get_field_value(item, input_field),
+            "output": get_field_value(item, output_field),
         }
 
     return transform
@@ -84,9 +85,7 @@ def sharegpt(conversations_field: str = "conversations", role_mapping: dict = No
     role_mapping = role_mapping or {"user": "human", "assistant": "gpt"}
 
     def transform(item: Any) -> dict:
-        conversations = getattr(item, conversations_field, None) or item.get(
-            conversations_field, []
-        )
+        conversations = get_field_value(item, conversations_field, [])
 
         # 如果已经是对话格式，直接返回
         if conversations:
@@ -102,7 +101,7 @@ def sharegpt(conversations_field: str = "conversations", role_mapping: dict = No
             ("answer", "gpt"),
             ("output", "gpt"),
         ]:
-            value = getattr(item, field, None) or item.get(field, None)
+            value = get_field_value(item, field, None)
             if value:
                 result.append({"from": role, "value": value})
 
@@ -127,9 +126,9 @@ def dpo_pair(
 
     def transform(item: Any) -> dict:
         return {
-            "prompt": getattr(item, prompt_field, None) or item.get(prompt_field, ""),
-            "chosen": getattr(item, chosen_field, None) or item.get(chosen_field, ""),
-            "rejected": getattr(item, rejected_field, None) or item.get(rejected_field, ""),
+            "prompt": get_field_value(item, prompt_field),
+            "chosen": get_field_value(item, chosen_field),
+            "rejected": get_field_value(item, rejected_field),
         }
 
     return transform
@@ -148,8 +147,8 @@ def simple_qa(question_field: str = "q", answer_field: str = "a") -> Callable:
 
     def transform(item: Any) -> dict:
         return {
-            "question": getattr(item, question_field, None) or item.get(question_field, ""),
-            "answer": getattr(item, answer_field, None) or item.get(answer_field, ""),
+            "question": get_field_value(item, question_field),
+            "answer": get_field_value(item, answer_field),
         }
 
     return transform

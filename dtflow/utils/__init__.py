@@ -9,6 +9,7 @@ from .field_path import (
     get_field_with_spec,
     parse_field_spec,
 )
+from .helpers import get_field_value
 
 __all__ = [
     "display_data",
@@ -20,4 +21,6 @@ __all__ = [
     "extract",
     "extract_with_spec",
     "ExpandMode",
+    # helpers
+    "get_field_value",
 ]
