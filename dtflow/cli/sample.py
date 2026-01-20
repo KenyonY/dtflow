@@ -20,7 +20,7 @@ from .common import (
 def sample(
     filename: str,
     num: int = 10,
-    type: Literal["random", "head", "tail"] = "head",
+    type: Literal["random", "head", "tail"] = "random",
     output: Optional[str] = None,
     seed: Optional[int] = None,
     by: Optional[str] = None,
@@ -37,7 +37,7 @@ def sample(
             - num > 0: 采样指定数量
             - num = 0: 采样所有数据
             - num < 0: Python 切片风格（如 -1 表示最后 1 条，-10 表示最后 10 条）
-        type: 采样方式，可选 random/head/tail，默认 head
+        type: 采样方式，可选 random/head/tail，默认 random
         output: 输出文件路径，不指定则打印到控制台
         seed: 随机种子（仅在 type=random 时有效）
         by: 分层采样字段名，按该字段的值分组采样

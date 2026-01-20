@@ -60,7 +60,7 @@ def sample(
     filename: str = typer.Argument(..., help="输入文件路径"),
     num_arg: Optional[int] = typer.Argument(None, help="采样数量", metavar="NUM"),
     num: int = typer.Option(10, "--num", "-n", help="采样数量", show_default=True),
-    type: str = typer.Option("head", "--type", "-t", help="采样方式: random/head/tail"),
+    type: str = typer.Option("random", "--type", "-t", help="采样方式: random/head/tail"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
     by: Optional[str] = typer.Option(None, "--by", help="分层采样字段"),
@@ -223,9 +223,7 @@ def validate(
         None, "--preset", "-p", help="预设 Schema: openai_chat, alpaca, dpo, sharegpt"
     ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出有效数据的文件路径"),
-    filter: bool = typer.Option(
-        False, "--filter", "-f", help="过滤无效数据并保存"
-    ),
+    filter: bool = typer.Option(False, "--filter", "-f", help="过滤无效数据并保存"),
     max_errors: int = typer.Option(20, "--max-errors", help="最多显示的错误数量"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="显示详细信息"),
 ):
