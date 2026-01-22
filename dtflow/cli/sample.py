@@ -2,8 +2,9 @@
 CLI 采样相关命令
 """
 
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 import orjson
 
@@ -16,6 +17,122 @@ from .common import (
     _print_samples,
 )
 
+# where 条件解析正则：field op value
+_WHERE_PATTERN = re.compile(r"^(.+?)(!=|~=|>=|<=|>|<|=)(.*)$")
+
+
+def _parse_where(condition: str) -> Callable[[dict], bool]:
+    """
+    解析 where 条件字符串，返回筛选函数。
+
+    支持的操作符:
+        =   等于
+        !=  不等于
+        ~=  包含（字符串）
+        >   大于
+        >=  大于等于
+        <   小于
+        <=  小于等于
+
+    Examples:
+        _parse_where("category=tech")
+        _parse_where("meta.source!=wiki")
+        _parse_where("content~=机器学习")
+        _parse_where("messages.#>=2")
+    """
+    match = _WHERE_PATTERN.match(condition)
+    if not match:
+        raise ValueError(f"无效的 where 条件: {condition}")
+
+    field, op, value = match.groups()
+
+    # 尝试转换 value 为数值
+    def parse_value(v: str) -> Any:
+        if v.lower() == "true":
+            return True
+        if v.lower() == "false":
+            return False
+        try:
+            return int(v)
+        except ValueError:
+            try:
+                return float(v)
+            except ValueError:
+                return v
+
+    parsed_value = parse_value(value)
+
+    def filter_fn(item: dict) -> bool:
+        field_value = get_field_with_spec(item, field)
+
+        if op == "=":
+            # 字符串比较或数值比较
+            if field_value is None:
+                return value == "" or value.lower() == "none"
+            return str(field_value) == value or field_value == parsed_value
+        elif op == "!=":
+            if field_value is None:
+                return value != "" and value.lower() != "none"
+            return str(field_value) != value and field_value != parsed_value
+        elif op == "~=":
+            # 包含
+            if field_value is None:
+                return False
+            return value in str(field_value)
+        elif op in (">", ">=", "<", "<="):
+            # 数值比较
+            if field_value is None:
+                return False
+            try:
+                num_field = float(field_value)
+                num_value = float(value)
+                if op == ">":
+                    return num_field > num_value
+                elif op == ">=":
+                    return num_field >= num_value
+                elif op == "<":
+                    return num_field < num_value
+                else:  # <=
+                    return num_field <= num_value
+            except (ValueError, TypeError):
+                return False
+        return False
+
+    return filter_fn
+
+
+def _apply_where_filters(data: List[Dict], where_conditions: List[str]) -> List[Dict]:
+    """应用多个 where 条件（AND 关系）"""
+    if not where_conditions:
+        return data
+
+    filters = [_parse_where(cond) for cond in where_conditions]
+    return [item for item in data if all(f(item) for f in filters)]
+
+
+def _sample_from_list(
+    data: List[Dict],
+    num: int,
+    sample_type: str,
+    seed: Optional[int] = None,
+) -> List[Dict]:
+    """从列表中采样"""
+    import random
+
+    if seed is not None:
+        random.seed(seed)
+
+    total = len(data)
+    if num <= 0 or num > total:
+        num = total
+
+    if sample_type == "random":
+        return random.sample(data, num)
+    elif sample_type == "head":
+        return data[:num]
+    else:  # tail
+        return data[-num:]
+
 
 def sample(
     filename: str,
@@ -27,6 +144,7 @@ def sample(
     uniform: bool = False,
     fields: Optional[str] = None,
     raw: bool = False,
+    where: Optional[List[str]] = None,
 ) -> None:
     """
     从数据文件中采样指定数量的数据。
@@ -44,6 +162,7 @@ def sample(
         uniform: 均匀采样模式（需配合 --by 使用），各组采样相同数量
         fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
         raw: 输出原始 JSON 格式（不截断，完整显示所有内容）
+        where: 筛选条件列表，支持 =, !=, ~=, >, >=, <, <= 操作符
 
     Examples:
         dt sample data.jsonl 5
@@ -54,6 +173,9 @@ def sample(
         dt sample data.jsonl 1000 --by=category           # 按比例分层采样
         dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
         dt sample data.jsonl --fields=question,answer     # 只显示指定字段
+        dt sample data.jsonl --where="category=tech"      # 筛选 category 为 tech 的数据
+        dt sample data.jsonl --where="meta.source~=wiki"  # 筛选 meta.source 包含 wiki
+        dt sample data.jsonl --where="messages.#>=2"      # 筛选消息数量 >= 2
     """
     filepath = Path(filename)
 
@@ -69,23 +191,46 @@ def sample(
         print("错误: --uniform 必须配合 --by 使用")
         return
 
+    # 处理 where 筛选
+    where_conditions = where or []
+    filtered_data = None
+    original_count = None
+
+    if where_conditions:
+        # 有 where 条件时，先加载全部数据再筛选
+        try:
+            all_data = load_data(str(filepath))
+            original_count = len(all_data)
+            filtered_data = _apply_where_filters(all_data, where_conditions)
+            print(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
+            if not filtered_data:
+                print("⚠️  筛选后无数据")
+                return
+        except ValueError as e:
+            print(f"错误: {e}")
+            return
+
     # 分层采样模式
     if by:
         try:
-            sampled = _stratified_sample(filepath, num, by, uniform, seed, type)
+            sampled = _stratified_sample(filepath, num, by, uniform, seed, type, data=filtered_data)
         except Exception as e:
             print(f"错误: {e}")
             return
     else:
         # 普通采样
         try:
-            sampled = sample_file(
-                str(filepath),
-                num=num,
-                sample_type=type,
-                seed=seed,
-                output=None,  # 先不保存，统一在最后处理
-            )
+            if filtered_data is not None:
+                # 已筛选的数据，直接采样
+                sampled = _sample_from_list(filtered_data, num, type, seed)
+            else:
+                sampled = sample_file(
+                    str(filepath),
+                    num=num,
+                    sample_type=type,
+                    seed=seed,
+                    output=None,  # 先不保存，统一在最后处理
+                )
         except Exception as e:
             print(f"错误: {e}")
             return
@@ -117,6 +262,7 @@ def _stratified_sample(
     uniform: bool,
     seed: Optional[int],
     sample_type: str,
+    data: Optional[List[Dict]] = None,
 ) -> List[Dict]:
     """
     分层采样实现。
@@ -133,6 +279,7 @@ def _stratified_sample(
         uniform: 是否均匀采样（各组相同数量）
         seed: 随机种子
         sample_type: 采样方式（用于组内采样）
+        data: 预筛选的数据（可选，如果提供则不从文件加载）
 
     Returns:
         采样后的数据列表
@@ -143,8 +290,9 @@ def _stratified_sample(
     if seed is not None:
         random.seed(seed)
 
-    # 加载数据
-    data = load_data(str(filepath))
+    # 加载数据（如果没有预筛选数据）
+    if data is None:
+        data = load_data(str(filepath))
     total = len(data)
 
     if num <= 0 or num > total:

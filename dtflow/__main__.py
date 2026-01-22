@@ -67,10 +67,11 @@ def sample(
     uniform: bool = typer.Option(False, "--uniform", help="均匀采样模式"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段（逗号分隔）"),
     raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
+    where: Optional[List[str]] = typer.Option(None, "--where", "-w", help="筛选条件 (可多次使用)"),
 ):
     """从数据文件中采样指定数量的数据"""
     actual_num = num_arg if num_arg is not None else num
-    _sample(filename, actual_num, type, output, seed, by, uniform, fields, raw)
+    _sample(filename, actual_num, type, output, seed, by, uniform, fields, raw, where)
 
 
 @app.command()

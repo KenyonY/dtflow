@@ -240,3 +240,102 @@ class TestRawOutput:
         # Raw mode outputs JSON with indentation
         assert "question" in captured.out
         assert "Question 0" in captured.out
+
+
+# ============== Where Filter Tests ==============
+
+
+class TestWhereFilter:
+    """Test --where filter functionality."""
+
+    def test_where_equal(self, sample_qa_file, tmp_path, capsys):
+        """Test where filter with = operator."""
+        filepath, _ = sample_qa_file
+        output = tmp_path / "filtered.jsonl"
+
+        sample(str(filepath), num=100, output=str(output), where=["category=cat0"])
+
+        result = load_data(str(output))
+        assert len(result) > 0
+        assert all(item["category"] == "cat0" for item in result)
+
+    def test_where_not_equal(self, sample_qa_file, tmp_path, capsys):
+        """Test where filter with != operator."""
+        filepath, _ = sample_qa_file
+        output = tmp_path / "filtered.jsonl"
+
+        sample(str(filepath), num=100, output=str(output), where=["category!=cat0"])
+
+        result = load_data(str(output))
+        assert len(result) > 0
+        assert all(item["category"] != "cat0" for item in result)
+
+    def test_where_contains(self, sample_qa_file, tmp_path, capsys):
+        """Test where filter with ~= (contains) operator."""
+        filepath, _ = sample_qa_file
+        output = tmp_path / "filtered.jsonl"
+
+        sample(str(filepath), num=100, output=str(output), where=["question~=Question 1"])
+
+        result = load_data(str(output))
+        assert len(result) > 0
+        assert all("Question 1" in item["question"] for item in result)
+
+    def test_where_nested_field(self, sample_nested_file, tmp_path, capsys):
+        """Test where filter on nested fields."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "filtered.jsonl"
+
+        sample(str(filepath), num=100, output=str(output), where=["meta.source=source0"])
+
+        result = load_data(str(output))
+        assert len(result) > 0
+        assert all(item["meta"]["source"] == "source0" for item in result)
+
+    def test_where_numeric_comparison(self, sample_nested_file, tmp_path, capsys):
+        """Test where filter with numeric comparison."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "filtered.jsonl"
+
+        sample(str(filepath), num=100, output=str(output), where=["id>=10"])
+
+        result = load_data(str(output))
+        assert len(result) > 0
+        assert all(item["id"] >= 10 for item in result)
+
+    def test_where_multiple_conditions(self, sample_qa_file, tmp_path, capsys):
+        """Test multiple where conditions (AND logic)."""
+        filepath, _ = sample_qa_file
+        output = tmp_path / "filtered.jsonl"
+
+        sample(
+            str(filepath),
+            num=100,
+            output=str(output),
+            where=["category=cat0", "question~=Question 0"],
+        )
+
+        result = load_data(str(output))
+        # category=cat0 包括 id 0, 3, 6, 9, 12, 15, 18
+        # question~=Question 0 包括 Question 0
+        assert len(result) == 1
+        assert result[0]["category"] == "cat0"
+        assert "Question 0" in result[0]["question"]
+
+    def test_where_no_match(self, sample_qa_file, capsys):
+        """Test where filter with no matching results."""
+        filepath, _ = sample_qa_file
+
+        sample(str(filepath), num=10, where=["category=nonexistent"])
+
+        captured = capsys.readouterr()
+        assert "筛选后无数据" in captured.out
+
+    def test_where_invalid_condition(self, sample_qa_file, capsys):
+        """Test where filter with invalid condition format."""
+        filepath, _ = sample_qa_file
+
+        sample(str(filepath), num=10, where=["invalid_condition"])
+
+        captured = capsys.readouterr()
+        assert "无效的 where 条件" in captured.out

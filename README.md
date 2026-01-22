@@ -337,6 +337,8 @@ dt sample data.csv --num=100 --sample_type=head
 dt sample data.jsonl 1000 --by=category           # 分层采样
 dt sample data.jsonl 1000 --by=meta.source        # 按嵌套字段分层采样
 dt sample data.jsonl 1000 --by=messages.#         # 按消息数量分层采样
+dt sample data.jsonl --where="category=tech"      # 筛选后采样
+dt sample data.jsonl --where="messages.#>=2"      # 多条件筛选
 
 # 数据转换 - 预设模式
 dt transform data.jsonl --preset=openai_chat
@@ -410,7 +412,7 @@ CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的�
 
 | 命令 | 参数 | 示例 |
 |------|------|------|
-| `sample` | `--by=` | `--by=meta.source`、`--by=messages.#` |
+| `sample` | `--by=`, `--where=` | `--by=meta.source`、`--where=messages.#>=2` |
 | `dedupe` | `--key=` | `--key=meta.id`、`--key=messages[0].content` |
 | `clean` | `--drop-empty=` | `--drop-empty=meta.source` |
 | `clean` | `--min-len=` | `--min-len=messages.#:2` |
