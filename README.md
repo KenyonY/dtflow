@@ -420,6 +420,18 @@ CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的�
 | `token-stats` | `--field=` | `--field=messages[-1].content` |
 | `diff` | `--key=` | `--key=meta.uuid` |
 
+`--where` 支持的操作符：
+
+| 操作符 | 含义 | 示例 |
+|--------|------|------|
+| `=` | 等于 | `--where="category=tech"` |
+| `!=` | 不等于 | `--where="source!=wiki"` |
+| `~=` | 包含 | `--where="content~=机器学习"` |
+| `>` | 大于 | `--where="score>0.8"` |
+| `>=` | 大于等于 | `--where="messages.#>=2"` |
+| `<` | 小于 | `--where="length<1000"` |
+| `<=` | 小于等于 | `--where="turns<=10"` |
+
 示例数据：
 ```json
 {"meta": {"source": "wiki"}, "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
@@ -515,6 +527,18 @@ dt history processed.jsonl
 #    输出数量: 750
 
 dt history processed.jsonl --json  # JSON 格式输出
+```
+
+### 日志查看
+
+dtflow 内置了 [toolong](https://github.com/Textualize/toolong) 日志查看器：
+
+```bash
+pip install dtflow[logs]    # 安装日志工具
+
+tl app.log                  # 交互式 TUI 查看
+tl --tail app.log           # 实时跟踪（类似 tail -f）
+dt logs                     # 查看使用说明
 ```
 
 ### 大文件流式处理

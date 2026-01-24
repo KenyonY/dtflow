@@ -32,13 +32,16 @@ dtflow/                    # 核心库
 │   ├── sample.py         # sample/head/tail 命令
 │   ├── transform.py      # transform 命令
 │   ├── clean.py          # clean 命令
+│   ├── validate.py       # validate 命令
 │   ├── stats.py          # stats/token-stats/diff 命令
 │   ├── io_ops.py         # concat/dedupe 命令
 │   ├── pipeline.py       # run 命令
 │   ├── lineage.py        # history 命令
 │   └── common.py         # 公共工具函数
-├── utils/field_path.py   # 字段路径解析 (a.b, a[0].b, a.#, a[*].b 语法)
-└── mcp/                  # MCP 服务 (Claude Code 集成)
+└── utils/
+    ├── field_path.py     # 字段路径解析 (a.b, a[0].b, a.#, a[*].b 语法)
+    ├── display.py        # Rich 终端输出格式化
+    └── helpers.py        # 通用辅助函数
 ```
 
 **CLI 结构**: 使用 typer 框架，支持自动补全
@@ -75,37 +78,31 @@ hatch run lint:all     # 运行所有检查
 ### CLI 命令 (dt)
 
 ```bash
-# 数据采样（支持字段路径语法）
+# 数据采样
 dt sample data.jsonl --num=10
 dt sample data.jsonl 1000 --by=meta.source       # 按嵌套字段分层采样
-dt sample data.jsonl 1000 --by=messages.#        # 按消息数量分层采样
+dt sample data.jsonl --where="messages.#>=2"     # 筛选后采样
 
 # 数据转换
-dt transform data.jsonl --preset=openai_chat    # 使用预设
+dt transform data.jsonl --preset=openai_chat
 dt transform data.jsonl                          # 生成配置文件模式
 
-# Pipeline 执行
-dt run pipeline.yaml
+# 数据验证
+dt validate data.jsonl --preset=openai_chat
 
-# 数据去重（支持字段路径语法）
-dt dedupe data.jsonl --key=text                  # 精确去重
-dt dedupe data.jsonl --key=meta.id               # 按嵌套字段去重
-dt dedupe data.jsonl --key=messages[0].content   # 按第一条消息内容去重
-
-# 数据清洗（支持字段路径语法）
-dt concat a.jsonl b.jsonl -o merged.jsonl
-dt stats data.jsonl
+# 数据清洗
 dt clean data.jsonl --drop-empty=meta.source     # 删除嵌套字段为空的记录
 dt clean data.jsonl --min-len=messages.#:2       # 至少 2 条消息
 
-# Token 统计（支持字段路径语法）
+# 数据去重
+dt dedupe data.jsonl --key=messages[0].content   # 按第一条消息内容去重
+
+# 其他命令
+dt concat a.jsonl b.jsonl -o merged.jsonl
+dt stats data.jsonl
 dt token-stats data.jsonl --field=messages --model=gpt-4
-dt token-stats data.jsonl --field=messages[-1].content   # 统计最后一条消息
-
-# 数据对比（支持字段路径语法）
 dt diff a.jsonl b.jsonl --key=meta.uuid
-
-# 数据血缘
+dt run pipeline.yaml
 dt history processed.jsonl
 ```
 

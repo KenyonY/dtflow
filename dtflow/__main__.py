@@ -19,7 +19,6 @@ Commands:
     run          执行 Pipeline 配置文件
     history      显示数据血缘历史
     validate     使用 Schema 验证数据格式
-    mcp          MCP 服务管理（install/uninstall/status）
     logs         日志查看工具使用说明
 """
 
@@ -261,50 +260,6 @@ dtflow 内置了 toolong 日志查看器，安装后可直接使用 tl 命令：
     pip install dtflow[full]   # 安装全部可选依赖
 """
     print(help_text)
-
-
-# ============ MCP 子命令 ============
-
-mcp_app = typer.Typer(help="MCP 服务管理")
-app.add_typer(mcp_app, name="mcp")
-
-
-@mcp_app.command()
-def install(
-    name: str = typer.Option("datatron", "--name", "-n", help="MCP 服务名称"),
-    target: str = typer.Option("code", "--target", "-t", help="安装目标: desktop/code/all"),
-):
-    """安装 Datatron MCP 服务"""
-    from .mcp.cli import MCPCommands
-
-    MCPCommands().install(name, target)
-
-
-@mcp_app.command()
-def uninstall(
-    name: str = typer.Option("datatron", "--name", "-n", help="MCP 服务名称"),
-    target: str = typer.Option("all", "--target", "-t", help="移除目标: desktop/code/all"),
-):
-    """移除 Datatron MCP 服务"""
-    from .mcp.cli import MCPCommands
-
-    MCPCommands().uninstall(name, target)
-
-
-@mcp_app.command()
-def status():
-    """查看 MCP 服务安装状态"""
-    from .mcp.cli import MCPCommands
-
-    MCPCommands().status()
-
-
-@mcp_app.command()
-def test():
-    """测试 MCP 服务是否正常"""
-    from .mcp.cli import MCPCommands
-
-    MCPCommands().test()
 
 
 def _show_completion_hint():
