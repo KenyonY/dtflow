@@ -6,20 +6,21 @@ Usage:
     dt --install-completion  # 安装 shell 自动补全
 
 Commands:
-    sample       从数据文件中采样
-    head         显示文件的前 N 条数据
-    tail         显示文件的后 N 条数据
-    transform    转换数据格式（核心命令）
-    stats        显示数据文件的统计信息
-    token-stats  Token 统计
-    diff         数据集对比
-    dedupe       数据去重
-    concat       拼接多个数据文件
-    clean        数据清洗
-    run          执行 Pipeline 配置文件
-    history      显示数据血缘历史
-    validate     使用 Schema 验证数据格式
-    logs         日志查看工具使用说明
+    sample        从数据文件中采样
+    head          显示文件的前 N 条数据
+    tail          显示文件的后 N 条数据
+    transform     转换数据格式（核心命令）
+    stats         显示数据文件的统计信息
+    token-stats   Token 统计
+    diff          数据集对比
+    dedupe        数据去重
+    concat        拼接多个数据文件
+    clean         数据清洗
+    run           执行 Pipeline 配置文件
+    history       显示数据血缘历史
+    validate      使用 Schema 验证数据格式
+    logs          日志查看工具使用说明
+    install-skill 安装 dtflow skill 到 Claude Code
 """
 
 import os
@@ -34,12 +35,15 @@ from .cli.commands import dedupe as _dedupe
 from .cli.commands import diff as _diff
 from .cli.commands import head as _head
 from .cli.commands import history as _history
+from .cli.commands import install_skill as _install_skill
 from .cli.commands import run as _run
 from .cli.commands import sample as _sample
+from .cli.commands import skill_status as _skill_status
 from .cli.commands import stats as _stats
 from .cli.commands import tail as _tail
 from .cli.commands import token_stats as _token_stats
 from .cli.commands import transform as _transform
+from .cli.commands import uninstall_skill as _uninstall_skill
 from .cli.commands import validate as _validate
 
 # 创建主应用
@@ -260,6 +264,27 @@ dtflow 内置了 toolong 日志查看器，安装后可直接使用 tl 命令：
     pip install dtflow[full]   # 安装全部可选依赖
 """
     print(help_text)
+
+
+# ============ Skill 命令 ============
+
+
+@app.command("install-skill")
+def install_skill():
+    """安装 dtflow skill 到 Claude Code"""
+    _install_skill()
+
+
+@app.command("uninstall-skill")
+def uninstall_skill():
+    """卸载 dtflow skill"""
+    _uninstall_skill()
+
+
+@app.command("skill-status")
+def skill_status():
+    """查看 skill 安装状态"""
+    _skill_status()
 
 
 def _show_completion_hint():

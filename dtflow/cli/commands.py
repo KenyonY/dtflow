@@ -13,25 +13,27 @@ CLI 命令统一导出入口
 """
 
 # 采样命令
-from .sample import head, sample, tail
-
-# 转换命令
-from .transform import transform
-
-# 统计命令
-from .stats import stats, token_stats
-
 # 清洗命令
 from .clean import clean, dedupe
 
 # IO 操作命令
 from .io_ops import concat, diff
 
-# Pipeline 命令
-from .pipeline import run
-
 # 血缘追踪命令
 from .lineage import history
+
+# Pipeline 命令
+from .pipeline import run
+from .sample import head, sample, tail
+
+# Skill 命令
+from .skill import install_skill, skill_status, uninstall_skill
+
+# 统计命令
+from .stats import stats, token_stats
+
+# 转换命令
+from .transform import transform
 
 # 验证命令
 from .validate import validate
@@ -58,4 +60,8 @@ __all__ = [
     "history",
     # 验证
     "validate",
+    # Skill
+    "install_skill",
+    "uninstall_skill",
+    "skill_status",
 ]

@@ -13,6 +13,17 @@ pip install transformers      # Token 统计（HuggingFace 模型）
 pip install datasets          # HuggingFace Dataset 转换
 ```
 
+## 🤖 Claude Code 集成
+
+dtflow 内置了 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill：
+
+```bash
+dt install-skill      # 安装 skill
+dt skill-status       # 查看状态
+```
+
+安装后在 Claude Code 中输入 `/dtflow`，Claude 将掌握 dtflow 的完整用法，可直接协助你完成数据处理任务。
+
 ## 快速开始
 
 ```python
@@ -386,6 +397,10 @@ dt concat a.jsonl b.jsonl -o merged.jsonl
 
 # 数据统计
 dt stats data.jsonl
+
+# Claude Code Skill 安装
+dt install-skill                              # 安装到 ~/.claude/skills/
+dt skill-status                               # 查看安装状态
 
 # 数据验证
 dt validate data.jsonl --preset=openai_chat           # 使用预设 schema 验证
