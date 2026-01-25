@@ -211,3 +211,153 @@ class TestQuickStats:
         captured = capsys.readouterr()
         # Should complete without error
         assert len(captured.out) > 0
+
+
+# ============== Field Filtering and Expansion Tests ==============
+
+
+class TestStatsFieldFiltering:
+    """Tests for --field parameter."""
+
+    def test_stats_with_single_field(self, tmp_path):
+        """Test stats with --field parameter."""
+        data = [
+            {"category": "tech", "tags": ["AI", "ML"]},
+            {"category": "sci", "tags": ["physics"]},
+            {"category": "tech", "tags": ["AI", "DL"]},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats for single field
+        stats_result = _compute_field_stats(data, top=10, fields=["category"])
+
+        assert len(stats_result) == 1
+        assert stats_result[0]["field"] == "category"
+        assert stats_result[0]["type"] == "str"
+        assert stats_result[0]["unique"] == 2
+
+    def test_stats_with_multiple_fields(self, tmp_path):
+        """Test stats with multiple --field parameters."""
+        data = [
+            {"category": "tech", "score": 0.8, "tags": ["AI"]},
+            {"category": "sci", "score": 0.9, "tags": ["physics"]},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats for multiple fields
+        stats_result = _compute_field_stats(data, top=10, fields=["category", "score"])
+
+        assert len(stats_result) == 2
+        field_names = [s["field"] for s in stats_result]
+        assert "category" in field_names
+        assert "score" in field_names
+
+    def test_stats_with_nested_field(self, tmp_path):
+        """Test stats with nested field path."""
+        data = [
+            {"meta": {"source": "wiki"}},
+            {"meta": {"source": "book"}},
+            {"meta": {"source": "wiki"}},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats for nested field
+        stats_result = _compute_field_stats(data, top=10, fields=["meta.source"])
+
+        assert len(stats_result) == 1
+        assert stats_result[0]["field"] == "meta.source"
+        assert stats_result[0]["unique"] == 2
+
+
+class TestStatsExpansion:
+    """Tests for --expand parameter."""
+
+    def test_expand_simple_list(self, tmp_path):
+        """Test expanding a simple list field."""
+        data = [
+            {"tags": ["AI", "ML"]},
+            {"tags": ["physics"]},
+            {"tags": ["AI", "DL"]},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats with expansion
+        stats_result = _compute_field_stats(data, top=10, expand_fields=["tags"])
+
+        assert len(stats_result) == 1
+        assert stats_result[0]["field"] == "tags"
+        assert stats_result[0]["is_expanded"] is True
+        assert stats_result[0]["type"] == "str"
+        # 5 elements total: AI, ML, physics, AI, DL
+        assert stats_result[0]["non_null"] == 5
+        # 4 unique values: AI, ML, physics, DL
+        assert stats_result[0]["unique"] == 4
+
+    def test_expand_with_wildcard(self, tmp_path):
+        """Test expanding nested field with [*] syntax."""
+        data = [
+            {"messages": [{"role": "user"}, {"role": "assistant"}]},
+            {"messages": [{"role": "user"}, {"role": "assistant"}, {"role": "user"}]},
+            {"messages": [{"role": "system"}, {"role": "user"}, {"role": "assistant"}]},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats with wildcard expansion
+        stats_result = _compute_field_stats(data, top=10, expand_fields=["messages[*].role"])
+
+        assert len(stats_result) == 1
+        assert stats_result[0]["field"] == "messages[*].role"
+        assert stats_result[0]["is_expanded"] is True
+        # 8 total roles
+        assert stats_result[0]["non_null"] == 8
+        # 3 unique roles: user, assistant, system
+        assert stats_result[0]["unique"] == 3
+
+    def test_expand_empty_list(self, tmp_path):
+        """Test expanding list with empty and null values."""
+        data = [
+            {"tags": []},
+            {"tags": None},
+            {"tags": ["a", "b"]},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats with expansion
+        stats_result = _compute_field_stats(data, top=10, expand_fields=["tags"])
+
+        assert len(stats_result) == 1
+        # Only 2 non-null elements: a, b
+        assert stats_result[0]["non_null"] == 2
+        assert stats_result[0]["unique"] == 2
+
+    def test_expand_combined_with_field(self, tmp_path):
+        """Test combining --field and --expand parameters."""
+        data = [
+            {"category": "tech", "tags": ["AI", "ML"]},
+            {"category": "sci", "tags": ["physics"]},
+        ]
+        filepath = tmp_path / "test.jsonl"
+        save_data(data, str(filepath))
+
+        # Compute stats with both field and expand
+        stats_result = _compute_field_stats(
+            data, top=10, fields=["category"], expand_fields=["tags"]
+        )
+
+        assert len(stats_result) == 2
+        field_names = [s["field"] for s in stats_result]
+        assert "category" in field_names
+        assert "tags" in field_names
+
+        # Check expansion flag
+        for stat in stats_result:
+            if stat["field"] == "tags":
+                assert stat["is_expanded"] is True
+            else:
+                assert stat.get("is_expanded", False) is False

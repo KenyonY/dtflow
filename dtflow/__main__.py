@@ -179,9 +179,11 @@ def stats(
     filename: str = typer.Argument(..., help="输入文件路径"),
     top: int = typer.Option(10, "--top", "-n", help="显示 Top N 值"),
     full: bool = typer.Option(False, "--full", "-f", help="完整模式：统计值分布、唯一值等详细信息"),
+    field: Optional[List[str]] = typer.Option(None, "--field", help="指定统计字段（可多次使用），支持嵌套路径"),
+    expand: Optional[List[str]] = typer.Option(None, "--expand", help="展开 list 字段统计（可多次使用）"),
 ):
     """显示数据文件的统计信息"""
-    _stats(filename, top, full)
+    _stats(filename, top, full, field, expand)
 
 
 @app.command("token-stats")

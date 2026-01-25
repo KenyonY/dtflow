@@ -3,7 +3,7 @@ CLI 数据统计相关命令
 """
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import orjson
 
@@ -22,6 +22,8 @@ def stats(
     filename: str,
     top: int = 10,
     full: bool = False,
+    fields: Optional[List[str]] = None,
+    expand_fields: Optional[List[str]] = None,
 ) -> None:
     """
     显示数据文件的统计信息。
@@ -33,11 +35,15 @@ def stats(
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
         top: 显示频率最高的前 N 个值，默认 10（仅完整模式）
         full: 完整模式，统计值分布、唯一值等详细信息
+        fields: 指定统计的字段列表（支持嵌套路径）
+        expand_fields: 展开 list 字段统计的字段列表
 
     Examples:
         dt stats data.jsonl            # 快速模式（默认）
         dt stats data.jsonl --full     # 完整模式
         dt stats data.csv -f --top=5   # 完整模式，显示 Top 5
+        dt stats data.jsonl --full --field=category  # 指定字段
+        dt stats data.jsonl --full --expand=tags     # 展开 list 字段
     """
     filepath = Path(filename)
 
@@ -48,7 +54,10 @@ def stats(
     if not _check_file_format(filepath):
         return
 
+    # 快速模式：忽略 --field 和 --expand 参数
     if not full:
+        if fields or expand_fields:
+            print("⚠️  警告: --field 和 --expand 参数仅在完整模式 (--full) 下生效")
         _quick_stats(filepath)
         return
 
@@ -65,7 +74,7 @@ def stats(
 
     # 计算统计信息
     total = len(data)
-    field_stats = _compute_field_stats(data, top)
+    field_stats = _compute_field_stats(data, top, fields, expand_fields)
 
     # 输出统计信息
     _print_stats(filepath.name, total, field_stats)
@@ -205,11 +214,99 @@ def _quick_stats(filepath: Path) -> None:
                 print(f"  {i}. {f['field']} ({f['type']})")
 
 
-def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
+def _extract_with_wildcard(item: dict, field_spec: str) -> List[Any]:
+    """处理包含 [*] 的字段路径，返回所有值"""
+    if "[*]" not in field_spec:
+        # 无 [*]，直接返回单个值的列表
+        value = get_field_with_spec(item, field_spec)
+        return [value] if value is not None else []
+
+    # 分割路径：messages[*].role -> ("messages", ".role")
+    before, after = field_spec.split("[*]", 1)
+    after = after.lstrip(".")  # 移除开头的点
+
+    # 获取数组
+    array = get_field_with_spec(item, before) if before else item
+    if not isinstance(array, list):
+        return []
+
+    # 提取每个元素的后续路径
+    results = []
+    for elem in array:
+        if after:
+            val = get_field_with_spec(elem, after)
+        else:
+            val = elem
+        if val is not None:
+            results.append(val)
+
+    return results
+
+
+def _extract_field_values(
+    data: List[Dict],
+    field_spec: str,
+    expand: bool = False,
+) -> List[Any]:
+    """
+    从数据中提取字段值。
+
+    Args:
+        data: 数据列表
+        field_spec: 字段路径规格（如 "messages[*].role"）
+        expand: 是否展开 list
+
+    Returns:
+        值列表（展开或不展开）
+    """
+    all_values = []
+
+    for item in data:
+        if "[*]" in field_spec or expand:
+            # 使用通配符提取所有值
+            values = _extract_with_wildcard(item, field_spec)
+
+            if expand and len(values) == 1 and isinstance(values[0], list):
+                # 展开模式：如果返回单个列表，展开其元素
+                all_values.extend(values[0])
+            elif expand and values and isinstance(values[0], list):
+                # 多个列表，全部展开
+                for v in values:
+                    if isinstance(v, list):
+                        all_values.extend(v)
+                    else:
+                        all_values.append(v)
+            else:
+                # 不展开或非列表值
+                all_values.extend(values)
+        else:
+            # 普通字段路径
+            value = get_field_with_spec(item, field_spec)
+            if expand and isinstance(value, list):
+                # 展开 list
+                all_values.extend(value)
+            else:
+                all_values.append(value)
+
+    return all_values
+
+
+def _compute_field_stats(
+    data: List[Dict],
+    top: int,
+    fields: Optional[List[str]] = None,
+    expand_fields: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     单次遍历计算每个字段的统计信息。
 
     优化：将多次遍历合并为单次遍历，在遍历过程中同时收集所有统计数据。
+
+    Args:
+        data: 数据列表
+        top: Top N 值数量
+        fields: 指定统计的字段列表
+        expand_fields: 展开 list 字段统计的字段列表
     """
     from collections import Counter, defaultdict
 
@@ -218,38 +315,115 @@ def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
 
     total = len(data)
 
-    # 单次遍历收集所有字段的值和统计信息
-    field_values = defaultdict(list)  # 存储每个字段的所有值
-    field_counters = defaultdict(Counter)  # 存储每个字段的值频率（用于 top N）
+    # 如果没有指定字段，统计所有顶层字段（保持向后兼容）
+    if not fields and not expand_fields:
+        # 单次遍历收集所有字段的值和统计信息
+        field_values = defaultdict(list)  # 存储每个字段的所有值
+        field_counters = defaultdict(Counter)  # 存储每个字段的值频率（用于 top N）
 
-    for item in data:
-        for k, v in item.items():
-            field_values[k].append(v)
-            # 对值进行截断后计数（用于 top N 显示）
-            displayable = _truncate(v if v is not None else "", 30)
-            field_counters[k][displayable] += 1
+        for item in data:
+            for k, v in item.items():
+                field_values[k].append(v)
+                # 对值进行截断后计数（用于 top N 显示）
+                displayable = _truncate(v if v is not None else "", 30)
+                field_counters[k][displayable] += 1
 
-    # 根据收集的数据计算统计信息
+        # 根据收集的数据计算统计信息
+        stats_list = []
+        for field in sorted(field_values.keys()):
+            values = field_values[field]
+            non_null = [v for v in values if v is not None and v != ""]
+            non_null_count = len(non_null)
+
+            # 推断类型（从第一个非空值）
+            field_type = _infer_type(non_null)
+
+            # 基础统计
+            stat = {
+                "field": field,
+                "non_null": non_null_count,
+                "null_rate": f"{non_null_count / total * 100:.1f}%",
+                "type": field_type,
+            }
+
+            # 类型特定统计
+            if non_null:
+                # 唯一值计数（对复杂类型使用 hash 节省内存）
+                stat["unique"] = _count_unique(non_null, field_type)
+
+                # 字符串类型：计算长度统计
+                if field_type == "str":
+                    lengths = [len(str(v)) for v in non_null]
+                    stat["len_min"] = min(lengths)
+                    stat["len_max"] = max(lengths)
+                    stat["len_avg"] = sum(lengths) / len(lengths)
+
+                # 数值类型：计算数值统计
+                elif field_type in ("int", "float"):
+                    nums = [float(v) for v in non_null if _is_numeric(v)]
+                    if nums:
+                        stat["min"] = min(nums)
+                        stat["max"] = max(nums)
+                        stat["avg"] = sum(nums) / len(nums)
+
+                # 列表类型：计算长度统计
+                elif field_type == "list":
+                    lengths = [len(v) if isinstance(v, list) else 0 for v in non_null]
+                    stat["len_min"] = min(lengths)
+                    stat["len_max"] = max(lengths)
+                    stat["len_avg"] = sum(lengths) / len(lengths)
+
+                # Top N 值（已在遍历时收集）
+                stat["top_values"] = field_counters[field].most_common(top)
+
+            stats_list.append(stat)
+
+        return stats_list
+
+    # 指定了字段：收集指定字段的统计
     stats_list = []
-    for field in sorted(field_values.keys()):
-        values = field_values[field]
+    expand_set = set(expand_fields) if expand_fields else set()
+
+    # 合并字段列表
+    all_fields = set(fields) if fields else set()
+    all_fields.update(expand_set)
+
+    for field_spec in sorted(all_fields):
+        is_expanded = field_spec in expand_set
+
+        # 提取字段值
+        values = _extract_field_values(data, field_spec, expand=is_expanded)
+
+        # 过滤 None 和空值
         non_null = [v for v in values if v is not None and v != ""]
         non_null_count = len(non_null)
 
-        # 推断类型（从第一个非空值）
+        # 推断类型
         field_type = _infer_type(non_null)
 
         # 基础统计
-        stat = {
-            "field": field,
-            "non_null": non_null_count,
-            "null_rate": f"{(total - non_null_count) / total * 100:.1f}%",
-            "type": field_type,
-        }
+        if is_expanded:
+            # 展开模式：显示元素总数和平均数，而非非空率
+            stat = {
+                "field": field_spec,
+                "non_null": non_null_count,
+                "null_rate": f"总元素: {len(values)}",
+                "type": field_type,
+                "is_expanded": is_expanded,
+            }
+        else:
+            # 普通模式：显示非空率
+            stat = {
+                "field": field_spec,
+                "non_null": non_null_count,
+                "null_rate": f"{non_null_count / total * 100:.1f}%",
+                "type": field_type,
+                "is_expanded": is_expanded,
+            }
 
         # 类型特定统计
         if non_null:
-            # 唯一值计数（对复杂类型使用 hash 节省内存）
+            # 唯一值计数
             stat["unique"] = _count_unique(non_null, field_type)
 
             # 字符串类型：计算长度统计
@@ -274,8 +448,12 @@ def _compute_field_stats(data: List[Dict], top: int) -> List[Dict[str, Any]]:
                 stat["len_max"] = max(lengths)
                 stat["len_avg"] = sum(lengths) / len(lengths)
 
-            # Top N 值（已在遍历时收集）
-            stat["top_values"] = field_counters[field].most_common(top)
+            # Top N 值（需要重新计数）
+            counter = Counter()
+            for v in non_null:
+                displayable = _truncate(v if v is not None else "", 30)
+                counter[displayable] += 1
+            stat["top_values"] = counter.most_common(top)
 
         stats_list.append(stat)
 
@@ -343,8 +521,17 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
         table.add_column("统计", style="dim")
 
         for stat in field_stats:
-            non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"
+            # 使用 stat 中的 null_rate（支持展开模式的特殊显示）
+            if "null_rate" in stat:
+                non_null_rate = stat["null_rate"]
+            else:
+                non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"
             unique = str(stat.get("unique", "-"))
+
+            # 字段名（添加展开标记）
+            field_name = stat["field"]
+            if stat.get("is_expanded"):
+                field_name += " (展开)"
 
             # 构建统计信息字符串
             extra = []
@@ -363,7 +550,7 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
                     )
 
             table.add_row(
-                stat["field"],
+                field_name,
                 stat["type"],
                 non_null_rate,
                 unique,
@@ -387,12 +574,19 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
             if unique_ratio > 0.9 and stat.get("unique", 0) > 100:
                 continue
 
+            # 字段名（添加展开标记）
+            field_display = stat["field"]
+            if stat.get("is_expanded"):
+                field_display += " (展开)"
+
             console.print(
-                f"\n[bold cyan]{stat['field']}[/bold cyan] 值分布 (Top {len(top_values)}):"
+                f"\n[bold cyan]{field_display}[/bold cyan] 值分布 (Top {len(top_values)}):"
             )
             max_count = max(c for _, c in top_values) if top_values else 1
+            # 展开模式下使用 non_null（元素总数），否则使用 total（数据条数）
+            base_count = stat["non_null"] if stat.get("is_expanded") else total
             for value, count in top_values:
-                pct = count / total * 100
+                pct = count / base_count * 100 if base_count > 0 else 0
                 bar_len = int(count / max_count * 20)  # 按相对比例，最长 20 字符
                 bar = "█" * bar_len
                 display_value = value if value else "[空]"
