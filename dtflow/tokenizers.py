@@ -122,8 +122,8 @@ def _get_tiktoken_encoder(model: str):
                 _tokenizer_cache[model] = tiktoken.get_encoding(model)
             else:
                 _tokenizer_cache[model] = tiktoken.encoding_for_model(model)
-        except ImportError:
-            raise ImportError("需要安装 tiktoken: pip install tiktoken")
+        except ImportError as e:
+            raise ImportError("需要安装 tiktoken: pip install tiktoken") from e
     return _tokenizer_cache[model]
 
 
@@ -149,12 +149,12 @@ def _get_hf_tokenizer(model: str):
 
                 tokenizer = AutoTokenizer.from_pretrained(resolved, trust_remote_code=True)
                 _tokenizer_cache[resolved] = ("transformers", tokenizer)
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
                     "需要安装 tokenizers 或 transformers:\n"
                     "  pip install tokenizers huggingface_hub  (推荐，更轻量)\n"
                     "  pip install transformers"
-                )
+                ) from e
     return _tokenizer_cache[resolved]
 
 
@@ -309,12 +309,29 @@ def _std(counts: List[int], avg: float) -> float:
     return variance**0.5
 
 
+def _count_item_tokens(args: tuple) -> int:
+    """
+    计算单条数据的 token 数（用于多进程）。
+
+    Args:
+        args: (item, fields, model, backend) 元组
+    """
+    item, fields, model, backend = args
+    total = 0
+    for field in fields:
+        value = get_field_with_spec(item, field, default="")
+        if value:
+            total += count_tokens(str(value), model=model, backend=backend)
+    return total
+
+
 def token_stats(
     data: List[Dict[str, Any]],
     fields: Union[str, List[str]],
     model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    workers: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     统计数据集的 token 信息。
@@ -325,6 +342,7 @@ def token_stats(
         model: 模型名称或别名，如 "qwen2.5", "gpt-4" 等
         backend: 后端选择，None 则自动检测
         progress_callback: 进度回调函数，接收 (current, total) 两个参数
+        workers: 进程数，None 自动检测，1 表示禁用并行
 
     Returns:
         统计信息字典，包含:
@@ -342,17 +360,42 @@ def token_stats(
     if not data:
         return {"total_tokens": 0, "count": 0}
 
-    counts = []
     total_items = len(data)
-    for i, item in enumerate(data):
-        total = 0
-        for field in fields:
-            value = get_field_with_spec(item, field, default="")
-            if value:
-                total += count_tokens(str(value), model=model, backend=backend)
-        counts.append(total)
-        if progress_callback:
-            progress_callback(i + 1, total_items)
+    _backend = backend or _auto_backend(model)
+
+    # 判断是否使用多进程
+    use_parallel = workers != 1 and total_items >= 1000
+
+    if use_parallel:
+        from .parallel import get_optimal_workers, parallel_imap
+
+        actual_workers = get_optimal_workers(total_items, workers)
+        # 准备参数
+        args_list = [(item, fields, model, _backend) for item in data]
+        counts = []
+        for i, result in enumerate(
+            parallel_imap(
+                _count_item_tokens,
+                args_list,
+                workers=actual_workers,
+                threshold=1000,
+            )
+        ):
+            counts.append(result)
+            if progress_callback:
+                progress_callback(i + 1, total_items)
+    else:
+        # 串行处理
+        counts = []
+        for i, item in enumerate(data):
+            total = 0
+            for field in fields:
+                value = get_field_with_spec(item, field, default="")
+                if value:
+                    total += count_tokens(str(value), model=model, backend=_backend)
+            counts.append(total)
+            if progress_callback:
+                progress_callback(i + 1, total_items)
 
     sorted_counts = sorted(counts)
     avg = sum(counts) / len(counts)
@@ -548,12 +591,27 @@ def messages_token_filter(
     return filter_func
 
 
+def _count_messages_tokens_wrapper(args: tuple) -> Optional[Dict[str, int]]:
+    """
+    计算单条 messages 的 token 数（用于多进程）。
+
+    Args:
+        args: (item, messages_field, model, backend) 元组
+    """
+    item, messages_field, model, backend = args
+    messages = get_field_with_spec(item, messages_field, default=[])
+    if messages:
+        return _count_messages_tokens(messages, model=model, backend=backend)
+    return None
+
+
 def messages_token_stats(
     data: List[Dict[str, Any]],
     messages_field: str = "messages",
     model: str = DEFAULT_MODEL,
     backend: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    workers: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     统计数据集中 messages 的 token 信息。
@@ -564,6 +622,7 @@ def messages_token_stats(
         model: 模型名称或别名
         backend: 后端，None 则自动检测
         progress_callback: 进度回调函数，接收 (current, total) 两个参数
+        workers: 进程数，None 自动检测，1 表示禁用并行
 
     Returns:
         统计信息字典，包含:
@@ -581,14 +640,38 @@ def messages_token_stats(
     if not data:
         return {"count": 0, "total_tokens": 0}
 
-    all_stats = []
     total_items = len(data)
-    for i, item in enumerate(data):
-        messages = get_field_with_spec(item, messages_field, default=[])
-        if messages:
-            all_stats.append(_count_messages_tokens(messages, model=model, backend=_backend))
-        if progress_callback:
-            progress_callback(i + 1, total_items)
+
+    # 判断是否使用多进程
+    use_parallel = workers != 1 and total_items >= 1000
+
+    all_stats = []
+    if use_parallel:
+        from .parallel import get_optimal_workers, parallel_imap
+
+        actual_workers = get_optimal_workers(total_items, workers)
+        args_list = [(item, messages_field, model, _backend) for item in data]
+
+        for i, result in enumerate(
+            parallel_imap(
+                _count_messages_tokens_wrapper,
+                args_list,
+                workers=actual_workers,
+                threshold=1000,
+            )
+        ):
+            if result is not None:
+                all_stats.append(result)
+            if progress_callback:
+                progress_callback(i + 1, total_items)
+    else:
+        # 串行处理
+        for i, item in enumerate(data):
+            messages = get_field_with_spec(item, messages_field, default=[])
+            if messages:
+                all_stats.append(_count_messages_tokens(messages, model=model, backend=_backend))
+            if progress_callback:
+                progress_callback(i + 1, total_items)
 
     if not all_stats:
         return {"count": 0, "total_tokens": 0}

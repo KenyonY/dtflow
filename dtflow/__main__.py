@@ -192,9 +192,12 @@ def token_stats(
         "cl100k_base", "--model", "-m", help="分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等"
     ),
     detailed: bool = typer.Option(False, "--detailed", "-d", help="显示详细统计"),
+    workers: Optional[int] = typer.Option(
+        None, "--workers", "-w", help="并行进程数 (默认自动, 1 禁用并行)"
+    ),
 ):
     """统计数据集的 Token 信息"""
-    _token_stats(filename, field, model, detailed)
+    _token_stats(filename, field, model, detailed, workers)
 
 
 @app.command()
@@ -230,9 +233,12 @@ def validate(
     filter: bool = typer.Option(False, "--filter", "-f", help="过滤无效数据并保存"),
     max_errors: int = typer.Option(20, "--max-errors", help="最多显示的错误数量"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="显示详细信息"),
+    workers: Optional[int] = typer.Option(
+        None, "--workers", "-w", help="并行进程数 (默认自动, 1 禁用并行)"
+    ),
 ):
     """使用预设 Schema 验证数据格式"""
-    _validate(filename, preset, output, filter, max_errors, verbose)
+    _validate(filename, preset, output, filter, max_errors, verbose, workers)
 
 
 # ============ 工具命令 ============

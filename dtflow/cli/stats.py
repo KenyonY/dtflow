@@ -3,7 +3,7 @@ CLI 数据统计相关命令
 """
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import orjson
 
@@ -200,7 +200,7 @@ def _quick_stats(filepath: Path) -> None:
         print(f"字段: {len(fields)} 个")
 
         if fields:
-            print(f"\n📋 字段结构:")
+            print("\n📋 字段结构:")
             for i, f in enumerate(fields, 1):
                 print(f"  {i}. {f['field']} ({f['type']})")
 
@@ -403,14 +403,14 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
     except ImportError:
         # 没有 rich，使用普通打印
         print(f"\n{'=' * 50}")
-        print(f"📊 数据概览")
+        print("📊 数据概览")
         print(f"{'=' * 50}")
         print(f"文件: {filename}")
         print(f"总数: {total:,} 条")
         print(f"字段: {len(field_stats)} 个")
 
         print(f"\n{'=' * 50}")
-        print(f"📋 字段统计")
+        print("📋 字段统计")
         print(f"{'=' * 50}")
         print(f"{'字段':<20} {'类型':<8} {'非空率':<8} {'唯一值':<8}")
         print("-" * 50)
@@ -426,6 +426,7 @@ def token_stats(
     field: str = "messages",
     model: str = "cl100k_base",
     detailed: bool = False,
+    workers: Optional[int] = None,
 ) -> None:
     """
     统计数据集的 Token 信息。
@@ -435,6 +436,7 @@ def token_stats(
         field: 要统计的字段（默认 messages），支持嵌套路径语法
         model: 分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等
         detailed: 是否显示详细统计
+        workers: 并行进程数，None 自动检测，1 禁用并行
 
     Examples:
         dt token-stats data.jsonl
@@ -442,6 +444,7 @@ def token_stats(
         dt token-stats data.jsonl --field=conversation.messages
         dt token-stats data.jsonl --field=messages[-1].content   # 统计最后一条消息
         dt token-stats data.jsonl --detailed
+        dt token-stats data.jsonl --workers=4   # 使用 4 进程
     """
     filepath = Path(filename)
 
@@ -473,7 +476,7 @@ def token_stats(
 
     # 尝试使用 rich 进度条
     try:
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+        from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
         with Progress(
             SpinnerColumn(),
@@ -491,14 +494,22 @@ def token_stats(
                 from ..tokenizers import messages_token_stats
 
                 stats_result = messages_token_stats(
-                    data, messages_field=field, model=model, progress_callback=update_progress
+                    data,
+                    messages_field=field,
+                    model=model,
+                    progress_callback=update_progress,
+                    workers=workers,
                 )
                 _print_messages_token_stats(stats_result, detailed)
             else:
                 from ..tokenizers import token_stats as compute_token_stats
 
                 stats_result = compute_token_stats(
-                    data, fields=field, model=model, progress_callback=update_progress
+                    data,
+                    fields=field,
+                    model=model,
+                    progress_callback=update_progress,
+                    workers=workers,
                 )
                 _print_text_token_stats(stats_result, detailed)
 
@@ -509,12 +520,14 @@ def token_stats(
             if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
                 from ..tokenizers import messages_token_stats
 
-                stats_result = messages_token_stats(data, messages_field=field, model=model)
+                stats_result = messages_token_stats(
+                    data, messages_field=field, model=model, workers=workers
+                )
                 _print_messages_token_stats(stats_result, detailed)
             else:
                 from ..tokenizers import token_stats as compute_token_stats
 
-                stats_result = compute_token_stats(data, fields=field, model=model)
+                stats_result = compute_token_stats(data, fields=field, model=model, workers=workers)
                 _print_text_token_stats(stats_result, detailed)
         except ImportError as e:
             print(f"错误: {e}")
@@ -594,7 +607,7 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
         print(f"平均 Token: {stats['avg_tokens']:,} (std: {std:.1f})")
         print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
 
-        print(f"\n📈 百分位分布:")
+        print("\n📈 百分位分布:")
         print(f"  P25: {stats.get('p25', '-'):,}  P50: {stats.get('median_tokens', '-'):,}")
         print(f"  P75: {stats.get('p75', '-'):,}  P90: {stats.get('p90', '-'):,}")
         print(f"  P95: {stats.get('p95', '-'):,}  P99: {stats.get('p99', '-'):,}")
@@ -661,7 +674,7 @@ def _print_text_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
         print(f"平均 Token: {stats['avg_tokens']:.1f} (std: {std:.1f})")
         print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
 
-        print(f"\n📈 百分位分布:")
+        print("\n📈 百分位分布:")
         print(f"  P25: {stats.get('p25', '-'):,}  P50: {stats.get('median_tokens', '-'):,}")
         print(f"  P75: {stats.get('p75', '-'):,}  P90: {stats.get('p90', '-'):,}")
         print(f"  P95: {stats.get('p95', '-'):,}  P99: {stats.get('p99', '-'):,}")

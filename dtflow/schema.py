@@ -26,10 +26,35 @@ Schema 验证模块
     results = dt.validate_schema(schema)
 """
 
-from dataclasses import dataclass, field as dataclass_field
-from typing import Any, Callable, Dict, List, Literal, Optional, Set, Union
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
-from .utils.field_path import get_field, _parse_path, _get_value_by_segments
+from .utils.field_path import _parse_path, get_field
+
+
+def _validate_item_wrapper(args: tuple) -> Tuple[int, bool, list]:
+    """
+    验证单条数据（用于多进程）。
+
+    Args:
+        args: (index, item, schema_fields) 元组
+
+    Returns:
+        (index, is_valid, errors_as_dicts) - 返回字典列表而非对象（pickle 兼容）
+    """
+    idx, item, fields = args
+    # 在子进程中重建 Schema
+    schema = Schema(fields)
+    result = schema.validate(item)
+
+    if result.valid:
+        return (idx, True, [])
+    else:
+        # 将错误转换为字典（pickle 兼容）
+        errors = [{"path": e.path, "message": e.message, "value": e.value} for e in result.errors]
+        return (idx, False, errors)
+
 
 # 支持的类型
 FieldType = Literal["str", "int", "float", "bool", "list", "dict", "any"]
@@ -162,9 +187,7 @@ class Field:
 
         # 选项检查
         if self.choices is not None and value not in self.choices:
-            errors.append(
-                ValidationError(path, f"值必须是 {self.choices} 之一", value)
-            )
+            errors.append(ValidationError(path, f"值必须是 {self.choices} 之一", value))
 
         # 正则表达式检查
         if self.pattern is not None and isinstance(value, str):
@@ -324,9 +347,7 @@ class Schema:
 
         return errors
 
-    def validate_batch(
-        self, data: List[dict], max_errors: int = 100
-    ) -> List[tuple]:
+    def validate_batch(self, data: List[dict], max_errors: int = 100) -> List[tuple]:
         """
         批量验证数据
 
@@ -350,9 +371,76 @@ class Schema:
 
         return failed
 
+    def validate_parallel(
+        self,
+        data: List[dict],
+        workers: Optional[int] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> tuple:
+        """
+        并行验证数据列表。
+
+        Args:
+            data: 数据列表
+            workers: 进程数，None 自动检测，1 禁用并行
+            progress_callback: 进度回调函数
+
+        Returns:
+            (valid_data, invalid_indices_results) 元组
+            - valid_data: 有效数据列表
+            - invalid_indices_results: [(index, ValidationResult), ...] 无效数据
+        """
+        if not data:
+            return [], []
+
+        total = len(data)
+        use_parallel = workers != 1 and total >= 1000
+
+        valid_data = []
+        invalid_results = []
+
+        if use_parallel:
+            from .parallel import get_optimal_workers, parallel_imap
+
+            actual_workers = get_optimal_workers(total, workers)
+            # 准备参数：(index, item, schema_fields)
+            args_list = [(i, item, self._fields) for i, item in enumerate(data)]
+
+            for i, (idx, is_valid, result_data) in enumerate(
+                parallel_imap(
+                    _validate_item_wrapper,
+                    args_list,
+                    workers=actual_workers,
+                    threshold=1000,
+                )
+            ):
+                if is_valid:
+                    valid_data.append(data[idx])
+                else:
+                    # 重建 ValidationResult（因为不能直接 pickle）
+                    errors = [
+                        ValidationError(path=e["path"], message=e["message"], value=e.get("value"))
+                        for e in result_data
+                    ]
+                    invalid_results.append((idx, ValidationResult(valid=False, errors=errors)))
+                if progress_callback:
+                    progress_callback(i + 1, total)
+        else:
+            # 串行处理
+            for i, item in enumerate(data):
+                result = self.validate(item)
+                if result.valid:
+                    valid_data.append(item)
+                else:
+                    invalid_results.append((i, result))
+                if progress_callback:
+                    progress_callback(i + 1, total)
+
+        return valid_data, invalid_results
+
     def __repr__(self) -> str:
         field_strs = [f"  {path}: {field_def}" for path, field_def in self._fields.items()]
-        return f"Schema({{\n" + ",\n".join(field_strs) + "\n}})"
+        return "Schema({\n" + ",\n".join(field_strs) + "\n}})"
 
 
 # ============================================================================
@@ -461,9 +549,7 @@ def sharegpt_schema(
     """
     return Schema(
         {
-            "conversations": Field(
-                type="list", required=True, min_length=min_conversations
-            ),
+            "conversations": Field(type="list", required=True, min_length=min_conversations),
             "conversations[*].from": Field(
                 type="str", required=True, choices=[human_role, gpt_role]
             ),

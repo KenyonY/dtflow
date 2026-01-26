@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Optional
 
 from ..schema import (
-    Schema,
-    Field,
     alpaca_schema,
     dpo_schema,
     openai_chat_schema,
@@ -15,7 +13,6 @@ from ..schema import (
 )
 from ..storage.io import load_data, save_data
 from .common import _check_file_format
-
 
 # 预设 Schema 映射
 PRESET_SCHEMAS = {
@@ -36,6 +33,7 @@ def validate(
     filter_invalid: bool = False,
     max_errors: int = 20,
     verbose: bool = False,
+    workers: Optional[int] = None,
 ) -> None:
     """
     使用 Schema 验证数据文件。
@@ -47,11 +45,13 @@ def validate(
         filter_invalid: 过滤无效数据并保存
         max_errors: 最多显示的错误数量
         verbose: 显示详细信息
+        workers: 并行进程数，None 自动检测，1 禁用并行
 
     Examples:
         dt validate data.jsonl --preset=openai_chat
         dt validate data.jsonl --preset=alpaca -o valid.jsonl
         dt validate data.jsonl --preset=chat --filter
+        dt validate data.jsonl --preset=chat --workers=4
     """
     filepath = Path(filename)
 
@@ -99,19 +99,54 @@ def validate(
     print(f"总记录数: {total}")
     print()
 
-    # 验证
-    valid_data = []
-    invalid_count = 0
-    error_samples = []
+    # 验证（使用并行或串行）
+    use_parallel = workers != 1 and total >= 1000
 
-    for i, item in enumerate(data):
-        result = schema.validate(item)
-        if result.valid:
-            valid_data.append(item)
-        else:
-            invalid_count += 1
-            if len(error_samples) < max_errors:
-                error_samples.append((i, result))
+    if use_parallel:
+        # 使用进度条（如果有 rich）
+        try:
+            from rich.progress import (
+                BarColumn,
+                Progress,
+                SpinnerColumn,
+                TaskProgressColumn,
+                TextColumn,
+            )
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]验证数据"),
+                BarColumn(),
+                TaskProgressColumn(),
+            ) as progress:
+                task = progress.add_task("", total=total)
+
+                def update_progress(current: int, total_count: int):
+                    progress.update(task, completed=current)
+
+                valid_data, invalid_results = schema.validate_parallel(
+                    data, workers=workers, progress_callback=update_progress
+                )
+        except ImportError:
+            print("🔍 验证数据...")
+            valid_data, invalid_results = schema.validate_parallel(data, workers=workers)
+
+        invalid_count = len(invalid_results)
+        error_samples = invalid_results[:max_errors]
+    else:
+        # 串行验证
+        valid_data = []
+        invalid_count = 0
+        error_samples = []
+
+        for i, item in enumerate(data):
+            result = schema.validate(item)
+            if result.valid:
+                valid_data.append(item)
+            else:
+                invalid_count += 1
+                if len(error_samples) < max_errors:
+                    error_samples.append((i, result))
 
     valid_count = len(valid_data)
     valid_ratio = valid_count / total * 100 if total > 0 else 0
@@ -138,9 +173,7 @@ def validate(
 
     # 保存有效数据
     if output or filter_invalid:
-        output_path = output or str(filepath).replace(
-            filepath.suffix, f"_valid{filepath.suffix}"
-        )
+        output_path = output or str(filepath).replace(filepath.suffix, f"_valid{filepath.suffix}")
         save_data(valid_data, output_path)
         print(f"✅ 有效数据已保存: {output_path} ({valid_count} 条)")
 
