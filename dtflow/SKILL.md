@@ -141,6 +141,7 @@ dt token-stats data.jsonl                         # 默认统计 messages 字段
 dt token-stats data.jsonl -f text                 # 指定统计字段
 dt token-stats data.jsonl -m qwen2.5              # 指定分词器 (cl100k_base/qwen2.5/llama3)
 dt token-stats data.jsonl --detailed              # 显示详细统计
+dt token-stats data.jsonl -w 4                    # 多进程加速（数据量>=1000时自动启用）
 
 # 采样（支持字段路径语法）
 dt sample data.jsonl 100                          # 随机采样 100 条
@@ -173,6 +174,7 @@ dt validate data.jsonl --preset=openai_chat       # 预设: openai_chat/alpaca/d
 dt validate data.jsonl -p alpaca -f -o valid.jsonl  # 过滤无效数据并保存
 dt validate data.jsonl -p openai_chat -v          # 显示详细信息
 dt validate data.jsonl -p openai_chat --max-errors=50  # 最多显示 50 条错误
+dt validate data.jsonl -p openai_chat -w 4        # 多进程加速
 
 # 转换
 dt transform data.jsonl --preset=openai_chat

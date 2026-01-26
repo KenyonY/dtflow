@@ -368,6 +368,7 @@ dt run pipeline.yaml --input=new_data.jsonl --output=result.jsonl
 dt token-stats data.jsonl --field=messages --model=gpt-4
 dt token-stats data.jsonl --field=messages[-1].content   # 统计最后一条消息
 dt token-stats data.jsonl --field=text --detailed
+dt token-stats data.jsonl --workers=4                    # 多进程加速（数据量大时自动启用）
 
 # 数据对比
 dt diff v1/train.jsonl v2/train.jsonl
@@ -407,6 +408,7 @@ dt validate data.jsonl --preset=openai_chat           # 使用预设 schema 验�
 dt validate data.jsonl --preset=alpaca --verbose      # 详细输出
 dt validate data.jsonl --preset=sharegpt --filter-invalid -o valid.jsonl  # 过滤出有效数据
 dt validate data.jsonl --preset=dpo --max-errors=100  # 限制错误输出数量
+dt validate data.jsonl --preset=openai_chat --workers=4  # 多进程加速
 ```
 
 ### 字段路径语法
