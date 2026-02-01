@@ -1,6 +1,16 @@
 ---
 name: dtflow
-description: 数据文件处理（JSONL/CSV/Parquet）- 去重/采样/统计/过滤/转换/Schema验证/训练框架导出
+description: >
+  当用户需要处理 JSONL/CSV/Parquet/JSON/Arrow 数据文件时使用此 skill。
+  提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
+  适用场景：(1) 查看数据：dt sample/head/tail 采样预览，dt stats 统计字段分布；
+  (2) 数据清洗：dt clean 支持 --drop-empty/--min-len/--max-len 过滤行，--keep/--drop/--rename/--promote/--add-field/--fill/--reorder 操作字段；
+  (3) 去重：dt dedupe 精确去重或 --similar 相似度去重；
+  (4) 格式转换：dt transform 预设模板(openai_chat/alpaca/sharegpt/dpo)或自定义配置；
+  (5) Schema 验证：dt validate --preset 验证数据格式；
+  (6) ML 训练框架导出：export_for("llama-factory"/"swift"/"axolotl") 一键生成训练配置；
+  (7) 大文件流式处理：load_stream() O(1) 内存处理 100GB+ 文件。
+  注意：此工具专注数据文件的结构化处理，不涉及 LLM 调用（LLM 调用请用 flexllm）。
 ---
 
 # dtflow - 机器学习训练数据格式转换工具
