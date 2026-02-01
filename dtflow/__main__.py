@@ -164,11 +164,34 @@ def clean(
     max_len: Optional[str] = typer.Option(None, "--max-len", help="最大长度过滤 (字段:长度)"),
     keep: Optional[str] = typer.Option(None, "--keep", help="只保留指定字段"),
     drop: Optional[str] = typer.Option(None, "--drop", help="删除指定字段"),
+    rename: Optional[str] = typer.Option(None, "--rename", help="重命名字段 (old:new,old2:new2)"),
+    promote: Optional[str] = typer.Option(
+        None, "--promote", help="提升嵌套字段到顶层 (meta.label 或 meta.label:tag)"
+    ),
+    add_field: Optional[str] = typer.Option(None, "--add-field", help="添加常量字段 (key:value)"),
+    fill: Optional[str] = typer.Option(None, "--fill", help="填充空值 (field:default_value)"),
+    reorder: Optional[str] = typer.Option(
+        None, "--reorder", help="控制字段顺序 (field1,field2,...)"
+    ),
     strip: bool = typer.Option(False, "--strip", help="去除字符串首尾空白"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
 ):
     """数据清洗"""
-    _clean(filename, drop_empty, min_len, max_len, keep, drop, strip, output)
+    _clean(
+        filename,
+        drop_empty,
+        min_len,
+        max_len,
+        keep,
+        drop,
+        rename,
+        promote,
+        add_field,
+        fill,
+        reorder,
+        strip,
+        output,
+    )
 
 
 # ============ 数据统计命令 ============
@@ -179,9 +202,15 @@ def stats(
     filename: str = typer.Argument(..., help="输入文件路径"),
     top: int = typer.Option(10, "--top", "-n", help="显示 Top N 值"),
     full: bool = typer.Option(False, "--full", "-f", help="完整模式：统计值分布、唯一值等详细信息"),
+    field: Optional[List[str]] = typer.Option(
+        None, "--field", help="指定统计字段（可多次使用），支持嵌套路径"
+    ),
+    expand: Optional[List[str]] = typer.Option(
+        None, "--expand", help="展开 list 字段统计（可多次使用）"
+    ),
 ):
     """显示数据文件的统计信息"""
-    _stats(filename, top, full)
+    _stats(filename, top, full, field, expand)
 
 
 @app.command("token-stats")

@@ -397,7 +397,11 @@ dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
 dt concat a.jsonl b.jsonl -o merged.jsonl
 
 # 数据统计
-dt stats data.jsonl
+dt stats data.jsonl                                       # 快速模式
+dt stats data.jsonl --full                                # 完整模式（含值分布）
+dt stats data.jsonl --full --field=category               # 指定字段统计
+dt stats data.jsonl --full --expand=tags                  # 展开 list 字段统计元素分布
+dt stats data.jsonl --full --expand='messages[*].role'    # 展开嵌套 list 字段
 
 # Claude Code Skill 安装
 dt install-skill                              # 安装到 ~/.claude/skills/

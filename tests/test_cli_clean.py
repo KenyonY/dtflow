@@ -4,7 +4,15 @@ Tests for CLI clean and dedupe commands.
 
 import pytest
 
-from dtflow.cli.clean import _clean_data_single_pass, _parse_len_param, clean, dedupe
+from dtflow.cli.clean import (
+    _clean_data_single_pass,
+    _parse_kv_param,
+    _parse_len_param,
+    _parse_promote_param,
+    _parse_rename_param,
+    clean,
+    dedupe,
+)
 from dtflow.storage.io import load_data, save_data
 
 # ============== Fixtures ==============
@@ -146,6 +154,34 @@ class TestCleanBasic:
         for item in result:
             assert "score" not in item
 
+    def test_clean_rename(self, sample_data_file, tmp_path):
+        """Test renaming fields."""
+        filepath, _ = sample_data_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), rename="text:content,category:tag", output=str(output))
+
+        result = load_data(str(output))
+        for item in result:
+            assert "content" in item
+            assert "tag" in item
+            assert "text" not in item
+            assert "category" not in item
+            assert "score" in item  # 未重命名的字段保持不变
+
+    def test_clean_rename_with_drop(self, sample_data_file, tmp_path):
+        """Test rename combined with drop."""
+        filepath, _ = sample_data_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), drop="score", rename="text:content", output=str(output))
+
+        result = load_data(str(output))
+        for item in result:
+            assert "content" in item
+            assert "text" not in item
+            assert "score" not in item
+
 
 # ============== Clean with Nested Fields Tests ==============
 
@@ -175,6 +211,79 @@ class TestCleanNested:
         result = load_data(str(output))
         for item in result:
             assert len(item["messages"]) >= 2
+
+    def test_clean_promote(self, sample_nested_file, tmp_path):
+        """Test promoting nested field to top level."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), promote="meta.source", output=str(output))
+
+        result = load_data(str(output))
+        assert result[0]["source"] == "web"
+        assert result[1]["source"] == "api"
+        assert result[2]["source"] is None
+
+    def test_clean_promote_custom_name(self, sample_nested_file, tmp_path):
+        """Test promoting nested field with custom target name."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), promote="meta.source:src", output=str(output))
+
+        result = load_data(str(output))
+        assert "src" in result[0]
+        assert result[0]["src"] == "web"
+        assert "source" not in result[0]  # 没有用默认名
+
+    def test_clean_promote_then_drop(self, sample_nested_file, tmp_path):
+        """Test promote + drop parent field."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), promote="meta.source", drop="meta", output=str(output))
+
+        result = load_data(str(output))
+        for item in result:
+            assert "source" in item
+            assert "meta" not in item
+
+    def test_clean_add_field(self, sample_nested_file, tmp_path):
+        """Test adding constant field."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), add_field="source:web,version:1.0", output=str(output))
+
+        result = load_data(str(output))
+        for item in result:
+            assert item["source"] == "web"
+            assert item["version"] == "1.0"
+
+    def test_clean_fill(self, sample_nested_file, tmp_path):
+        """Test filling empty values."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), promote="meta.source", fill="source:unknown", output=str(output))
+
+        result = load_data(str(output))
+        assert result[0]["source"] == "web"
+        assert result[1]["source"] == "api"
+        assert result[2]["source"] == "unknown"  # 原值为 None，被填充
+
+    def test_clean_reorder(self, sample_nested_file, tmp_path):
+        """Test reordering fields."""
+        filepath, _ = sample_nested_file
+        output = tmp_path / "output.jsonl"
+
+        clean(str(filepath), reorder="messages,id", output=str(output))
+
+        result = load_data(str(output))
+        for item in result:
+            keys = list(item.keys())
+            assert keys[0] == "messages"
+            assert keys[1] == "id"
 
 
 # ============== Dedupe Command Tests ==============
@@ -246,6 +355,56 @@ class TestParamParsing:
         with pytest.raises(ValueError):
             _parse_len_param("text:abc")
 
+    def test_parse_rename_single(self):
+        """Test parsing single rename parameter."""
+        result = _parse_rename_param("old:new")
+        assert result == {"old": "new"}
+
+    def test_parse_rename_multiple(self):
+        """Test parsing multiple rename parameters."""
+        result = _parse_rename_param("a:b,c:d")
+        assert result == {"a": "b", "c": "d"}
+
+    def test_parse_rename_invalid(self):
+        """Test invalid rename parameter."""
+        with pytest.raises(ValueError):
+            _parse_rename_param("no_colon")
+
+    def test_parse_rename_empty_name(self):
+        """Test rename with empty field name."""
+        with pytest.raises(ValueError):
+            _parse_rename_param(":new")
+
+    def test_parse_promote_default_name(self):
+        """Test promote uses last segment as default name."""
+        result = _parse_promote_param("meta.label")
+        assert result == [("meta.label", "label")]
+
+    def test_parse_promote_custom_name(self):
+        """Test promote with custom target name."""
+        result = _parse_promote_param("meta.label:tag")
+        assert result == [("meta.label", "tag")]
+
+    def test_parse_promote_multiple(self):
+        """Test parsing multiple promote specs."""
+        result = _parse_promote_param("meta.label:tag,meta.score")
+        assert result == [("meta.label", "tag"), ("meta.score", "score")]
+
+    def test_parse_kv_param(self):
+        """Test parsing key:value parameters."""
+        result = _parse_kv_param("source:web,version:1.0", "add-field")
+        assert result == {"source": "web", "version": "1.0"}
+
+    def test_parse_kv_param_invalid(self):
+        """Test invalid key:value parameter."""
+        with pytest.raises(ValueError):
+            _parse_kv_param("no_colon", "fill")
+
+    def test_parse_kv_param_empty_key(self):
+        """Test key:value with empty key."""
+        with pytest.raises(ValueError):
+            _parse_kv_param(":value", "fill")
+
 
 # ============== Clean Single Pass Tests ==============
 
@@ -285,6 +444,85 @@ class TestCleanSinglePass:
 
         assert len(result) == 1
         assert result[0]["text"] == "long text here"
+
+    def test_single_pass_rename(self):
+        """Test rename in single pass."""
+        data = [{"text": "hello", "score": 0.9}]
+        result, stats = _clean_data_single_pass(data, rename_map={"text": "content"})
+
+        assert len(result) == 1
+        assert "content" in result[0]
+        assert "text" not in result[0]
+        assert result[0]["content"] == "hello"
+
+    def test_single_pass_rename_preserves_order(self):
+        """Test that rename preserves field order."""
+        data = [{"a": 1, "b": 2, "c": 3}]
+        result, _ = _clean_data_single_pass(data, rename_map={"b": "bb"})
+
+        assert list(result[0].keys()) == ["a", "bb", "c"]
+
+    def test_single_pass_promote(self):
+        """Test promote in single pass."""
+        data = [{"meta": {"label": "pos"}, "text": "hello"}]
+        result, _ = _clean_data_single_pass(data, promote_list=[("meta.label", "label")])
+
+        assert result[0]["label"] == "pos"
+        assert result[0]["meta"] == {"label": "pos"}  # 原字段保留
+
+    def test_single_pass_promote_before_drop(self):
+        """Test that promote runs before drop."""
+        data = [{"meta": {"label": "pos"}, "text": "hello"}]
+        result, _ = _clean_data_single_pass(
+            data, promote_list=[("meta.label", "label")], drop_fields={"meta"}
+        )
+
+        assert result[0]["label"] == "pos"
+        assert "meta" not in result[0]
+
+    def test_single_pass_add_field(self):
+        """Test add-field in single pass."""
+        data = [{"text": "hello"}]
+        result, _ = _clean_data_single_pass(data, add_field_map={"source": "web"})
+
+        assert result[0]["source"] == "web"
+        assert result[0]["text"] == "hello"
+
+    def test_single_pass_fill(self):
+        """Test fill in single pass."""
+        data = [{"text": "hello", "label": None}, {"text": "", "label": "pos"}]
+        result, _ = _clean_data_single_pass(data, fill_map={"text": "empty", "label": "unknown"})
+
+        assert result[0]["text"] == "hello"  # 有值的不填充
+        assert result[0]["label"] == "unknown"  # None 被填充
+        assert result[1]["text"] == "empty"  # 空字符串被填充
+        assert result[1]["label"] == "pos"  # 有值的不填充
+
+    def test_single_pass_fill_missing_field(self):
+        """Test fill adds field if not exists."""
+        data = [{"text": "hello"}]
+        result, _ = _clean_data_single_pass(data, fill_map={"label": "unknown"})
+
+        assert result[0]["label"] == "unknown"
+
+    def test_single_pass_reorder(self):
+        """Test reorder in single pass."""
+        data = [{"c": 3, "a": 1, "b": 2}]
+        result, _ = _clean_data_single_pass(data, reorder_fields=["a", "b"])
+
+        keys = list(result[0].keys())
+        assert keys == ["a", "b", "c"]
+
+    def test_single_pass_reorder_with_extra(self):
+        """Test reorder keeps unlisted fields at end."""
+        data = [{"d": 4, "c": 3, "a": 1, "b": 2}]
+        result, _ = _clean_data_single_pass(data, reorder_fields=["b", "a"])
+
+        keys = list(result[0].keys())
+        assert keys[0] == "b"
+        assert keys[1] == "a"
+        # d 和 c 在后面（顺序保持原有相对顺序）
+        assert set(keys[2:]) == {"c", "d"}
 
 
 # ============== Error Handling Tests ==============

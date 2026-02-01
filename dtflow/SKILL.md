@@ -1,6 +1,16 @@
 ---
 name: dtflow
-description: 数据文件处理（JSONL/CSV/Parquet）- 去重/采样/统计/过滤/转换/Schema验证/训练框架导出
+description: >
+  当用户需要处理 JSONL/CSV/Parquet/JSON/Arrow 数据文件时使用此 skill。
+  提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
+  适用场景：(1) 查看数据：dt sample/head/tail 采样预览，dt stats 统计字段分布；
+  (2) 数据清洗：dt clean 支持 --drop-empty/--min-len/--max-len 过滤行，--keep/--drop/--rename/--promote/--add-field/--fill/--reorder 操作字段；
+  (3) 去重：dt dedupe 精确去重或 --similar 相似度去重；
+  (4) 格式转换：dt transform 预设模板(openai_chat/alpaca/sharegpt/dpo)或自定义配置；
+  (5) Schema 验证：dt validate --preset 验证数据格式；
+  (6) ML 训练框架导出：export_for("llama-factory"/"swift"/"axolotl") 一键生成训练配置；
+  (7) 大文件流式处理：load_stream() O(1) 内存处理 100GB+ 文件。
+  注意：此工具专注数据文件的结构化处理，不涉及 LLM 调用（LLM 调用请用 flexllm）。
 ---
 
 # dtflow - 机器学习训练数据格式转换工具
@@ -135,6 +145,8 @@ dt.stats()                        # 统计
 dt stats data.jsonl                               # 基本统计（文件大小、条数、字段）
 dt stats data.jsonl --full                        # 完整模式：值分布、唯一值、非空率
 dt stats data.jsonl --full -n 20                  # 显示 Top 20 值分布
+dt stats data.jsonl --field=meta.source           # 只统计指定字段（支持嵌套路径，可多次使用）
+dt stats data.jsonl --expand=tags                 # 展开 list 字段统计（可多次使用）
 
 # Token 统计
 dt token-stats data.jsonl                         # 默认统计 messages 字段
@@ -166,8 +178,14 @@ dt clean data.jsonl --max-len=text:2000           # 最大长度过滤
 dt clean data.jsonl --min-len=messages.#:2        # 最少 2 条消息
 dt clean data.jsonl --keep=question,answer        # 只保留指定字段
 dt clean data.jsonl --drop=metadata               # 删除指定字段
+dt clean data.jsonl --rename=question:instruction,answer:output  # 重命名字段
+dt clean data.jsonl --promote=meta.label          # 提升嵌套字段到顶层
+dt clean data.jsonl --promote=meta.label:tag      # 提升并自定义名称
+dt clean data.jsonl --add-field=source:web        # 添加常量字段
+dt clean data.jsonl --fill=label:unknown          # 填充空值/缺失字段
+dt clean data.jsonl --reorder=id,text,label       # 控制字段输出顺序
 dt clean data.jsonl --strip                       # 去除字符串首尾空白
-dt clean data.jsonl --strip --drop-empty=input -o cleaned.jsonl  # 组合使用
+dt clean data.jsonl --promote=meta.label --drop=meta --fill=label:unknown  # 组合使用
 
 # 验证
 dt validate data.jsonl --preset=openai_chat       # 预设: openai_chat/alpaca/dpo/sharegpt
