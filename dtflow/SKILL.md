@@ -135,6 +135,8 @@ dt.stats()                        # 统计
 dt stats data.jsonl                               # 基本统计（文件大小、条数、字段）
 dt stats data.jsonl --full                        # 完整模式：值分布、唯一值、非空率
 dt stats data.jsonl --full -n 20                  # 显示 Top 20 值分布
+dt stats data.jsonl --field=meta.source           # 只统计指定字段（支持嵌套路径，可多次使用）
+dt stats data.jsonl --expand=tags                 # 展开 list 字段统计（可多次使用）
 
 # Token 统计
 dt token-stats data.jsonl                         # 默认统计 messages 字段
@@ -165,8 +167,14 @@ dt clean data.jsonl --max-len=text:2000           # 最大长度过滤
 dt clean data.jsonl --min-len=messages.#:2        # 最少 2 条消息
 dt clean data.jsonl --keep=question,answer        # 只保留指定字段
 dt clean data.jsonl --drop=metadata               # 删除指定字段
+dt clean data.jsonl --rename=question:instruction,answer:output  # 重命名字段
+dt clean data.jsonl --promote=meta.label          # 提升嵌套字段到顶层
+dt clean data.jsonl --promote=meta.label:tag      # 提升并自定义名称
+dt clean data.jsonl --add-field=source:web        # 添加常量字段
+dt clean data.jsonl --fill=label:unknown          # 填充空值/缺失字段
+dt clean data.jsonl --reorder=id,text,label       # 控制字段输出顺序
 dt clean data.jsonl --strip                       # 去除字符串首尾空白
-dt clean data.jsonl --strip --drop-empty=input -o cleaned.jsonl  # 组合使用
+dt clean data.jsonl --promote=meta.label --drop=meta --fill=label:unknown  # 组合使用
 
 # 验证
 dt validate data.jsonl --preset=openai_chat       # 预设: openai_chat/alpaca/dpo/sharegpt
