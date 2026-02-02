@@ -143,7 +143,7 @@ def sample(
     by: Optional[str] = None,
     uniform: bool = False,
     fields: Optional[str] = None,
-    raw: bool = False,
+    raw: bool = True,
     where: Optional[List[str]] = None,
 ) -> None:
     """
@@ -389,7 +389,7 @@ def head(
     num: int = 10,
     output: Optional[str] = None,
     fields: Optional[str] = None,
-    raw: bool = False,
+    raw: bool = True,
 ) -> None:
     """
     显示文件的前 N 条数据（dt sample --type=head 的快捷方式）。
@@ -420,7 +420,7 @@ def tail(
     num: int = 10,
     output: Optional[str] = None,
     fields: Optional[str] = None,
-    raw: bool = False,
+    raw: bool = True,
 ) -> None:
     """
     显示文件的后 N 条数据（dt sample --type=tail 的快捷方式）。

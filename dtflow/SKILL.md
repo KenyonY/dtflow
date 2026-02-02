@@ -8,8 +8,9 @@ description: >
   (3) 去重：dt dedupe 精确去重或 --similar 相似度去重；
   (4) 格式转换：dt transform 预设模板(openai_chat/alpaca/sharegpt/dpo)或自定义配置；
   (5) Schema 验证：dt validate --preset 验证数据格式；
-  (6) ML 训练框架导出：export_for("llama-factory"/"swift"/"axolotl") 一键生成训练配置；
-  (7) 大文件流式处理：load_stream() O(1) 内存处理 100GB+ 文件。
+  (6) 数据集切分：dt split 按比例切分 train/test/val；
+  (7) 训练框架导出：dt export / export_for() 一键导出到 llama-factory/swift/axolotl；
+  (8) 大文件流式处理：load_stream() O(1) 内存处理 100GB+ 文件。
   注意：此工具专注数据文件的结构化处理，不涉及 LLM 调用（LLM 调用请用 flexllm）。
 ---
 
@@ -184,7 +185,19 @@ dt clean data.jsonl --add-field=source:web        # 添加常量字段
 dt clean data.jsonl --fill=label:unknown          # 填充空值/缺失字段
 dt clean data.jsonl --reorder=id,text,label       # 控制字段输出顺序
 dt clean data.jsonl --strip                       # 去除字符串首尾空白
+dt clean data.jsonl --min-tokens=content:10          # 最少 10 tokens
+dt clean data.jsonl --max-tokens=content:1000 -m gpt-4  # 最多 1000 tokens（指定分词器）
 dt clean data.jsonl --promote=meta.label --drop=meta --fill=label:unknown  # 组合使用
+
+# 数据集切分
+dt split data.jsonl --ratio=0.8 --seed=42           # 二分: train/test
+dt split data.jsonl --ratio=0.7,0.15,0.15           # 三分: train/val/test
+dt split data.jsonl --ratio=0.8 -o /tmp/output      # 指定输出目录
+
+# 训练框架导出
+dt export data.jsonl --framework=llama-factory       # 导出到 LLaMA-Factory
+dt export data.jsonl -f swift -o ./swift_out         # 导出到 ms-swift
+dt export data.jsonl -f llama-factory --check        # 仅检查兼容性
 
 # 验证
 dt validate data.jsonl --preset=openai_chat       # 预设: openai_chat/alpaca/dpo/sharegpt

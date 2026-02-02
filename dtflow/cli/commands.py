@@ -16,6 +16,9 @@ CLI 命令统一导出入口
 # 清洗命令
 from .clean import clean, dedupe
 
+# 导出命令
+from .export import export
+
 # IO 操作命令
 from .io_ops import concat, diff
 
@@ -28,6 +31,9 @@ from .sample import head, sample, tail
 
 # Skill 命令
 from .skill import install_skill, skill_status, uninstall_skill
+
+# 切分命令
+from .split import split
 
 # 统计命令
 from .stats import stats, token_stats
@@ -60,6 +66,10 @@ __all__ = [
     "history",
     # 验证
     "validate",
+    # 切分
+    "split",
+    # 导出
+    "export",
     # Skill
     "install_skill",
     "uninstall_skill",

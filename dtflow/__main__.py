@@ -18,6 +18,8 @@ Commands:
     clean         数据清洗
     run           执行 Pipeline 配置文件
     history       显示数据血缘历史
+    split         分割数据集
+    export        导出到训练框架
     validate      使用 Schema 验证数据格式
     logs          日志查看工具使用说明
     install-skill 安装 dtflow skill 到 Claude Code
@@ -33,12 +35,14 @@ from .cli.commands import clean as _clean
 from .cli.commands import concat as _concat
 from .cli.commands import dedupe as _dedupe
 from .cli.commands import diff as _diff
+from .cli.commands import export as _export
 from .cli.commands import head as _head
 from .cli.commands import history as _history
 from .cli.commands import install_skill as _install_skill
 from .cli.commands import run as _run
 from .cli.commands import sample as _sample
 from .cli.commands import skill_status as _skill_status
+from .cli.commands import split as _split
 from .cli.commands import stats as _stats
 from .cli.commands import tail as _tail
 from .cli.commands import token_stats as _token_stats
@@ -69,12 +73,12 @@ def sample(
     by: Optional[str] = typer.Option(None, "--by", help="分层采样字段"),
     uniform: bool = typer.Option(False, "--uniform", help="均匀采样模式"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段（逗号分隔）"),
-    raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
+    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
     where: Optional[List[str]] = typer.Option(None, "--where", "-w", help="筛选条件 (可多次使用)"),
 ):
     """从数据文件中采样指定数量的数据"""
     actual_num = num_arg if num_arg is not None else num
-    _sample(filename, actual_num, type, output, seed, by, uniform, fields, raw, where)
+    _sample(filename, actual_num, type, output, seed, by, uniform, fields, not pretty, where)
 
 
 @app.command()
@@ -84,12 +88,12 @@ def head(
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
-    raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
+    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
 ):
     """显示文件的前 N 条数据"""
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
-    _head(filename, actual_num, output, fields, raw)
+    _head(filename, actual_num, output, fields, not pretty)
 
 
 @app.command()
@@ -99,12 +103,12 @@ def tail(
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
-    raw: bool = typer.Option(False, "--raw", "-r", help="输出原始 JSON（不截断）"),
+    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
 ):
     """显示文件的后 N 条数据"""
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
-    _tail(filename, actual_num, output, fields, raw)
+    _tail(filename, actual_num, output, fields, not pretty)
 
 
 # ============ 数据转换命令 ============
@@ -174,6 +178,13 @@ def clean(
         None, "--reorder", help="控制字段顺序 (field1,field2,...)"
     ),
     strip: bool = typer.Option(False, "--strip", help="去除字符串首尾空白"),
+    min_tokens: Optional[str] = typer.Option(
+        None, "--min-tokens", help="最小 token 数过滤 (字段:数量)"
+    ),
+    max_tokens: Optional[str] = typer.Option(
+        None, "--max-tokens", help="最大 token 数过滤 (字段:数量)"
+    ),
+    model: str = typer.Option("cl100k_base", "--model", "-m", help="分词器模型 (默认 cl100k_base)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
 ):
     """数据清洗"""
@@ -190,6 +201,9 @@ def clean(
         fill,
         reorder,
         strip,
+        min_tokens,
+        max_tokens,
+        model,
         output,
     )
 
@@ -244,6 +258,34 @@ def history(
 ):
     """显示数据文件的血缘历史"""
     _history(filename, json)
+
+
+# ============ 切分与导出命令 ============
+
+
+@app.command()
+def split(
+    filename: str = typer.Argument(..., help="输入文件路径"),
+    ratio: str = typer.Option("0.8", "--ratio", "-r", help="分割比例，如 0.8 或 0.7,0.15,0.15"),
+    seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录（默认同目录）"),
+):
+    """分割数据集为 train/test (或 train/val/test)"""
+    _split(filename, ratio, seed, output)
+
+
+@app.command()
+def export(
+    filename: str = typer.Argument(..., help="输入文件路径"),
+    framework: str = typer.Option(
+        ..., "--framework", "-f", help="目标框架: llama-factory, swift, axolotl"
+    ),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="数据集名称"),
+    check: bool = typer.Option(False, "--check", help="仅检查兼容性，不导出"),
+):
+    """导出数据到训练框架 (LLaMA-Factory, ms-swift, Axolotl)"""
+    _export(filename, framework, output, name, check)
 
 
 # ============ 验证命令 ============
