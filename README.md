@@ -351,6 +351,13 @@ dt sample data.jsonl 1000 --by=messages.#         # 按消息数量分层采样
 dt sample data.jsonl --where="category=tech"      # 筛选后采样
 dt sample data.jsonl --where="messages.#>=2"      # 多条件筛选
 
+# 按行范围查看（Python 切片语法）
+dt slice data.jsonl 10:20                          # 第 10-19 行（0-based，左闭右开）
+dt slice data.jsonl :100                           # 前 100 行
+dt slice data.jsonl 100:                           # 第 100 行到末尾
+dt slice data.jsonl 10:20 -o sliced.jsonl          # 保存到文件
+dt slice data.jsonl 10:20 -f question,answer       # 只显示指定字段
+
 # 数据转换 - 预设模式
 dt transform data.jsonl --preset=openai_chat
 dt transform data.jsonl --preset=alpaca

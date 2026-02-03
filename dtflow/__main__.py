@@ -35,6 +35,7 @@ from .cli.commands import clean as _clean
 from .cli.commands import concat as _concat
 from .cli.commands import dedupe as _dedupe
 from .cli.commands import diff as _diff
+from .cli.commands import eval as _eval
 from .cli.commands import export as _export
 from .cli.commands import head as _head
 from .cli.commands import history as _history
@@ -42,6 +43,7 @@ from .cli.commands import install_skill as _install_skill
 from .cli.commands import run as _run
 from .cli.commands import sample as _sample
 from .cli.commands import skill_status as _skill_status
+from .cli.commands import slice_data as _slice_data
 from .cli.commands import split as _split
 from .cli.commands import stats as _stats
 from .cli.commands import tail as _tail
@@ -109,6 +111,25 @@ def tail(
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
     _tail(filename, actual_num, output, fields, not pretty)
+
+
+@app.command("slice")
+def slice_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径"),
+    range_str: str = typer.Argument(..., help="行号范围 (start:end)，如 10:20、:100、100:、-10:"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
+    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
+):
+    """按行号范围查看数据（Python 切片语法）
+
+    示例:
+        dt slice data.jsonl 10:20     第 10-19 行
+        dt slice data.jsonl :100      前 100 行
+        dt slice data.jsonl 100:      第 100 行到末尾
+        dt slice data.jsonl -10:      最后 10 行
+    """
+    _slice_data(filename, range_str, output, fields, not pretty)
 
 
 # ============ 数据转换命令 ============
@@ -286,6 +307,43 @@ def export(
 ):
     """导出数据到训练框架 (LLaMA-Factory, ms-swift, Axolotl)"""
     _export(filename, framework, output, name, check)
+
+
+# ============ 评估命令 ============
+
+
+@app.command()
+def eval(
+    result_file: str = typer.Argument(..., help="模型输出的 .jsonl 文件路径"),
+    source: Optional[str] = typer.Option(
+        None, "--source", "-s", help="原始输入文件，按行号对齐合并"
+    ),
+    response_col: str = typer.Option("content", "--response-col", "-r", help="模型响应字段名"),
+    label_col: Optional[str] = typer.Option(
+        None, "--label-col", "-l", help="标签字段名（不指定时自动检测）"
+    ),
+    extract: str = typer.Option(
+        "direct",
+        "--extract",
+        "-e",
+        help="管道式提取规则，算子: direct/tag:X/json_key:X/index:N/line:N/lines/regex:X",
+    ),
+    sep: Optional[str] = typer.Option(None, "--sep", help="配合 index 算子使用的分隔符"),
+    mapping: Optional[str] = typer.Option(None, "--mapping", "-m", help="值映射 (k1:v1,k2:v2)"),
+    output_dir: str = typer.Option("record", "--output-dir", "-o", help="指标报告输出目录"),
+):
+    """对模型输出进行解析和指标评估
+
+    两阶段解析：自动清洗（去 think 标签、提取代码块）+ 管道式提取。
+
+    示例:
+        dt eval result.jsonl --label-col=label
+        dt eval result.jsonl --extract="tag:标签" --mapping="是:1,否:0"
+        dt eval result.jsonl --source=input.jsonl --response-col=api_output.content
+        dt eval result.jsonl --extract="json_key:result | index:0" --sep=","
+        dt eval result.jsonl --extract="lines | index:1" --sep="|"
+    """
+    _eval(result_file, source, response_col, label_col, extract, sep, mapping, output_dir)
 
 
 # ============ 验证命令 ============

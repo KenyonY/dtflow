@@ -3,7 +3,7 @@ name: dtflow
 description: >
   当用户需要处理 JSONL/CSV/Parquet/JSON/Arrow 数据文件时使用此 skill。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
-  适用场景：(1) 查看数据：dt sample/head/tail 采样预览，dt stats 统计字段分布；
+  适用场景：(1) 查看数据：dt sample/head/tail 采样预览，dt slice 按行范围查看，dt stats 统计字段分布；
   (2) 数据清洗：dt clean 支持 --drop-empty/--min-len/--max-len 过滤行，--keep/--drop/--rename/--promote/--add-field/--fill/--reorder 操作字段；
   (3) 去重：dt dedupe 精确去重或 --similar 相似度去重；
   (4) 格式转换：dt transform 预设模板(openai_chat/alpaca/sharegpt/dpo)或自定义配置；
@@ -162,7 +162,7 @@ dt sample data.jsonl 1000 --by=category           # 分层采样
 dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
 dt sample data.jsonl --where="messages.#>=2"      # 条件筛选
 dt sample data.jsonl 10 -f input,output           # 只显示指定字段
-dt sample data.jsonl 10 --raw                     # 输出原始 JSON（不截断）
+dt sample data.jsonl 10 --pretty                  # 表格预览模式（默认原始 JSON）
 dt sample data.jsonl 100 --seed=42 -o out.jsonl   # 固定随机种子并保存
 
 # 去重
@@ -216,10 +216,13 @@ dt diff a.jsonl b.jsonl --key=id                  # 对比差异
 dt diff a.jsonl b.jsonl --key=id -o report.md     # 输出对比报告
 
 # 查看数据
-dt head data.jsonl 10                             # 前 10 条
+dt head data.jsonl 10                             # 前 10 条（默认原始 JSON）
 dt head data.jsonl 10 -f input,output             # 只显示指定字段
-dt head data.jsonl 10 --raw                       # 输出完整 JSON（不截断）
+dt head data.jsonl 10 --pretty                    # 表格预览模式
 dt tail data.jsonl 10                             # 后 10 条
+dt slice data.jsonl 10:20                         # 第 10-19 行（Python 切片语法）
+dt slice data.jsonl :100                          # 前 100 行
+dt slice data.jsonl 100:                          # 第 100 行到末尾
 
 # 其他
 dt run pipeline.yaml                              # Pipeline 执行
