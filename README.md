@@ -351,6 +351,13 @@ dt sample data.jsonl 1000 --by=messages.#         # 按消息数量分层采样
 dt sample data.jsonl --where="category=tech"      # 筛选后采样
 dt sample data.jsonl --where="messages.#>=2"      # 多条件筛选
 
+# 按行范围查看（Python 切片语法）
+dt slice data.jsonl 10:20                          # 第 10-19 行（0-based，左闭右开）
+dt slice data.jsonl :100                           # 前 100 行
+dt slice data.jsonl 100:                           # 第 100 行到末尾
+dt slice data.jsonl 10:20 -o sliced.jsonl          # 保存到文件
+dt slice data.jsonl 10:20 -f question,answer       # 只显示指定字段
+
 # 数据转换 - 预设模式
 dt transform data.jsonl --preset=openai_chat
 dt transform data.jsonl --preset=alpaca
@@ -385,6 +392,9 @@ dt clean data.jsonl --max-len=messages[-1].content:500  # 最后一条消息最�
 dt clean data.jsonl --keep=question,answer          # 只保留这些字段
 dt clean data.jsonl --drop=metadata                 # 删除指定字段
 dt clean data.jsonl --strip                         # 去除字符串首尾空白
+dt clean data.jsonl --min-tokens=content:10          # 最少 10 tokens
+dt clean data.jsonl --max-tokens=content:1000        # 最多 1000 tokens
+dt clean data.jsonl --min-tokens=text:50 -m gpt-4    # 指定分词器
 
 # 数据去重
 dt dedupe data.jsonl                            # 全量精确去重
@@ -392,6 +402,17 @@ dt dedupe data.jsonl --key=text                 # 按字段精确去重
 dt dedupe data.jsonl --key=meta.id              # 按嵌套字段去重
 dt dedupe data.jsonl --key=messages[0].content  # 按第一条消息内容去重
 dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
+
+# 数据集切分
+dt split data.jsonl --ratio=0.8 --seed=42           # 二分: train/test
+dt split data.jsonl --ratio=0.7,0.15,0.15           # 三分: train/val/test
+dt split data.jsonl --ratio=0.8 -o /tmp/output      # 指定输出目录
+
+# 训练框架导出
+dt export data.jsonl --framework=llama-factory       # 导出到 LLaMA-Factory
+dt export data.jsonl -f swift -o ./swift_out         # 导出到 ms-swift
+dt export data.jsonl -f axolotl                      # 导出到 Axolotl
+dt export data.jsonl -f llama-factory --check        # 仅检查兼容性
 
 # 文件拼接
 dt concat a.jsonl b.jsonl -o merged.jsonl
@@ -438,6 +459,8 @@ CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的�
 | `clean` | `--drop-empty=` | `--drop-empty=meta.source` |
 | `clean` | `--min-len=` | `--min-len=messages.#:2` |
 | `clean` | `--max-len=` | `--max-len=messages[-1].content:500` |
+| `clean` | `--min-tokens=` | `--min-tokens=content:10` |
+| `clean` | `--max-tokens=` | `--max-tokens=content:1000` |
 | `token-stats` | `--field=` | `--field=messages[-1].content` |
 | `diff` | `--key=` | `--key=meta.uuid` |
 

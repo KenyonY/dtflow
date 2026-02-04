@@ -143,7 +143,7 @@ def sample(
     by: Optional[str] = None,
     uniform: bool = False,
     fields: Optional[str] = None,
-    raw: bool = False,
+    raw: bool = True,
     where: Optional[List[str]] = None,
 ) -> None:
     """
@@ -389,7 +389,7 @@ def head(
     num: int = 10,
     output: Optional[str] = None,
     fields: Optional[str] = None,
-    raw: bool = False,
+    raw: bool = True,
 ) -> None:
     """
     显示文件的前 N 条数据（dt sample --type=head 的快捷方式）。
@@ -415,12 +415,99 @@ def head(
     sample(filename, num=num, type="head", output=output, fields=fields, raw=raw)
 
 
+def slice_data(
+    filename: str,
+    range_str: str,
+    output: Optional[str] = None,
+    fields: Optional[str] = None,
+    raw: bool = True,
+) -> None:
+    """
+    按行号范围查看数据（Python 切片语法）。
+
+    Args:
+        filename: 输入文件路径
+        range_str: 行号范围，格式为 start:end（0-based，左闭右开）
+            - 10:20    第 10-19 行（共 10 条）
+            - :100     前 100 行
+            - 100:     第 100 行到末尾
+            - -10:     最后 10 行
+        output: 输出文件路径
+        fields: 只显示指定字段（逗号分隔）
+        raw: 输出原始 JSON 格式
+
+    Examples:
+        dt slice data.jsonl 10:20
+        dt slice data.jsonl :100
+        dt slice data.jsonl 100:
+        dt slice data.jsonl -10:
+        dt slice data.jsonl 10:20 --output=sliced.jsonl
+        dt slice data.jsonl 10:20 --fields=question,answer
+    """
+    filepath = Path(filename)
+
+    if not filepath.exists():
+        print(f"错误: 文件不存在 - {filename}")
+        return
+
+    if not _check_file_format(filepath):
+        return
+
+    # 解析 range
+    if ":" not in range_str:
+        print(f"错误: 无效的范围格式 '{range_str}'，应为 start:end（如 10:20）")
+        return
+
+    parts = range_str.split(":", 1)
+    start_str, end_str = parts[0].strip(), parts[1].strip()
+
+    try:
+        start = int(start_str) if start_str else None
+        end = int(end_str) if end_str else None
+    except ValueError:
+        print(f"错误: 无效的范围格式 '{range_str}'，start 和 end 必须为整数")
+        return
+
+    # 加载数据并切片
+    try:
+        data = load_data(str(filepath))
+    except Exception as e:
+        print(f"错误: {e}")
+        return
+
+    sliced = data[start:end]
+
+    if not sliced:
+        total = len(data)
+        print(f"⚠️  范围 [{range_str}] 无数据（文件共 {total} 行）")
+        return
+
+    # 显示范围信息
+    total = len(data)
+    actual_start = start if start is not None else 0
+    if actual_start < 0:
+        actual_start = max(0, total + actual_start)
+    actual_end = min(end, total) if end is not None else total
+    print(f"📍 行 {actual_start}-{actual_end - 1}（共 {len(sliced)} 条，文件共 {total} 行）")
+
+    # 输出结果
+    if output:
+        save_data(sliced, output)
+        print(f"已保存 {len(sliced)} 条数据到 {output}")
+    elif raw:
+        for item in sliced:
+            print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
+    else:
+        field_list = _parse_field_list(fields) if fields else None
+        _print_samples(sliced, filepath.name, total, field_list, filepath.stat().st_size)
+
+
 def tail(
     filename: str,
     num: int = 10,
     output: Optional[str] = None,
     fields: Optional[str] = None,
-    raw: bool = False,
+    raw: bool = True,
 ) -> None:
     """
     显示文件的后 N 条数据（dt sample --type=tail 的快捷方式）。

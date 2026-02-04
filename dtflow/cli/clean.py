@@ -138,6 +138,9 @@ def clean(
     fill: Optional[str] = None,
     reorder: Optional[str] = None,
     strip: bool = False,
+    min_tokens: Optional[str] = None,
+    max_tokens: Optional[str] = None,
+    model: str = "cl100k_base",
     output: Optional[str] = None,
 ) -> None:
     """
@@ -173,6 +176,9 @@ def clean(
         dt clean data.jsonl --fill=label:unknown            # 填充空值
         dt clean data.jsonl --reorder=id,text,label         # 控制字段顺序
         dt clean data.jsonl --strip                         # 去除字符串首尾空白
+        dt clean data.jsonl --min-tokens=content:10            # content 字段最少 10 tokens
+        dt clean data.jsonl --max-tokens=content:1000          # content 字段最多 1000 tokens
+        dt clean data.jsonl --min-tokens=text:50 --model=gpt-4 # 使用 gpt-4 分词器
     """
     filepath = Path(filename)
 
@@ -186,6 +192,13 @@ def clean(
     # 解析参数
     min_len_field, min_len_value = _parse_len_param(min_len) if min_len else (None, None)
     max_len_field, max_len_value = _parse_len_param(max_len) if max_len else (None, None)
+    min_tokens_field, min_tokens_value = (
+        _parse_len_param(min_tokens) if min_tokens else (None, None)
+    )
+    max_tokens_field, max_tokens_value = (
+        _parse_len_param(max_tokens) if max_tokens else (None, None)
+    )
+    token_model = model
     keep_fields = _parse_field_list(keep) if keep else None
     drop_fields_set = set(_parse_field_list(drop)) if drop else None
     rename_map = _parse_rename_param(rename) if rename else None
@@ -229,6 +242,14 @@ def clean(
         print(f"🔄 填充空值: {fill_desc}")
     if reorder_fields:
         print(f"🔄 字段排序: {', '.join(reorder_fields)}")
+    if min_tokens_field:
+        print(
+            f"🔄 过滤 {min_tokens_field} tokens < {min_tokens_value} 的记录 (model={token_model})..."
+        )
+    if max_tokens_field:
+        print(
+            f"🔄 过滤 {max_tokens_field} tokens > {max_tokens_value} 的记录 (model={token_model})..."
+        )
 
     output_path = output or str(filepath)
 
@@ -271,6 +292,11 @@ def clean(
                 add_field_map=add_field_map,
                 fill_map=fill_map,
                 reorder_fields=reorder_fields,
+                min_tokens_field=min_tokens_field,
+                min_tokens_value=min_tokens_value,
+                max_tokens_field=max_tokens_field,
+                max_tokens_value=max_tokens_value,
+                token_model=token_model,
             )
 
             # 如果使用了临时文件，移动到目标位置
@@ -316,6 +342,11 @@ def clean(
         add_field_map=add_field_map,
         fill_map=fill_map,
         reorder_fields=reorder_fields,
+        min_tokens_field=min_tokens_field,
+        min_tokens_value=min_tokens_value,
+        max_tokens_field=max_tokens_field,
+        max_tokens_value=max_tokens_value,
+        token_model=token_model,
     )
 
     # 保存结果
@@ -458,6 +489,11 @@ def _clean_data_single_pass(
     add_field_map: Optional[Dict[str, str]] = None,
     fill_map: Optional[Dict[str, str]] = None,
     reorder_fields: Optional[List[str]] = None,
+    min_tokens_field: Optional[str] = None,
+    min_tokens_value: Optional[int] = None,
+    max_tokens_field: Optional[str] = None,
+    max_tokens_value: Optional[int] = None,
+    token_model: str = "cl100k_base",
 ) -> tuple:
     """
     单次遍历执行所有清洗操作。
@@ -476,11 +512,18 @@ def _clean_data_single_pass(
     Returns:
         (清洗后的数据, 统计信息列表)
     """
+    # 延迟导入 count_tokens（仅在需要时）
+    _count_tokens = None
+    if min_tokens_field is not None or max_tokens_field is not None:
+        from ..tokenizers import count_tokens as _count_tokens
+
     result = []
     stats = {
         "drop_empty": 0,
         "min_len": 0,
         "max_len": 0,
+        "min_tokens": 0,
+        "max_tokens": 0,
     }
 
     # 预先计算 keep_fields 集合（如果有的话）
@@ -514,6 +557,20 @@ def _clean_data_single_pass(
         if max_len_field is not None:
             if _get_value_len(get_field_with_spec(item, max_len_field, default="")) > max_len_value:
                 stats["max_len"] += 1
+                continue
+
+        # 4.5 最小 token 数过滤
+        if min_tokens_field is not None:
+            value = get_field_with_spec(item, min_tokens_field, default="")
+            if _count_tokens(str(value), model=token_model) < min_tokens_value:
+                stats["min_tokens"] += 1
+                continue
+
+        # 4.6 最大 token 数过滤
+        if max_tokens_field is not None:
+            value = get_field_with_spec(item, max_tokens_field, default="")
+            if _count_tokens(str(value), model=token_model) > max_tokens_value:
+                stats["max_tokens"] += 1
                 continue
 
         # 5. 提升嵌套字段（在 drop 之前，否则父字段被删后无法提取）
@@ -554,6 +611,10 @@ def _clean_data_single_pass(
         step_stats.append(f"min-len: -{stats['min_len']}")
     if stats["max_len"] > 0:
         step_stats.append(f"max-len: -{stats['max_len']}")
+    if stats["min_tokens"] > 0:
+        step_stats.append(f"min-tokens: -{stats['min_tokens']}")
+    if stats["max_tokens"] > 0:
+        step_stats.append(f"max-tokens: -{stats['max_tokens']}")
     if keep_fields:
         step_stats.append(f"keep: {len(keep_fields)} 字段")
     if drop_fields:
@@ -588,6 +649,11 @@ def _clean_streaming(
     add_field_map: Optional[Dict[str, str]] = None,
     fill_map: Optional[Dict[str, str]] = None,
     reorder_fields: Optional[List[str]] = None,
+    min_tokens_field: Optional[str] = None,
+    min_tokens_value: Optional[int] = None,
+    max_tokens_field: Optional[str] = None,
+    max_tokens_value: Optional[int] = None,
+    token_model: str = "cl100k_base",
 ) -> int:
     """
     流式清洗数据。
@@ -595,6 +661,11 @@ def _clean_streaming(
     Returns:
         处理后的数据条数
     """
+
+    # 延迟导入 count_tokens（仅在需要时）
+    _count_tokens = None
+    if min_tokens_field is not None or max_tokens_field is not None:
+        from ..tokenizers import count_tokens as _count_tokens
 
     def clean_filter(item: Dict) -> bool:
         """过滤函数：返回 True 保留，False 过滤（支持嵌套路径）"""
@@ -616,6 +687,18 @@ def _clean_streaming(
         # 最大长度过滤（支持嵌套路径）
         if max_len_field is not None:
             if _get_value_len(get_field_with_spec(item, max_len_field, default="")) > max_len_value:
+                return False
+
+        # 最小 token 数过滤
+        if min_tokens_field is not None:
+            value = get_field_with_spec(item, min_tokens_field, default="")
+            if _count_tokens(str(value), model=token_model) < min_tokens_value:
+                return False
+
+        # 最大 token 数过滤
+        if max_tokens_field is not None:
+            value = get_field_with_spec(item, max_tokens_field, default="")
+            if _count_tokens(str(value), model=token_model) > max_tokens_value:
                 return False
 
         return True
@@ -644,7 +727,13 @@ def _clean_streaming(
         )
 
     # 执行过滤
-    if empty_fields is not None or min_len_field is not None or max_len_field is not None:
+    if (
+        empty_fields is not None
+        or min_len_field is not None
+        or max_len_field is not None
+        or min_tokens_field is not None
+        or max_tokens_field is not None
+    ):
         st = st.filter(clean_filter)
 
     # 提升嵌套字段（在 drop 之前，否则父字段被删后无法提取）

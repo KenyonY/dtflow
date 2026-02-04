@@ -16,6 +16,12 @@ CLI 命令统一导出入口
 # 清洗命令
 from .clean import clean, dedupe
 
+# 评估命令
+from .eval import eval
+
+# 导出命令
+from .export import export
+
 # IO 操作命令
 from .io_ops import concat, diff
 
@@ -24,10 +30,13 @@ from .lineage import history
 
 # Pipeline 命令
 from .pipeline import run
-from .sample import head, sample, tail
+from .sample import head, sample, slice_data, tail
 
 # Skill 命令
 from .skill import install_skill, skill_status, uninstall_skill
+
+# 切分命令
+from .split import split
 
 # 统计命令
 from .stats import stats, token_stats
@@ -43,6 +52,7 @@ __all__ = [
     "sample",
     "head",
     "tail",
+    "slice_data",
     # 转换
     "transform",
     # 统计
@@ -60,6 +70,12 @@ __all__ = [
     "history",
     # 验证
     "validate",
+    # 切分
+    "split",
+    # 导出
+    "export",
+    # 评估
+    "eval",
     # Skill
     "install_skill",
     "uninstall_skill",
