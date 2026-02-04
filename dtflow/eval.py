@@ -90,8 +90,12 @@ class MetricsCalculator:
                 if label in self.all_labels or label == "weighted avg"
             }
 
-        # 去除 support=0 的类别
-        report = {label: metrics for label, metrics in report.items() if metrics["support"] > 0}
+        # 去除 support=0 的类别（注意 accuracy 是 float 不是 dict）
+        report = {
+            label: metrics
+            for label, metrics in report.items()
+            if isinstance(metrics, dict) and metrics.get("support", 0) > 0
+        }
 
         self.needed_labels = [label for label in report.keys() if label in self.all_labels]
 
