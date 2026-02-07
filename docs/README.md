@@ -7,12 +7,12 @@
 ```
 docs/
 ├── README.md          # 本文档（主入口）
-└── roadmap.md         # 进化路线图
+└── quickstart.md      # 快速入门指南
 ```
 
 ## 快速链接
 
-- [进化路线图](./roadmap.md) - dtflow 未来发展方向
+- [快速入门](./quickstart.md) - 30 秒上手 dtflow
 - [README](../README.md) - 项目主文档和使用说明
 
 ## 核心模块
@@ -28,16 +28,6 @@ docs/
 | **数据血缘** | `lineage.py` | 操作追踪与历史记录 |
 | **字段路径** | `utils/field_path.py` | 嵌套字段访问语法（`a.b`、`a[0].b`、`a.#`、`a[*].b`） |
 | **文件 I/O** | `storage/io.py` | JSONL, JSON, CSV, Parquet, Arrow 等格式（Polars 引擎） |
-
-## 版本进度
-
-| 版本 | 状态 | 主要功能 |
-|------|------|----------|
-| v0.4.0 | ✅ | Pipeline YAML 配置、`dt run` 命令 |
-| v0.5.0 | ✅ | `dt token-stats`、`dt diff` 命令 |
-| v0.6.0 | ✅ | 数据血缘追踪、`dt history` 命令 |
-| v0.7.0 | ✅ | 流式处理 `load_stream`、分片 `load_sharded` |
-| v0.8.0 | 🔲 | 数据质量控制（Schema 验证、PII 检测） |
 
 ## API 速览
 
