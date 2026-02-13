@@ -58,11 +58,16 @@ def load_data(filepath: str, file_format: Optional[str] = None) -> List[Dict[str
     """
     filepath = Path(filepath)
 
-    if not filepath.exists():
-        raise FileNotFoundError(f"File not found: {filepath}")
-
     if file_format is None:
         file_format = _detect_format(filepath)
+
+    # flaxkv 是目录，检查 DB 目录是否存在
+    if file_format == "flaxkv":
+        db_dir = filepath.parent / (filepath.stem or "data")
+        if not db_dir.exists():
+            raise FileNotFoundError(f"FlaxKV database not found: {db_dir}")
+    elif not filepath.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
 
     if file_format == "jsonl":
         return _load_jsonl(filepath)
@@ -177,7 +182,7 @@ def _load_json(filepath: Path) -> List[Dict[str, Any]]:
     except orjson.JSONDecodeError:
         # orjson 解析失败，回退到标准 json
         print(
-            f"[Warning] 文件包含非标准 JSON（如 NaN），使用标准 json 解析",
+            "[Warning] 文件包含非标准 JSON（如 NaN），使用标准 json 解析",
             file=sys.stderr,
         )
         data = json.loads(content)
@@ -268,10 +273,10 @@ def _save_excel(data: List[Dict[str, Any]], filepath: Path) -> None:
 
             workbook = xlsxwriter.Workbook(str(filepath))
             workbook.close()
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 "xlsxwriter is required for Excel write. Install with: pip install xlsxwriter"
-            )
+            ) from err
         return
 
     serialized = _serialize_complex_fields(data)
@@ -425,6 +430,8 @@ def _stream_sample(
             return _stream_head_arrow(filepath, num)
         elif file_format == "excel":
             return _stream_head_excel(filepath, num)
+        elif file_format == "flaxkv":
+            return _stream_head_flaxkv(filepath, num)
 
     # tail 采样优化
     if sample_type == "tail":
@@ -436,6 +443,8 @@ def _stream_sample(
             return _stream_tail_parquet(filepath, num)
         elif file_format == "arrow":
             return _stream_tail_arrow(filepath, num)
+        elif file_format == "flaxkv":
+            return _stream_tail_flaxkv(filepath, num)
 
     # random 采样优化
     if sample_type == "random":
@@ -447,6 +456,8 @@ def _stream_sample(
             return _stream_random_parquet(filepath, num, seed)
         elif file_format == "arrow":
             return _stream_random_arrow(filepath, num, seed)
+        elif file_format == "flaxkv":
+            return _stream_random_flaxkv(filepath, num, seed)
 
     # 其他情况回退到全量加载
     data = load_data(str(filepath))
@@ -681,18 +692,25 @@ def _stream_random_arrow(
 # ============ Additional Utilities ============
 
 
-def append_to_file(data: List[Dict[str, Any]], filepath: str, file_format: str = "jsonl") -> None:
-    """Append data to an existing file (only JSONL supported)."""
+def append_to_file(
+    data: List[Dict[str, Any]], filepath: str, file_format: Optional[str] = None
+) -> None:
+    """Append data to an existing file (JSONL and FlaxKV supported)."""
     filepath = Path(filepath)
 
-    if file_format != "jsonl":
-        raise ValueError("Only JSONL format supports appending")
+    if file_format is None:
+        file_format = _detect_format(filepath)
 
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(filepath, "ab") as f:
-        for item in data:
-            f.write(orjson.dumps(item) + b"\n")
+    if file_format == "jsonl":
+        with open(filepath, "ab") as f:
+            for item in data:
+                f.write(orjson.dumps(item) + b"\n")
+    elif file_format == "flaxkv":
+        _append_flaxkv(data, filepath)
+    else:
+        raise ValueError(f"Append not supported for format: {file_format}")
 
 
 def count_lines(filepath: str) -> int:
@@ -722,32 +740,80 @@ def stream_jsonl(filepath: str, chunk_size: int = 1000):
 
 # ============ FlaxKV Format ============
 
+_FLAXKV_CHUNK_SIZE = 10000
 
-def _save_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:
-    """Save data in FlaxKV format."""
+
+def _open_flaxkv(filepath: Path, **kwargs):
+    """打开 FlaxKV 数据库，返回上下文管理器。使用 IPC 模式支持多进程并发访问。"""
     from flaxkv2 import FlaxKV
 
-    db_name = filepath.stem if filepath.stem else "data"
-    db_path = filepath.parent
+    db_name = filepath.stem or "data"
+    db_path = str(filepath.parent)
+    return FlaxKV(db_name, db_path, auto_nested=False, use_ipc=True, **kwargs)
 
-    with FlaxKV(db_name, str(db_path)) as db:
-        db["_metadata"] = {"total": len(data), "format": "flaxkv"}
 
-        for i, item in enumerate(data):
-            db[f"item:{i}"] = item
+def _save_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:
+    """Save data in FlaxKV format (整数 key, 批量写入)."""
+    with _open_flaxkv(filepath, rebuild=True) as db:
+        for start in range(0, len(data), _FLAXKV_CHUNK_SIZE):
+            end = min(start + _FLAXKV_CHUNK_SIZE, len(data))
+            db.update({i: data[i] for i in range(start, end)})
 
 
 def _load_flaxkv(filepath: Path) -> List[Dict[str, Any]]:
-    """Load data from FlaxKV format."""
-    from flaxkv2 import FlaxKV
+    """Load data from FlaxKV format (整数 key, 批量读取)."""
+    with _open_flaxkv(filepath) as db:
+        total = db.keys_count()
+        if total == 0:
+            return []
+        result = []
+        for start in range(0, total, _FLAXKV_CHUNK_SIZE):
+            keys = list(range(start, min(start + _FLAXKV_CHUNK_SIZE, total)))
+            result.extend(db.batch_get(keys))
+        return result
 
-    db_name = filepath.stem if filepath.stem else "data"
-    db_path = filepath.parent
 
-    with FlaxKV(db_name, str(db_path)) as db:
-        items = []
-        for key in sorted(db.keys()):
-            if key.startswith("item:"):
-                items.append(db[key])
+def _stream_head_flaxkv(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """FlaxKV 读取前 N 条。"""
+    with _open_flaxkv(filepath) as db:
+        total = db.keys_count()
+        n = min(num, total)
+        if n == 0:
+            return []
+        return db.batch_get(list(range(n)))
 
-        return items
+
+def _stream_tail_flaxkv(filepath: Path, num: int) -> List[Dict[str, Any]]:
+    """FlaxKV 读取后 N 条。"""
+    with _open_flaxkv(filepath) as db:
+        total = db.keys_count()
+        n = min(num, total)
+        if n == 0:
+            return []
+        return db.batch_get(list(range(total - n, total)))
+
+
+def _stream_random_flaxkv(
+    filepath: Path, num: int, seed: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """FlaxKV 随机采样。"""
+    import random
+
+    with _open_flaxkv(filepath) as db:
+        total = db.keys_count()
+        if total == 0:
+            return []
+        n = min(num, total)
+        if seed is not None:
+            random.seed(seed)
+        indices = sorted(random.sample(range(total), n))
+        return db.batch_get(indices)
+
+
+def _append_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:
+    """追加数据到 FlaxKV（从当前 keys_count 偏移开始写入）。"""
+    with _open_flaxkv(filepath) as db:
+        offset = db.keys_count()
+        for start in range(0, len(data), _FLAXKV_CHUNK_SIZE):
+            end = min(start + _FLAXKV_CHUNK_SIZE, len(data))
+            db.update({offset + i: data[i] for i in range(start, end)})

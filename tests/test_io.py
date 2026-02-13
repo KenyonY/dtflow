@@ -1,7 +1,7 @@
 """
 Tests for storage/io module.
 """
-import tempfile
+
 from pathlib import Path
 
 import pytest
@@ -265,9 +265,7 @@ class TestSerializeDeserialize:
 
     def test_preserve_simple_types(self):
         """Test that simple types are preserved."""
-        data = [
-            {"str": "text", "int": 42, "float": 3.14, "bool": True, "none": None}
-        ]
+        data = [{"str": "text", "int": 42, "float": 3.14, "bool": True, "none": None}]
         result = _serialize_complex_fields(data)
 
         assert result[0]["str"] == "text"
@@ -292,11 +290,11 @@ class TestSerializeDeserialize:
 
     def test_deserialize_invalid_json(self):
         """Test that invalid JSON strings are preserved."""
-        data = [{"text": '[not valid json]'}]
+        data = [{"text": "[not valid json]"}]
         result = _deserialize_complex_fields(data)
 
         # 应该保持原样
-        assert result[0]["text"] == '[not valid json]'
+        assert result[0]["text"] == "[not valid json]"
 
     def test_deserialize_preserve_simple_types(self):
         """Test that simple types are preserved."""
@@ -524,7 +522,7 @@ class TestUtilities:
 
     def test_append_to_file_non_jsonl_raises(self, tmp_path):
         """Test append_to_file raises error for non-JSONL."""
-        with pytest.raises(ValueError, match="Only JSONL"):
+        with pytest.raises(ValueError, match="Append not supported"):
             append_to_file([{"id": 1}], str(tmp_path / "data.csv"), file_format="csv")
 
     def test_count_lines(self, tmp_path):

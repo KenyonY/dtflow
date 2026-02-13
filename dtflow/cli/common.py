@@ -8,21 +8,50 @@ from typing import Any, Dict, List, Optional
 import orjson
 
 # 支持的文件格式
-SUPPORTED_FORMATS = {".csv", ".jsonl", ".json", ".xlsx", ".xls", ".parquet", ".arrow", ".feather"}
+SUPPORTED_FORMATS = {
+    ".csv",
+    ".jsonl",
+    ".json",
+    ".xlsx",
+    ".xls",
+    ".parquet",
+    ".arrow",
+    ".feather",
+    ".flaxkv",
+}
 
 # 支持流式处理的格式（与 streaming.py 保持一致）
-STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather"}
+STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv"}
 
 
 def _is_streaming_supported(filepath: Path) -> bool:
     """检查文件是否支持流式处理"""
-    return filepath.suffix.lower() in STREAMING_FORMATS
+    return filepath.suffix.lower() in STREAMING_FORMATS or _is_flaxkv_path(filepath)
+
+
+def _is_flaxkv_path(filepath: Path) -> bool:
+    """判断路径是否为 flaxkv 格式（.flaxkv 后缀或无后缀且 DB 目录存在）"""
+    ext = filepath.suffix.lower()
+    if ext == ".flaxkv":
+        return True
+    if ext == "":
+        db_dir = filepath.parent / (filepath.stem or "data")
+        return db_dir.exists()
+    return False
+
+
+def _file_exists(filepath: Path) -> bool:
+    """检查数据文件是否存在（flaxkv 检查 DB 目录，其他检查文件本身）"""
+    if _is_flaxkv_path(filepath):
+        db_dir = filepath.parent / (filepath.stem or "data")
+        return db_dir.exists()
+    return filepath.exists()
 
 
 def _check_file_format(filepath: Path) -> bool:
     """检查文件格式是否支持，不支持则打印错误信息并返回 False"""
     ext = filepath.suffix.lower()
-    if ext not in SUPPORTED_FORMATS:
+    if ext not in SUPPORTED_FORMATS and not _is_flaxkv_path(filepath):
         print(f"错误: 不支持的文件格式 - {ext}")
         print(f"支持的格式: {', '.join(sorted(SUPPORTED_FORMATS))}")
         return False

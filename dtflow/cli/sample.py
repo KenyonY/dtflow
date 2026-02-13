@@ -12,7 +12,9 @@ from ..storage.io import load_data, sample_file, save_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
     _check_file_format,
+    _file_exists,
     _get_file_row_count,
+    _is_flaxkv_path,
     _parse_field_list,
     _print_samples,
 )
@@ -179,7 +181,7 @@ def sample(
     """
     filepath = Path(filename)
 
-    if not filepath.exists():
+    if not _file_exists(filepath):
         print(f"错误: 文件不存在 - {filename}")
         return
 
@@ -245,11 +247,16 @@ def sample(
             print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
     else:
         # 大文件跳过行数统计（50MB 阈值）
-        file_size = filepath.stat().st_size
-        if file_size < 50 * 1024 * 1024:
+        if _is_flaxkv_path(filepath):
+            # flaxkv 是目录，用 keys_count 获取总数
             total_count = _get_file_row_count(filepath)
+            file_size = None
         else:
-            total_count = None
+            file_size = filepath.stat().st_size
+            if file_size < 50 * 1024 * 1024:
+                total_count = _get_file_row_count(filepath)
+            else:
+                total_count = None
         # 解析 fields 参数
         field_list = _parse_field_list(fields) if fields else None
         _print_samples(sampled, filepath.name, total_count, field_list, file_size)
@@ -446,7 +453,7 @@ def slice_data(
     """
     filepath = Path(filename)
 
-    if not filepath.exists():
+    if not _file_exists(filepath):
         print(f"错误: 文件不存在 - {filename}")
         return
 
@@ -499,7 +506,8 @@ def slice_data(
             print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
     else:
         field_list = _parse_field_list(fields) if fields else None
-        _print_samples(sliced, filepath.name, total, field_list, filepath.stat().st_size)
+        file_size = None if _is_flaxkv_path(filepath) else filepath.stat().st_size
+        _print_samples(sliced, filepath.name, total, field_list, file_size)
 
 
 def tail(

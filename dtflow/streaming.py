@@ -8,7 +8,7 @@
 import glob
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Generator, Iterator, List, Optional
 
 import orjson
 import polars as pl
@@ -24,7 +24,18 @@ from rich.progress import (
 )
 
 # 支持的流式格式
-STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather"}
+STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv"}
+
+
+def _is_flaxkv_path(path: Path) -> bool:
+    """判断路径是否为 flaxkv（.flaxkv 后缀或无后缀且 DB 目录存在）"""
+    ext = path.suffix.lower()
+    if ext == ".flaxkv":
+        return True
+    if ext == "":
+        db_dir = path.parent / (path.stem or "data")
+        return db_dir.exists()
+    return False
 
 
 def _count_rows_fast(filepath: str) -> Optional[int]:
@@ -46,6 +57,11 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
         elif ext in (".arrow", ".feather"):
             # Arrow: Polars LazyFrame
             return pl.scan_ipc(filepath).select(pl.len()).collect().item()
+        elif ext == ".flaxkv" or _is_flaxkv_path(path):
+            from dtflow.storage.io import _open_flaxkv
+
+            with _open_flaxkv(path) as db:
+                return db.keys_count()
     except Exception:
         pass
     return None
@@ -102,17 +118,26 @@ class StreamingTransformer:
             StreamingTransformer 实例
         """
         path = Path(filepath)
-        if not path.exists():
+        ext = path.suffix.lower()
+        is_flaxkv = _is_flaxkv_path(path)
+
+        # 存在性检查：flaxkv 检查 DB 目录，其他格式检查文件
+        if is_flaxkv:
+            db_dir = path.parent / (path.stem or "data")
+            if not db_dir.exists():
+                raise FileNotFoundError(f"FlaxKV 数据库不存在: {db_dir}")
+        elif not path.exists():
             raise FileNotFoundError(f"文件不存在: {filepath}")
 
-        ext = path.suffix.lower()
-        if ext not in STREAMING_FORMATS:
+        if ext not in STREAMING_FORMATS and not is_flaxkv:
             raise ValueError(f"不支持的流式格式: {ext}，支持: {STREAMING_FORMATS}")
 
         # 快速统计总行数（用于进度条）
         total = _count_rows_fast(filepath)
 
-        if ext == ".jsonl":
+        if is_flaxkv:
+            return cls(_stream_flaxkv(filepath), source_path=filepath, total=total)
+        elif ext == ".jsonl":
             return cls(_stream_jsonl(filepath), source_path=filepath, total=total)
         elif ext == ".csv":
             return cls(_stream_csv(filepath, batch_size), source_path=filepath, total=total)
@@ -303,7 +328,14 @@ class StreamingTransformer:
         path.parent.mkdir(parents=True, exist_ok=True)
         ext = path.suffix.lower()
 
-        if ext == ".jsonl":
+        # flaxkv: .flaxkv 后缀或无后缀（通过 _detect_format 判断）
+        from dtflow.storage.io import _detect_format
+
+        fmt = _detect_format(path)
+
+        if fmt == "flaxkv":
+            count = self._save_flaxkv_stream(filepath, batch_size, show_progress)
+        elif ext == ".jsonl":
             count = self._save_jsonl(filepath, show_progress)
         elif ext == ".csv":
             count = self._save_batched(filepath, "csv", batch_size, show_progress)
@@ -445,6 +477,44 @@ class StreamingTransformer:
             # 关闭 writer
             if "writer" in writer_state:
                 writer_state["writer"].close()
+
+        return count
+
+    def _save_flaxkv_stream(self, filepath: str, batch_size: int, show_progress: bool) -> int:
+        """FlaxKV 流式保存（分块批量写入）。"""
+        from dtflow.storage.io import _open_flaxkv
+
+        path = Path(filepath)
+        count = 0
+        batch = []
+        progress_columns = self._get_progress_columns()
+
+        with _open_flaxkv(path, rebuild=True) as db:
+
+            def flush_batch():
+                nonlocal batch
+                if batch:
+                    start_idx = count - len(batch)
+                    db.update({start_idx + i: item for i, item in enumerate(batch)})
+                    batch = []
+
+            if show_progress:
+                with Progress(*progress_columns) as progress:
+                    task = progress.add_task("处理中", total=self._total)
+                    for item in self._iterator:
+                        batch.append(item)
+                        count += 1
+                        progress.update(task, advance=1)
+                        if len(batch) >= batch_size:
+                            flush_batch()
+                    flush_batch()
+            else:
+                for item in self._iterator:
+                    batch.append(item)
+                    count += 1
+                    if len(batch) >= batch_size:
+                        flush_batch()
+                flush_batch()
 
         return count
 
@@ -677,6 +747,17 @@ def process_shards(
 
 
 # ============ 流式读取函数 ============
+
+
+def _stream_flaxkv(filepath: str) -> Generator[Dict[str, Any], None, None]:
+    """FlaxKV 流式读取（逐条 yield）。"""
+    from dtflow.storage.io import _open_flaxkv
+
+    path = Path(filepath)
+    with _open_flaxkv(path) as db:
+        total = db.keys_count()
+        for i in range(total):
+            yield db[i]
 
 
 def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
