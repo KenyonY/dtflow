@@ -27,6 +27,10 @@ def save_data(data: List[Dict[str, Any]], filepath: str, file_format: Optional[s
     if file_format is None:
         file_format = _detect_format(filepath)
 
+    # 兼容非 list 的可迭代输入（如 FlaxList）
+    if not isinstance(data, list):
+        data = list(data)
+
     if file_format == "jsonl":
         _save_jsonl(data, filepath)
     elif file_format == "json":

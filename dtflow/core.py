@@ -106,8 +106,20 @@ class DataTransformer:
         self._lineage_tracker = _lineage_tracker
 
     @property
+    def _is_persistent(self) -> bool:
+        """后端是否为持久化存储 (FlaxList)"""
+        try:
+            from flaxkv2 import FlaxList
+
+            return isinstance(self._data, FlaxList)
+        except ImportError:
+            return False
+
+    @property
     def data(self) -> List[Dict[str, Any]]:
-        """获取原始数据"""
+        """获取原始数据（FlaxList 后端会物化为 list）"""
+        if self._is_persistent:
+            return self._data.to_list()
         return self._data
 
     def __len__(self) -> int:
@@ -126,13 +138,25 @@ class DataTransformer:
         """
         从文件加载数据。
 
-        支持格式: jsonl, json, csv, parquet（自动检测）
+        支持格式: jsonl, json, csv, parquet, flaxkv（自动检测）
+        .kv/.flaxkv 格式使用 FlaxList 持久化后端，不物化到内存。
 
         Args:
             filepath: 文件路径
             track_lineage: 是否追踪血缘（默认 False）
         """
-        data = load_data(filepath)
+        from pathlib import Path
+
+        from .storage.io import _detect_format, _open_flaxlist
+
+        fmt = _detect_format(Path(filepath))
+        if fmt == "flaxkv":
+            db_dir = Path(filepath).parent / (Path(filepath).stem or "data")
+            if not db_dir.exists():
+                raise FileNotFoundError(f"FlaxKV database not found: {db_dir}")
+            data = _open_flaxlist(Path(filepath))
+        else:
+            data = load_data(filepath)
         tracker = LineageTracker(filepath) if track_lineage else None
         return cls(data, _source_path=filepath, _lineage_tracker=tracker)
 
@@ -140,12 +164,20 @@ class DataTransformer:
         """
         保存数据到文件。
 
-        支持格式: jsonl, json, csv, parquet（根据扩展名）
+        支持格式: jsonl, json, csv, parquet, flaxkv（根据扩展名）
+        FlaxList 后端保存到同路径时为无操作（数据已自动持久化）。
 
         Args:
             filepath: 文件路径
             lineage: 是否保存血缘元数据（默认 False）
         """
+        from pathlib import Path
+
+        # 同路径 + FlaxList 后端 → 无操作（已自动持久化）
+        if self._is_persistent and self._source_path:
+            if Path(filepath).resolve() == Path(self._source_path).resolve():
+                return
+
         save_data(self._data, filepath)
 
         # 保存血缘记录
@@ -154,6 +186,37 @@ class DataTransformer:
             import sys
 
             print(f"📜 血缘记录已保存: {lineage_path}", file=sys.stderr)
+
+    # ============ 增量操作 ============
+
+    def append(self, item: Dict) -> "DataTransformer":
+        """追加一条数据。FlaxList 后端原地追加并返回 self，list 后端返回新实例。"""
+        if self._is_persistent:
+            self._data.append(item)
+            return self
+        return DataTransformer(self._data + [item])
+
+    def extend(self, items) -> "DataTransformer":
+        """批量追加数据。FlaxList 后端原地追加并返回 self，list 后端返回新实例。"""
+        if isinstance(items, DataTransformer):
+            items = items.data
+        if self._is_persistent:
+            self._data.extend(items)
+            return self
+        return DataTransformer(self._data + list(items))
+
+    # ============ 资源管理 ============
+
+    def close(self):
+        """关闭持久化后端资源"""
+        if self._is_persistent:
+            self._data.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     # ============ 核心转换 ============
 
@@ -327,7 +390,14 @@ class DataTransformer:
             random.seed(seed)
 
         input_count = len(self._data)
-        data = self._data[:] if n >= len(self._data) else random.sample(self._data, n)
+        if n >= input_count:
+            data = self._data[:] if not self._is_persistent else self._data.to_list()
+        elif self._is_persistent:
+            # FlaxList 不是 abc.Sequence，用随机索引 + O(1) 随机访问
+            indices = random.sample(range(input_count), n)
+            data = [self._data[i] for i in indices]
+        else:
+            data = random.sample(self._data, n)
 
         tracker = self._lineage_tracker
         if tracker:
@@ -388,7 +458,7 @@ class DataTransformer:
 
     def validate_schema(
         self,
-        schema: "Schema",
+        schema: "Schema",  # noqa: F821
         on_error: Literal["skip", "raise", "filter"] = "skip",
         max_errors: int = 100,
     ) -> Union["DataTransformer", List[tuple]]:
@@ -426,7 +496,7 @@ class DataTransformer:
             >>> # 遇到错误立即停止
             >>> dt.validate_schema(schema, on_error="raise")
         """
-        from .schema import Schema, ValidationResult
+        from .schema import Schema  # noqa: F401
 
         failed: List[tuple] = []
         valid_data: List[dict] = []
@@ -442,9 +512,7 @@ class DataTransformer:
 
                 if on_error == "raise":
                     error_msgs = [str(e) for e in result.errors[:3]]
-                    raise ValueError(
-                        f"第 {i} 行验证失败:\n  " + "\n  ".join(error_msgs)
-                    )
+                    raise ValueError(f"第 {i} 行验证失败:\n  " + "\n  ".join(error_msgs))
 
                 if on_error == "skip" and error_count >= max_errors:
                     print(f"⚠️ 已达到最大错误数 {max_errors}，停止验证")
@@ -571,9 +639,9 @@ class DataTransformer:
             >>> dt.dedupe_similar(lambda x: x.title + x.content)  # 自定义文本
         """
         try:
-            from datasketch import MinHash, MinHashLSH
-        except ImportError:
-            raise ImportError("相似度去重需要 datasketch 库，请安装: pip install datasketch")
+            from datasketch import MinHashLSH
+        except ImportError as e:
+            raise ImportError("相似度去重需要 datasketch 库，请安装: pip install datasketch") from e
 
         if not self._data:
             return DataTransformer([])
@@ -588,6 +656,7 @@ class DataTransformer:
                 f"阈值 {threshold} 过高，已自动调整为 0.99。"
                 f"如需更高精度，建议使用 dedupe() 精确去重。",
                 UserWarning,
+                stacklevel=2,
             )
             threshold = 0.99
 
@@ -656,7 +725,7 @@ class DataTransformer:
         else:
             raise ValueError(f"不支持的 key 类型: {type(key)}")
 
-    def _create_minhash(self, text: str, num_perm: int, ngram: int) -> "MinHash":
+    def _create_minhash(self, text: str, num_perm: int, ngram: int):
         """创建文本的 MinHash 签名"""
         from datasketch import MinHash
 
@@ -723,7 +792,9 @@ class DataTransformer:
     # ============ 工具方法 ============
 
     def copy(self) -> "DataTransformer":
-        """深拷贝"""
+        """深拷贝（FlaxList 后端物化为 list）"""
+        if self._is_persistent:
+            return DataTransformer(self._data.to_list())
         return DataTransformer(deepcopy(self._data))
 
     # ============ 数据合并 ============
@@ -807,7 +878,9 @@ class DataTransformer:
             tracker.record("split", {"ratio": ratio, "seed": seed}, len(self._data), len(data))
             # 为每个子数据集创建独立的追踪器副本
             train_tracker = tracker.copy()
-            train_tracker.record("split_part", {"part": "train", "ratio": ratio}, len(data), split_idx)
+            train_tracker.record(
+                "split_part", {"part": "train", "ratio": ratio}, len(data), split_idx
+            )
             test_tracker = tracker.copy()
             test_tracker.record(
                 "split_part", {"part": "test", "ratio": 1 - ratio}, len(data), len(data) - split_idx
@@ -850,8 +923,8 @@ class DataTransformer:
             ...     return {"id": item["id"], "text": item["text"].upper()}
             >>> results = dt.map_parallel(transform)
         """
-        from multiprocessing import Pool, TimeoutError, cpu_count
         import pickle
+        from multiprocessing import Pool, TimeoutError, cpu_count
 
         if not self._data:
             return []
@@ -872,8 +945,8 @@ class DataTransformer:
             with Pool(workers) as pool:
                 async_result = pool.map_async(func, self._data, chunksize=chunksize)
                 results = async_result.get(timeout=timeout)
-        except TimeoutError:
-            raise RuntimeError(f"并行处理超时（{timeout}秒）")
+        except TimeoutError as e:
+            raise RuntimeError(f"并行处理超时（{timeout}秒）") from e
         except Exception as e:
             raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
 
@@ -909,8 +982,8 @@ class DataTransformer:
             ...     return len(item["text"]) > 10
             >>> filtered = dt.filter_parallel(is_valid)
         """
-        from multiprocessing import Pool, TimeoutError, cpu_count
         import pickle
+        from multiprocessing import Pool, TimeoutError, cpu_count
 
         if not self._data:
             return DataTransformer([])
@@ -931,8 +1004,8 @@ class DataTransformer:
             with Pool(workers) as pool:
                 async_result = pool.map_async(func, self._data, chunksize=chunksize)
                 mask = async_result.get(timeout=timeout)
-        except TimeoutError:
-            raise RuntimeError(f"并行处理超时（{timeout}秒）")
+        except TimeoutError as e:
+            raise RuntimeError(f"并行处理超时（{timeout}秒）") from e
         except Exception as e:
             raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
 
@@ -944,7 +1017,7 @@ class DataTransformer:
     def check_compatibility(
         self,
         framework: Literal["llama-factory", "swift", "axolotl"],
-    ) -> "CompatibilityResult":
+    ):
         """
         检查数据与目标训练框架的兼容性。
 
