@@ -24,13 +24,13 @@ from rich.progress import (
 )
 
 # 支持的流式格式
-STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv"}
+STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv", ".kv"}
 
 
 def _is_flaxkv_path(path: Path) -> bool:
     """判断路径是否为 flaxkv（.flaxkv 后缀或无后缀且 DB 目录存在）"""
     ext = path.suffix.lower()
-    if ext == ".flaxkv":
+    if ext in (".flaxkv", ".kv"):
         return True
     if ext == "":
         db_dir = path.parent / (path.stem or "data")
@@ -57,11 +57,11 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
         elif ext in (".arrow", ".feather"):
             # Arrow: Polars LazyFrame
             return pl.scan_ipc(filepath).select(pl.len()).collect().item()
-        elif ext == ".flaxkv" or _is_flaxkv_path(path):
-            from dtflow.storage.io import _open_flaxkv
+        elif ext in (".flaxkv", ".kv") or _is_flaxkv_path(path):
+            from dtflow.storage.io import _open_flaxlist
 
-            with _open_flaxkv(path) as db:
-                return db.keys_count()
+            with _open_flaxlist(path) as lst:
+                return len(lst)
     except Exception:
         pass
     return None
@@ -481,21 +481,20 @@ class StreamingTransformer:
         return count
 
     def _save_flaxkv_stream(self, filepath: str, batch_size: int, show_progress: bool) -> int:
-        """FlaxKV 流式保存（分块批量写入）。"""
-        from dtflow.storage.io import _open_flaxkv
+        """FlaxKV 流式保存（FlaxList 分块批量写入）。"""
+        from dtflow.storage.io import _open_flaxlist
 
         path = Path(filepath)
         count = 0
         batch = []
         progress_columns = self._get_progress_columns()
 
-        with _open_flaxkv(path, rebuild=True) as db:
+        with _open_flaxlist(path, rebuild=True) as lst:
 
             def flush_batch():
                 nonlocal batch
                 if batch:
-                    start_idx = count - len(batch)
-                    db.update({start_idx + i: item for i, item in enumerate(batch)})
+                    lst.extend(batch)
                     batch = []
 
             if show_progress:
@@ -750,14 +749,12 @@ def process_shards(
 
 
 def _stream_flaxkv(filepath: str) -> Generator[Dict[str, Any], None, None]:
-    """FlaxKV 流式读取（逐条 yield）。"""
-    from dtflow.storage.io import _open_flaxkv
+    """FlaxKV 流式读取（FlaxList 迭代 yield）。"""
+    from dtflow.storage.io import _open_flaxlist
 
     path = Path(filepath)
-    with _open_flaxkv(path) as db:
-        total = db.keys_count()
-        for i in range(total):
-            yield db[i]
+    with _open_flaxlist(path) as lst:
+        yield from lst
 
 
 def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:

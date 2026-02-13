@@ -306,6 +306,210 @@ class TestSerializeDeserialize:
         assert result[0]["bool"] is True
 
 
+class TestSaveLoadFlaxKV:
+    """Test cases for FlaxKV (FlaxList backend) format save/load."""
+
+    def test_save_and_load(self, tmp_path):
+        data = [
+            {"text": "hello", "score": 0.8},
+            {"text": "world", "score": 0.9},
+        ]
+        filepath = tmp_path / "data.flaxkv"
+        save_data(data, str(filepath))
+        loaded = load_data(str(filepath))
+
+        assert len(loaded) == 2
+        assert loaded[0]["text"] == "hello"
+        assert loaded[1]["score"] == 0.9
+
+    def test_save_creates_dirs(self, tmp_path):
+        data = [{"text": "hello"}]
+        filepath = tmp_path / "subdir" / "nested" / "data.flaxkv"
+        save_data(data, str(filepath))
+        loaded = load_data(str(filepath))
+
+        assert len(loaded) == 1
+        assert loaded[0]["text"] == "hello"
+
+    def test_nested_data(self, tmp_path):
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi there"},
+                ],
+                "meta": {"source": "test", "tags": ["a", "b"]},
+            }
+        ]
+        filepath = tmp_path / "nested.flaxkv"
+        save_data(data, str(filepath))
+        loaded = load_data(str(filepath))
+
+        assert loaded[0]["messages"][0]["role"] == "user"
+        assert loaded[0]["meta"]["tags"] == ["a", "b"]
+
+    def test_empty_data(self, tmp_path):
+        filepath = tmp_path / "empty.flaxkv"
+        save_data([], str(filepath))
+        loaded = load_data(str(filepath))
+        assert loaded == []
+
+    def test_large_batch(self, tmp_path):
+        """测试超过单批大小的数据（验证分批写入）"""
+        data = [{"id": i, "text": f"item_{i}"} for i in range(15000)]
+        filepath = tmp_path / "large.flaxkv"
+        save_data(data, str(filepath))
+        loaded = load_data(str(filepath))
+
+        assert len(loaded) == 15000
+        assert loaded[0]["id"] == 0
+        assert loaded[14999]["id"] == 14999
+
+    def test_load_not_found(self, tmp_path):
+        filepath = tmp_path / "nonexistent.flaxkv"
+        with pytest.raises(FileNotFoundError):
+            load_data(str(filepath))
+
+    def test_format_detection(self):
+        from dtflow.storage.io import _detect_format
+
+        assert _detect_format(Path("data.flaxkv")) == "flaxkv"
+        # 无后缀也检测为 flaxkv
+        assert _detect_format(Path("data")) == "flaxkv"
+
+
+class TestFlaxKVStreamHelpers:
+    """Test cases for FlaxKV streaming helper functions."""
+
+    @pytest.fixture
+    def flaxkv_file(self, tmp_path):
+        data = [{"id": i, "value": f"v_{i}"} for i in range(100)]
+        filepath = tmp_path / "data.flaxkv"
+        save_data(data, str(filepath))
+        return filepath
+
+    def test_stream_head(self, flaxkv_file):
+        from dtflow.storage.io import _stream_head_flaxkv
+
+        result = _stream_head_flaxkv(flaxkv_file, 10)
+        assert len(result) == 10
+        assert result[0]["id"] == 0
+        assert result[9]["id"] == 9
+
+    def test_stream_head_more_than_total(self, flaxkv_file):
+        from dtflow.storage.io import _stream_head_flaxkv
+
+        result = _stream_head_flaxkv(flaxkv_file, 200)
+        assert len(result) == 100
+
+    def test_stream_tail(self, flaxkv_file):
+        from dtflow.storage.io import _stream_tail_flaxkv
+
+        result = _stream_tail_flaxkv(flaxkv_file, 10)
+        assert len(result) == 10
+        assert result[0]["id"] == 90
+        assert result[9]["id"] == 99
+
+    def test_stream_tail_more_than_total(self, flaxkv_file):
+        from dtflow.storage.io import _stream_tail_flaxkv
+
+        result = _stream_tail_flaxkv(flaxkv_file, 200)
+        assert len(result) == 100
+
+    def test_stream_random(self, flaxkv_file):
+        from dtflow.storage.io import _stream_random_flaxkv
+
+        result = _stream_random_flaxkv(flaxkv_file, 10, seed=42)
+        assert len(result) == 10
+        # 所有 id 在有效范围内
+        assert all(0 <= item["id"] < 100 for item in result)
+
+    def test_stream_random_reproducible(self, flaxkv_file):
+        from dtflow.storage.io import _stream_random_flaxkv
+
+        r1 = _stream_random_flaxkv(flaxkv_file, 10, seed=42)
+        r2 = _stream_random_flaxkv(flaxkv_file, 10, seed=42)
+        assert r1 == r2
+
+    def test_stream_empty(self, tmp_path):
+        from dtflow.storage.io import (
+            _stream_head_flaxkv,
+            _stream_random_flaxkv,
+            _stream_tail_flaxkv,
+        )
+
+        filepath = tmp_path / "empty.flaxkv"
+        save_data([], str(filepath))
+
+        assert _stream_head_flaxkv(filepath, 10) == []
+        assert _stream_tail_flaxkv(filepath, 10) == []
+        assert _stream_random_flaxkv(filepath, 10) == []
+
+
+class TestFlaxKVAppend:
+    """Test cases for FlaxKV append."""
+
+    def test_append(self, tmp_path):
+        filepath = tmp_path / "data.flaxkv"
+        save_data([{"id": 1}, {"id": 2}], str(filepath))
+        append_to_file([{"id": 3}, {"id": 4}], str(filepath))
+
+        loaded = load_data(str(filepath))
+        assert len(loaded) == 4
+        assert [item["id"] for item in loaded] == [1, 2, 3, 4]
+
+    def test_append_to_empty(self, tmp_path):
+        filepath = tmp_path / "data.flaxkv"
+        save_data([], str(filepath))
+        append_to_file([{"id": 1}], str(filepath))
+
+        loaded = load_data(str(filepath))
+        assert len(loaded) == 1
+        assert loaded[0]["id"] == 1
+
+    def test_append_multiple_times(self, tmp_path):
+        filepath = tmp_path / "data.flaxkv"
+        save_data([{"id": 0}], str(filepath))
+
+        for i in range(1, 5):
+            append_to_file([{"id": i}], str(filepath))
+
+        loaded = load_data(str(filepath))
+        assert len(loaded) == 5
+        assert [item["id"] for item in loaded] == [0, 1, 2, 3, 4]
+
+
+class TestFlaxKVSampleFile:
+    """Test cases for sample_file with FlaxKV format."""
+
+    @pytest.fixture
+    def flaxkv_file(self, tmp_path):
+        data = [{"id": i, "text": f"item_{i}"} for i in range(50)]
+        filepath = tmp_path / "data.flaxkv"
+        save_data(data, str(filepath))
+        return filepath
+
+    def test_sample_head(self, flaxkv_file):
+        result = sample_file(str(flaxkv_file), num=5, sample_type="head")
+        assert len(result) == 5
+        assert result[0]["id"] == 0
+
+    def test_sample_tail(self, flaxkv_file):
+        result = sample_file(str(flaxkv_file), num=5, sample_type="tail")
+        assert len(result) == 5
+        assert result[-1]["id"] == 49
+
+    def test_sample_random(self, flaxkv_file):
+        result = sample_file(str(flaxkv_file), num=5, sample_type="random", seed=42)
+        assert len(result) == 5
+
+    def test_sample_with_output(self, flaxkv_file, tmp_path):
+        output = tmp_path / "sampled.jsonl"
+        result = sample_file(str(flaxkv_file), num=3, sample_type="head", output=str(output))
+        assert output.exists()
+        assert len(result) == 3
+
+
 class TestSampleData:
     """Test cases for sample_data function."""
 

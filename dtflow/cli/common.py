@@ -18,10 +18,11 @@ SUPPORTED_FORMATS = {
     ".arrow",
     ".feather",
     ".flaxkv",
+    ".kv",
 }
 
 # 支持流式处理的格式（与 streaming.py 保持一致）
-STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv"}
+STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv", ".kv"}
 
 
 def _is_streaming_supported(filepath: Path) -> bool:
@@ -32,7 +33,7 @@ def _is_streaming_supported(filepath: Path) -> bool:
 def _is_flaxkv_path(filepath: Path) -> bool:
     """判断路径是否为 flaxkv 格式（.flaxkv 后缀或无后缀且 DB 目录存在）"""
     ext = filepath.suffix.lower()
-    if ext == ".flaxkv":
+    if ext in (".flaxkv", ".kv"):
         return True
     if ext == "":
         db_dir = filepath.parent / (filepath.stem or "data")

@@ -69,7 +69,9 @@ def sample(
     filename: str = typer.Argument(..., help="输入文件路径"),
     num_arg: Optional[int] = typer.Argument(None, help="采样数量", metavar="NUM"),
     num: int = typer.Option(10, "--num", "-n", help="采样数量", show_default=True),
-    type: str = typer.Option("random", "--type", "-t", help="采样方式: random/head/tail"),
+    type: Optional[str] = typer.Option(
+        None, "--type", "-t", help="采样方式: random/head/tail（默认 random，n=0 时默认 head）"
+    ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
     by: Optional[str] = typer.Option(None, "--by", help="分层采样字段"),

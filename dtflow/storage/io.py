@@ -102,7 +102,7 @@ def _detect_format(filepath: Path) -> str:
         return "arrow"
     elif ext in (".xlsx", ".xls"):
         return "excel"
-    elif ext == ".flaxkv" or ext == "":
+    elif ext in (".flaxkv", ".kv", ""):
         return "flaxkv"
     else:
         return "jsonl"
@@ -738,59 +738,45 @@ def stream_jsonl(filepath: str, chunk_size: int = 1000):
             yield chunk
 
 
-# ============ FlaxKV Format ============
+# ============ FlaxKV Format (FlaxList 后端) ============
 
-_FLAXKV_CHUNK_SIZE = 10000
+_FLAXKV_BATCH_SIZE = 10000
 
 
-def _open_flaxkv(filepath: Path, **kwargs):
-    """打开 FlaxKV 数据库，返回上下文管理器。使用 IPC 模式支持多进程并发访问。"""
-    from flaxkv2 import FlaxKV
+def _open_flaxlist(filepath: Path, **kwargs):
+    """打开 FlaxList，返回上下文管理器。使用 LMDB 后端支持多进程并发读。"""
+    from flaxkv2 import FlaxList
 
     db_name = filepath.stem or "data"
     db_path = str(filepath.parent)
-    return FlaxKV(db_name, db_path, auto_nested=False, use_ipc=True, **kwargs)
+    return FlaxList(db_name, db_path, backend="lmdb", **kwargs)
 
 
 def _save_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:
-    """Save data in FlaxKV format (整数 key, 批量写入)."""
-    with _open_flaxkv(filepath, rebuild=True) as db:
-        for start in range(0, len(data), _FLAXKV_CHUNK_SIZE):
-            end = min(start + _FLAXKV_CHUNK_SIZE, len(data))
-            db.update({i: data[i] for i in range(start, end)})
+    """Save data in FlaxKV format (FlaxList 批量写入)."""
+    with _open_flaxlist(filepath, rebuild=True) as lst:
+        for start in range(0, len(data), _FLAXKV_BATCH_SIZE):
+            lst.extend(data[start : start + _FLAXKV_BATCH_SIZE])
 
 
 def _load_flaxkv(filepath: Path) -> List[Dict[str, Any]]:
-    """Load data from FlaxKV format (整数 key, 批量读取)."""
-    with _open_flaxkv(filepath) as db:
-        total = db.keys_count()
-        if total == 0:
-            return []
-        result = []
-        for start in range(0, total, _FLAXKV_CHUNK_SIZE):
-            keys = list(range(start, min(start + _FLAXKV_CHUNK_SIZE, total)))
-            result.extend(db.batch_get(keys))
-        return result
+    """Load data from FlaxKV format (FlaxList 迭代读取)."""
+    with _open_flaxlist(filepath) as lst:
+        return lst.to_list()
 
 
 def _stream_head_flaxkv(filepath: Path, num: int) -> List[Dict[str, Any]]:
     """FlaxKV 读取前 N 条。"""
-    with _open_flaxkv(filepath) as db:
-        total = db.keys_count()
-        n = min(num, total)
-        if n == 0:
-            return []
-        return db.batch_get(list(range(n)))
+    with _open_flaxlist(filepath) as lst:
+        n = min(num, len(lst))
+        return lst[:n] if n > 0 else []
 
 
 def _stream_tail_flaxkv(filepath: Path, num: int) -> List[Dict[str, Any]]:
     """FlaxKV 读取后 N 条。"""
-    with _open_flaxkv(filepath) as db:
-        total = db.keys_count()
-        n = min(num, total)
-        if n == 0:
-            return []
-        return db.batch_get(list(range(total - n, total)))
+    with _open_flaxlist(filepath) as lst:
+        n = min(num, len(lst))
+        return lst[-n:] if n > 0 else []
 
 
 def _stream_random_flaxkv(
@@ -799,21 +785,19 @@ def _stream_random_flaxkv(
     """FlaxKV 随机采样。"""
     import random
 
-    with _open_flaxkv(filepath) as db:
-        total = db.keys_count()
+    with _open_flaxlist(filepath) as lst:
+        total = len(lst)
         if total == 0:
             return []
         n = min(num, total)
         if seed is not None:
             random.seed(seed)
         indices = sorted(random.sample(range(total), n))
-        return db.batch_get(indices)
+        return [lst[i] for i in indices]
 
 
 def _append_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:
-    """追加数据到 FlaxKV（从当前 keys_count 偏移开始写入）。"""
-    with _open_flaxkv(filepath) as db:
-        offset = db.keys_count()
-        for start in range(0, len(data), _FLAXKV_CHUNK_SIZE):
-            end = min(start + _FLAXKV_CHUNK_SIZE, len(data))
-            db.update({offset + i: data[i] for i in range(start, end)})
+    """追加数据到 FlaxKV。"""
+    with _open_flaxlist(filepath) as lst:
+        for start in range(0, len(data), _FLAXKV_BATCH_SIZE):
+            lst.extend(data[start : start + _FLAXKV_BATCH_SIZE])

@@ -139,7 +139,7 @@ def _sample_from_list(
 def sample(
     filename: str,
     num: int = 10,
-    type: Literal["random", "head", "tail"] = "random",
+    type: Optional[Literal["random", "head", "tail"]] = None,
     output: Optional[str] = None,
     seed: Optional[int] = None,
     by: Optional[str] = None,
@@ -155,9 +155,9 @@ def sample(
         filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
         num: 采样数量，默认 10
             - num > 0: 采样指定数量
-            - num = 0: 采样所有数据
+            - num = 0: 全量（保持原序，等同格式转换）
             - num < 0: Python 切片风格（如 -1 表示最后 1 条，-10 表示最后 10 条）
-        type: 采样方式，可选 random/head/tail，默认 random
+        type: 采样方式，可选 random/head/tail。默认 random，num=0 时默认 head（保持原序）
         output: 输出文件路径，不指定则打印到控制台
         seed: 随机种子（仅在 type=random 时有效）
         by: 分层采样字段名，按该字段的值分组采样
@@ -170,7 +170,8 @@ def sample(
         dt sample data.jsonl 5
         dt sample data.csv 100 --type=head
         dt sample data.xlsx 50 --output=sampled.jsonl
-        dt sample data.jsonl 0   # 采样所有数据
+        dt sample data.jsonl 0   # 全量保持原序（格式转换）
+        dt sample data.jsonl 0 --type=random  # 全量乱序
         dt sample data.jsonl -10 # 最后 10 条数据
         dt sample data.jsonl 1000 --by=category           # 按比例分层采样
         dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
@@ -179,6 +180,9 @@ def sample(
         dt sample data.jsonl --where="meta.source~=wiki"  # 筛选 meta.source 包含 wiki
         dt sample data.jsonl --where="messages.#>=2"      # 筛选消息数量 >= 2
     """
+    # type 未指定时：n=0 默认 head（保序），其他默认 random
+    if type is None:
+        type = "head" if num == 0 else "random"
     filepath = Path(filename)
 
     if not _file_exists(filepath):

@@ -339,3 +339,126 @@ class TestWhereFilter:
 
         captured = capsys.readouterr()
         assert "无效的 where 条件" in captured.out
+
+
+# ============== FlaxKV Format Conversion Tests ==============
+
+
+class TestFlaxKVFormatConversion:
+    """Test format conversion between JSONL and FlaxKV via sample command."""
+
+    @pytest.fixture
+    def jsonl_file(self, tmp_path):
+        data = [{"id": i, "text": f"item_{i}", "meta": {"score": i * 0.1}} for i in range(30)]
+        filepath = tmp_path / "source.jsonl"
+        save_data(data, str(filepath))
+        return filepath, data
+
+    @pytest.fixture
+    def flaxkv_file(self, tmp_path):
+        data = [{"id": i, "text": f"item_{i}", "meta": {"score": i * 0.1}} for i in range(30)]
+        filepath = tmp_path / "source.flaxkv"
+        save_data(data, str(filepath))
+        return filepath, data
+
+    def test_jsonl_to_flaxkv(self, jsonl_file, tmp_path):
+        """JSONL → FlaxKV 全量转换"""
+        filepath, data = jsonl_file
+        output = tmp_path / "out.flaxkv"
+        sample(str(filepath), num=0, type="head", output=str(output))
+
+        result = load_data(str(output))
+        assert len(result) == 30
+        assert result[0] == data[0]
+        assert result[29] == data[29]
+
+    def test_flaxkv_to_jsonl(self, flaxkv_file, tmp_path):
+        """FlaxKV → JSONL 全量转换"""
+        filepath, data = flaxkv_file
+        output = tmp_path / "out.jsonl"
+        sample(str(filepath), num=0, type="head", output=str(output))
+
+        result = load_data(str(output))
+        assert len(result) == 30
+        assert result[0] == data[0]
+
+    def test_jsonl_to_flaxkv_roundtrip(self, jsonl_file, tmp_path):
+        """JSONL → FlaxKV → JSONL 往返数据一致"""
+        filepath, data = jsonl_file
+        flaxkv_path = tmp_path / "mid.flaxkv"
+        jsonl_back = tmp_path / "back.jsonl"
+
+        sample(str(filepath), num=0, type="head", output=str(flaxkv_path))
+        sample(str(flaxkv_path), num=0, type="head", output=str(jsonl_back))
+
+        result = load_data(str(jsonl_back))
+        assert result == data
+
+    def test_flaxkv_sample_head_with_output(self, flaxkv_file, tmp_path):
+        """从 FlaxKV head 采样并输出到 JSONL"""
+        filepath, data = flaxkv_file
+        output = tmp_path / "head.jsonl"
+        sample(str(filepath), num=5, type="head", output=str(output))
+
+        result = load_data(str(output))
+        assert len(result) == 5
+        assert result[0]["id"] == 0
+        assert result[4]["id"] == 4
+
+    def test_flaxkv_sample_tail_with_output(self, flaxkv_file, tmp_path):
+        """从 FlaxKV tail 采样并输出到 JSONL"""
+        filepath, data = flaxkv_file
+        output = tmp_path / "tail.jsonl"
+        sample(str(filepath), num=5, type="tail", output=str(output))
+
+        result = load_data(str(output))
+        assert len(result) == 5
+        assert result[0]["id"] == 25
+        assert result[4]["id"] == 29
+
+    def test_flaxkv_sample_random_with_output(self, flaxkv_file, tmp_path):
+        """从 FlaxKV 随机采样并输出到 JSONL"""
+        filepath, _ = flaxkv_file
+        output = tmp_path / "random.jsonl"
+        sample(str(filepath), num=10, type="random", output=str(output), seed=42)
+
+        result = load_data(str(output))
+        assert len(result) == 10
+
+    def test_flaxkv_head_function(self, flaxkv_file, tmp_path):
+        """head() 函数读取 FlaxKV"""
+        filepath, _ = flaxkv_file
+        output = tmp_path / "head.jsonl"
+        head(str(filepath), num=3, output=str(output))
+
+        result = load_data(str(output))
+        assert len(result) == 3
+        assert result[0]["id"] == 0
+
+    def test_flaxkv_tail_function(self, flaxkv_file, tmp_path):
+        """tail() 函数读取 FlaxKV"""
+        filepath, _ = flaxkv_file
+        output = tmp_path / "tail.jsonl"
+        tail(str(filepath), num=3, output=str(output))
+
+        result = load_data(str(output))
+        assert len(result) == 3
+        assert result[0]["id"] == 27
+
+    def test_flaxkv_console_output(self, flaxkv_file, capsys):
+        """FlaxKV 直接输出到终端"""
+        filepath, _ = flaxkv_file
+        sample(str(filepath), num=2, type="head")
+
+        captured = capsys.readouterr()
+        assert "item_0" in captured.out or "id" in captured.out
+
+    def test_flaxkv_with_where_filter(self, flaxkv_file, tmp_path):
+        """FlaxKV 采样 + where 过滤"""
+        filepath, _ = flaxkv_file
+        output = tmp_path / "filtered.jsonl"
+        sample(str(filepath), num=100, output=str(output), where=["id>=20"])
+
+        result = load_data(str(output))
+        assert len(result) == 10  # id 20-29
+        assert all(item["id"] >= 20 for item in result)

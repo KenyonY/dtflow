@@ -1,15 +1,15 @@
 """流式处理模块测试"""
+
 import json
 import os
 import tempfile
-from pathlib import Path
 
 import pytest
 
 from dtflow.streaming import (
     StreamingTransformer,
-    load_stream,
     load_sharded,
+    load_stream,
     process_shards,
 )
 
@@ -17,7 +17,7 @@ from dtflow.streaming import (
 @pytest.fixture
 def temp_jsonl():
     """创建临时 JSONL 文件"""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         for i in range(100):
             f.write(json.dumps({"id": i, "score": i * 0.01, "text": f"text_{i}"}) + "\n")
         return f.name
@@ -28,7 +28,7 @@ def temp_shards(tmp_path):
     """创建分片文件"""
     for shard_idx in range(3):
         shard_file = tmp_path / f"data_{shard_idx:03d}.jsonl"
-        with open(shard_file, 'w') as f:
+        with open(shard_file, "w") as f:
             for i in range(10):
                 item_id = shard_idx * 10 + i
                 f.write(json.dumps({"id": item_id, "value": item_id * 2}) + "\n")
@@ -78,8 +78,8 @@ class TestStreamingTransformer:
     def test_chain_operations(self, temp_jsonl):
         """测试链式操作"""
         st = load_stream(temp_jsonl)
-        result = (st
-            .filter(lambda x: x["id"] >= 50)
+        result = (
+            st.filter(lambda x: x["id"] >= 50)
             .transform(lambda x: {"doubled": x["id"] * 2})
             .filter(lambda x: x["doubled"] < 150)
         )
@@ -120,8 +120,8 @@ class TestStreamingTransformer:
         output_path = tmp_path / "output.jsonl"
 
         st = load_stream(temp_jsonl)
-        count = (st
-            .filter(lambda x: x["id"] < 10)
+        count = (
+            st.filter(lambda x: x["id"] < 10)
             .transform(lambda x: {"text": x["text"]})
             .save(str(output_path), show_progress=False)
         )
@@ -161,12 +161,7 @@ class TestShardedProcessing:
         output_dir = tmp_path / "output_shards"
 
         st = load_sharded(temp_shards)
-        files = st.save_sharded(
-            str(output_dir),
-            shard_size=12,
-            prefix="out",
-            show_progress=False
-        )
+        files = st.save_sharded(str(output_dir), shard_size=12, prefix="out", show_progress=False)
 
         assert len(files) == 3  # 30 items / 12 per shard = 3 shards
 
@@ -191,12 +186,7 @@ class TestShardedProcessing:
                 return {"even_id": item["id"]}
             return None  # 过滤奇数
 
-        files = process_shards(
-            temp_shards,
-            str(output_dir),
-            func=process_func,
-            shard_size=10
-        )
+        files = process_shards(temp_shards, str(output_dir), func=process_func, shard_size=10)
 
         # 30 items, 过滤掉奇数剩 15 条
         total = 0
@@ -300,6 +290,157 @@ class TestEdgeCases:
         os.unlink(temp_jsonl)
 
 
+class TestFlaxKVStreaming:
+    """FlaxKV (FlaxList backend) 流式处理测试"""
+
+    @pytest.fixture
+    def flaxkv_file(self, tmp_path):
+        """创建临时 FlaxKV 文件"""
+        from dtflow.storage.io import save_data
+
+        data = [{"id": i, "score": i * 0.01, "text": f"text_{i}"} for i in range(100)]
+        filepath = tmp_path / "data.flaxkv"
+        save_data(data, str(filepath))
+        return str(filepath)
+
+    def test_load_stream(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        items = st.collect()
+        assert len(items) == 100
+        assert items[0]["id"] == 0
+        assert items[99]["id"] == 99
+
+    def test_filter(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        items = st.filter(lambda x: x["id"] < 10).collect()
+        assert len(items) == 10
+        assert all(item["id"] < 10 for item in items)
+
+    def test_transform(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        items = st.transform(lambda x: {"doubled": x["id"] * 2}).collect()
+        assert len(items) == 100
+        assert items[0] == {"doubled": 0}
+        assert items[50] == {"doubled": 100}
+
+    def test_chain_operations(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        items = (
+            st.filter(lambda x: x["id"] >= 50)
+            .transform(lambda x: {"new_id": x["id"]})
+            .head(10)
+            .collect()
+        )
+        assert len(items) == 10
+        assert items[0]["new_id"] == 50
+
+    def test_head(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        items = st.head(5).collect()
+        assert len(items) == 5
+        assert [item["id"] for item in items] == [0, 1, 2, 3, 4]
+
+    def test_skip(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        items = st.skip(95).collect()
+        assert len(items) == 5
+        assert [item["id"] for item in items] == [95, 96, 97, 98, 99]
+
+    def test_count(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        count = st.filter(lambda x: x["id"] < 30).count()
+        assert count == 30
+
+    def test_count_rows_fast(self, flaxkv_file):
+        from dtflow.streaming import _count_rows_fast
+
+        count = _count_rows_fast(flaxkv_file)
+        assert count == 100
+
+    def test_save_to_jsonl(self, flaxkv_file, tmp_path):
+        """FlaxKV 流式读 → JSONL 保存"""
+        output = tmp_path / "out.jsonl"
+        st = load_stream(flaxkv_file)
+        count = st.filter(lambda x: x["id"] < 20).save(str(output), show_progress=False)
+
+        assert count == 20
+        loaded = load_stream(str(output)).collect()
+        assert len(loaded) == 20
+
+    def test_save_to_flaxkv(self, flaxkv_file, tmp_path):
+        """FlaxKV 流式读 → FlaxKV 保存"""
+        output = tmp_path / "out.flaxkv"
+        st = load_stream(flaxkv_file)
+        count = st.filter(lambda x: x["id"] < 50).save(str(output), show_progress=False)
+
+        assert count == 50
+        loaded = load_stream(str(output)).collect()
+        assert len(loaded) == 50
+        assert loaded[0]["id"] == 0
+        assert loaded[49]["id"] == 49
+
+    def test_save_to_flaxkv_large(self, tmp_path):
+        """FlaxKV 流式保存大数据（验证分批 extend）"""
+        # 先创建一个 JSONL 源
+        src = tmp_path / "src.jsonl"
+        with open(src, "w") as f:
+            for i in range(15000):
+                f.write(json.dumps({"id": i}) + "\n")
+
+        output = tmp_path / "out.flaxkv"
+        st = load_stream(str(src))
+        count = st.save(str(output), show_progress=False, batch_size=5000)
+
+        assert count == 15000
+        loaded = load_stream(str(output)).collect()
+        assert len(loaded) == 15000
+
+    def test_jsonl_to_flaxkv_roundtrip(self, tmp_path):
+        """JSONL → FlaxKV → JSONL 往返测试"""
+        # 创建 JSONL
+        src = tmp_path / "src.jsonl"
+        with open(src, "w") as f:
+            for i in range(50):
+                f.write(json.dumps({"id": i, "msg": f"hello_{i}"}) + "\n")
+
+        # JSONL → FlaxKV
+        mid = tmp_path / "mid.flaxkv"
+        count1 = load_stream(str(src)).save(str(mid), show_progress=False)
+        assert count1 == 50
+
+        # FlaxKV → JSONL
+        dst = tmp_path / "dst.jsonl"
+        count2 = load_stream(str(mid)).save(str(dst), show_progress=False)
+        assert count2 == 50
+
+        # 验证内容一致
+        original = load_stream(str(src)).collect()
+        final = load_stream(str(dst)).collect()
+        assert original == final
+
+    def test_file_not_found(self, tmp_path):
+        filepath = tmp_path / "nonexistent.flaxkv"
+        with pytest.raises(FileNotFoundError):
+            load_stream(str(filepath))
+
+    def test_empty(self, tmp_path):
+        from dtflow.storage.io import save_data
+
+        filepath = tmp_path / "empty.flaxkv"
+        save_data([], str(filepath))
+
+        st = load_stream(str(filepath))
+        items = st.collect()
+        assert items == []
+
+    def test_batch_iteration(self, flaxkv_file):
+        st = load_stream(flaxkv_file)
+        batches = list(st.batch(30))
+        assert len(batches) == 4  # 30 + 30 + 30 + 10
+        assert len(batches[0]) == 30
+        assert len(batches[3]) == 10
+
+
 class TestBatchedSave:
     """测试批量保存（CSV/Parquet/Arrow）的流式写入"""
 
@@ -364,7 +505,7 @@ class TestBatchedSave:
         """测试大批量数据的流式保存（验证不会 OOM）"""
         # 创建大文件
         large_file = tmp_path / "large.jsonl"
-        with open(large_file, 'w') as f:
+        with open(large_file, "w") as f:
             for i in range(1000):
                 f.write(json.dumps({"id": i, "value": i * 2}) + "\n")
 
@@ -376,5 +517,6 @@ class TestBatchedSave:
         assert count == 1000
 
         import polars as pl
+
         df = pl.read_csv(output_path)
         assert len(df) == 1000
