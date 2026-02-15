@@ -238,9 +238,52 @@ class TestEdgeCases:
                 raise ValueError("Error at 50")
             return x["id"] < 60
 
-        # 错误应被跳过
-        items = st.filter(bad_filter).collect()
+        # 错误应被跳过（raw=True 保持原有 dict 访问）
+        items = st.filter(bad_filter, raw=True).collect()
         assert len(items) == 59  # 0-49 + 51-59 (跳过 50)
+        os.unlink(temp_jsonl)
+
+    def test_filter_with_dict_wrapper(self, temp_jsonl):
+        """测试 filter 支持 DictWrapper 属性访问"""
+        st = load_stream(temp_jsonl)
+        items = st.filter(lambda x: x.score > 0.5).collect()
+        assert len(items) == 49
+        assert all(item["score"] > 0.5 for item in items)
+        os.unlink(temp_jsonl)
+
+    def test_filter_on_error_raise(self, temp_jsonl):
+        """测试 filter on_error=raise"""
+        st = load_stream(temp_jsonl)
+
+        def bad_filter(x):
+            if x.id == 50:
+                raise ValueError("Error at 50")
+            return x.id < 60
+
+        with pytest.raises(ValueError, match="Error at 50"):
+            st.filter(bad_filter, on_error="raise").collect()
+        os.unlink(temp_jsonl)
+
+    def test_filter_on_error_keep(self, temp_jsonl):
+        """测试 filter on_error=keep 保留错误行"""
+        st = load_stream(temp_jsonl)
+
+        def bad_filter(x):
+            if x.id == 50:
+                raise ValueError("Error at 50")
+            return x.id < 60
+
+        items = st.filter(bad_filter, on_error="keep").collect()
+        # 0-49 通过 + 50 错误保留 + 51-59 通过 = 60
+        assert len(items) == 60
+        assert any(item["id"] == 50 for item in items)
+        os.unlink(temp_jsonl)
+
+    def test_filter_raw_mode(self, temp_jsonl):
+        """测试 filter raw 模式跳过 DictWrapper"""
+        st = load_stream(temp_jsonl)
+        items = st.filter(lambda x: x["id"] < 5, raw=True).collect()
+        assert len(items) == 5
         os.unlink(temp_jsonl)
 
     def test_error_handling_in_transform(self, temp_jsonl):
@@ -520,3 +563,274 @@ class TestBatchedSave:
 
         df = pl.read_csv(output_path)
         assert len(df) == 1000
+
+
+class TestStreamingEnhancements:
+    """StreamingTransformer 增强方法测试"""
+
+    # ---- transform 增强 ----
+
+    def test_transform_dict_wrapper(self, temp_jsonl):
+        """测试 transform 支持 DictWrapper 属性访问"""
+        st = load_stream(temp_jsonl)
+        items = st.transform(lambda x: {"doubled": x.id * 2}).collect()
+        assert len(items) == 100
+        assert items[0] == {"doubled": 0}
+        assert items[50] == {"doubled": 100}
+        os.unlink(temp_jsonl)
+
+    def test_transform_on_error_raise(self, temp_jsonl):
+        """测试 transform on_error=raise"""
+        st = load_stream(temp_jsonl)
+
+        def bad_transform(x):
+            if x.id == 50:
+                raise ValueError("Error at 50")
+            return {"new_id": x.id}
+
+        with pytest.raises(ValueError, match="Error at 50"):
+            st.transform(bad_transform, on_error="raise").collect()
+        os.unlink(temp_jsonl)
+
+    def test_transform_raw_mode(self, temp_jsonl):
+        """测试 transform raw 模式跳过 DictWrapper"""
+        st = load_stream(temp_jsonl)
+        items = st.transform(lambda x: {"new_id": x["id"]}, raw=True).collect()
+        assert len(items) == 100
+        assert items[0] == {"new_id": 0}
+        os.unlink(temp_jsonl)
+
+    def test_transform_on_error_skip_drops_total(self, temp_jsonl):
+        """on_error=skip 时 total 应为 None（可能跳行）"""
+        st = load_stream(temp_jsonl)
+        t = st.transform(lambda x: {"id": x.id})
+        assert t._total is None  # skip 模式不保留 total
+
+    def test_transform_on_error_raise_keeps_total(self, temp_jsonl):
+        """on_error=raise 时保留 total"""
+        st = load_stream(temp_jsonl)
+        t = st.transform(lambda x: {"id": x.id}, on_error="raise")
+        assert t._total == 100
+        os.unlink(temp_jsonl)
+
+    # ---- dedupe ----
+
+    def test_dedupe_by_field(self, tmp_path):
+        """按字段去重"""
+        f = tmp_path / "dup.jsonl"
+        with open(f, "w") as fp:
+            for item in [
+                {"id": 1, "name": "a"},
+                {"id": 2, "name": "b"},
+                {"id": 1, "name": "c"},  # id 重复
+                {"id": 3, "name": "a"},
+            ]:
+                fp.write(json.dumps(item) + "\n")
+
+        items = load_stream(str(f)).dedupe("id").collect()
+        assert len(items) == 3
+        assert [x["id"] for x in items] == [1, 2, 3]
+
+    def test_dedupe_full(self, tmp_path):
+        """全量去重"""
+        f = tmp_path / "dup.jsonl"
+        with open(f, "w") as fp:
+            for item in [
+                {"id": 1, "name": "a"},
+                {"id": 1, "name": "a"},  # 完全重复
+                {"id": 1, "name": "b"},  # 不同
+            ]:
+                fp.write(json.dumps(item) + "\n")
+
+        items = load_stream(str(f)).dedupe().collect()
+        assert len(items) == 2
+
+    def test_dedupe_callable_key(self, tmp_path):
+        """callable key 去重"""
+        f = tmp_path / "dup.jsonl"
+        with open(f, "w") as fp:
+            for item in [
+                {"name": "Alice"},
+                {"name": "alice"},
+                {"name": "Bob"},
+            ]:
+                fp.write(json.dumps(item) + "\n")
+
+        items = load_stream(str(f)).dedupe(lambda x: x.name.lower()).collect()
+        assert len(items) == 2
+        assert items[0]["name"] == "Alice"
+        assert items[1]["name"] == "Bob"
+
+    def test_dedupe_multi_field(self, tmp_path):
+        """多字段组合去重"""
+        f = tmp_path / "dup.jsonl"
+        with open(f, "w") as fp:
+            for item in [
+                {"a": 1, "b": "x"},
+                {"a": 1, "b": "y"},
+                {"a": 1, "b": "x"},  # (a, b) 重复
+            ]:
+                fp.write(json.dumps(item) + "\n")
+
+        items = load_stream(str(f)).dedupe(["a", "b"]).collect()
+        assert len(items) == 2
+
+    # ---- flat_map ----
+
+    def test_flat_map_basic(self, tmp_path):
+        """基本一对多拆分"""
+        f = tmp_path / "multi.jsonl"
+        with open(f, "w") as fp:
+            fp.write(json.dumps({"items": [1, 2, 3]}) + "\n")
+            fp.write(json.dumps({"items": [4, 5]}) + "\n")
+
+        items = load_stream(str(f)).flat_map(lambda x: [{"val": v} for v in x.items]).collect()
+        assert len(items) == 5
+        assert [x["val"] for x in items] == [1, 2, 3, 4, 5]
+
+    def test_flat_map_error_skip(self, tmp_path):
+        """flat_map 错误跳过"""
+        f = tmp_path / "data.jsonl"
+        with open(f, "w") as fp:
+            fp.write(json.dumps({"items": [1, 2]}) + "\n")
+            fp.write(json.dumps({"no_items": True}) + "\n")
+            fp.write(json.dumps({"items": [3]}) + "\n")
+
+        items = load_stream(str(f)).flat_map(lambda x: [{"val": v} for v in x.items]).collect()
+        assert len(items) == 3
+        assert [x["val"] for x in items] == [1, 2, 3]
+
+    def test_flat_map_error_raise(self, tmp_path):
+        """flat_map on_error=raise"""
+        f = tmp_path / "data.jsonl"
+        with open(f, "w") as fp:
+            fp.write(json.dumps({"items": [1]}) + "\n")
+            fp.write(json.dumps({"no_items": True}) + "\n")
+
+        with pytest.raises(AttributeError):
+            (
+                load_stream(str(f))
+                .flat_map(lambda x: [{"val": v} for v in x.items], on_error="raise")
+                .collect()
+            )
+
+    def test_flat_map_total_is_none(self, tmp_path):
+        """flat_map 的 total 应为 None"""
+        f = tmp_path / "data.jsonl"
+        with open(f, "w") as fp:
+            fp.write(json.dumps({"v": 1}) + "\n")
+
+        st = load_stream(str(f)).flat_map(lambda x: [x])
+        assert st._total is None
+
+    # ---- tail ----
+
+    def test_tail_basic(self, temp_jsonl):
+        """取最后 N 条"""
+        items = load_stream(temp_jsonl).tail(5).collect()
+        assert len(items) == 5
+        assert [x["id"] for x in items] == [95, 96, 97, 98, 99]
+        os.unlink(temp_jsonl)
+
+    def test_tail_more_than_data(self, tmp_path):
+        """数据不足时返回全部"""
+        f = tmp_path / "small.jsonl"
+        with open(f, "w") as fp:
+            for i in range(3):
+                fp.write(json.dumps({"id": i}) + "\n")
+
+        items = load_stream(str(f)).tail(10).collect()
+        assert len(items) == 3
+
+    # ---- sample ----
+
+    def test_sample_basic(self, temp_jsonl):
+        """基本采样"""
+        items = load_stream(temp_jsonl).sample(10).collect()
+        assert len(items) == 10
+        # 采样结果应是原始数据的子集
+        ids = {x["id"] for x in items}
+        assert all(0 <= i < 100 for i in ids)
+        os.unlink(temp_jsonl)
+
+    def test_sample_seed_reproducible(self, temp_jsonl):
+        """seed 可重现"""
+        items1 = load_stream(temp_jsonl).sample(10, seed=42).collect()
+        items2 = load_stream(temp_jsonl).sample(10, seed=42).collect()
+        assert items1 == items2
+        os.unlink(temp_jsonl)
+
+    def test_sample_more_than_data(self, tmp_path):
+        """采样数大于数据量时返回全部"""
+        f = tmp_path / "small.jsonl"
+        with open(f, "w") as fp:
+            for i in range(3):
+                fp.write(json.dumps({"id": i}) + "\n")
+
+        items = load_stream(str(f)).sample(100).collect()
+        assert len(items) == 3
+
+    # ---- peek ----
+
+    def test_peek_side_effect(self, temp_jsonl):
+        """peek 触发副作用但不改变数据"""
+        seen = []
+        items = load_stream(temp_jsonl).head(5).peek(lambda x: seen.append(x["id"])).collect()
+
+        assert len(items) == 5
+        assert seen == [0, 1, 2, 3, 4]
+        # 数据不变
+        assert items[0] == {"id": 0, "score": 0.0, "text": "text_0"}
+        os.unlink(temp_jsonl)
+
+    def test_peek_preserves_total(self, temp_jsonl):
+        """peek 保留 total"""
+        st = load_stream(temp_jsonl)
+        peeked = st.peek(lambda x: None)
+        assert peeked._total == st._total
+        os.unlink(temp_jsonl)
+
+    # ---- shuffle ----
+
+    def test_shuffle_basic(self, temp_jsonl):
+        """洗牌后数据量不变，顺序改变"""
+        original = load_stream(temp_jsonl).collect()
+        shuffled = load_stream(temp_jsonl).shuffle(seed=42).collect()
+        assert len(shuffled) == len(original)
+        assert {x["id"] for x in shuffled} == {x["id"] for x in original}
+        # 极大概率顺序不同
+        assert [x["id"] for x in shuffled] != [x["id"] for x in original]
+        os.unlink(temp_jsonl)
+
+    def test_shuffle_seed_reproducible(self, temp_jsonl):
+        """shuffle seed 可重现"""
+        s1 = load_stream(temp_jsonl).shuffle(seed=123).collect()
+        s2 = load_stream(temp_jsonl).shuffle(seed=123).collect()
+        assert s1 == s2
+        os.unlink(temp_jsonl)
+
+    # ---- split ----
+
+    def test_split_basic(self, temp_jsonl):
+        """按比例切分"""
+        train, val, test = load_stream(temp_jsonl).split([0.8, 0.1, 0.1], seed=42)
+        train_data = train.collect()
+        val_data = val.collect()
+        test_data = test.collect()
+
+        assert len(train_data) + len(val_data) + len(test_data) == 100
+        assert len(train_data) == 80
+        assert len(val_data) == 10
+        assert len(test_data) == 10
+
+        # 无重复
+        all_ids = [x["id"] for x in train_data + val_data + test_data]
+        assert len(set(all_ids)) == 100
+        os.unlink(temp_jsonl)
+
+    def test_split_two_way(self, temp_jsonl):
+        """二分切分"""
+        parts = load_stream(temp_jsonl).split([0.7, 0.3], seed=0)
+        assert len(parts) == 2
+        assert len(parts[0].collect()) + len(parts[1].collect()) == 100
+        os.unlink(temp_jsonl)

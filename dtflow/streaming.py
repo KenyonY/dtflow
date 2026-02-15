@@ -5,10 +5,12 @@
 支持格式：JSONL, CSV, Parquet, Arrow
 """
 
+import collections
 import glob
 import os
+import random
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, Iterator, List, Optional
+from typing import Any, Callable, Dict, Generator, Iterator, List, Literal, Optional, Union
 
 import orjson
 import polars as pl
@@ -187,49 +189,85 @@ class StreamingTransformer:
 
         return cls(generator(), source_path=pattern)
 
-    def filter(self, func: Callable[[Dict], bool]) -> "StreamingTransformer":
+    def filter(
+        self,
+        func: Callable[[Any], bool],
+        on_error: Literal["skip", "raise", "keep"] = "skip",
+        raw: bool = False,
+    ) -> "StreamingTransformer":
         """
         惰性过滤。
 
         Args:
-            func: 过滤函数，返回 True 保留
+            func: 过滤函数，返回 True 保留，默认支持属性访问 (item.field)
+            on_error: 错误处理策略
+                - "skip": 跳过错误行（默认）
+                - "raise": 遇到错误立即抛出
+                - "keep": 保留错误行
+            raw: 原始模式，直接传递 dict 而不包装为 DictWrapper
 
         Returns:
             新的 StreamingTransformer（惰性，不立即执行）
+
+        Examples:
+            >>> load_stream("data.kv").filter(lambda x: x.score > 0.5).save("out.jsonl")
+            >>> load_stream("data.kv").filter(lambda x: x["id"] < 100, raw=True)
         """
+        from .core import DictWrapper
+
+        wrapper_func = (lambda x: x) if raw else DictWrapper
 
         def filtered_iterator():
             for item in self._iterator:
                 try:
-                    if func(item):
+                    if func(wrapper_func(item)):
                         yield item
                 except Exception:
-                    pass  # 跳过错误
+                    if on_error == "raise":
+                        raise
+                    elif on_error == "keep":
+                        yield item
 
         # 过滤后数量未知，不传递 total
         new_st = StreamingTransformer(filtered_iterator(), self._source_path, total=None)
         new_st._operations = self._operations + [{"type": "filter", "func": func}]
         return new_st
 
-    def transform(self, func: Callable[[Dict], Dict]) -> "StreamingTransformer":
+    def transform(
+        self,
+        func: Callable[[Any], Dict],
+        on_error: Literal["skip", "raise"] = "skip",
+        raw: bool = False,
+    ) -> "StreamingTransformer":
         """
         惰性转换。
 
         Args:
-            func: 转换函数
+            func: 转换函数，默认支持属性访问 (item.field)
+            on_error: 错误处理策略
+                - "skip": 跳过错误行（默认）
+                - "raise": 遇到错误立即抛出
+            raw: 原始模式，直接传递 dict 而不包装为 DictWrapper
 
         Returns:
             新的 StreamingTransformer（惰性，不立即执行）
         """
-        # transform 是 1:1 转换，保留 total
-        new_st = StreamingTransformer(iter([]), self._source_path, total=self._total)
+        from .core import DictWrapper
+
+        wrapper_func = (lambda x: x) if raw else DictWrapper
+
+        # on_error="skip" 时可能跳行，total 不准确；"raise" 时保留
+        new_total = self._total if on_error == "raise" else None
+        new_st = StreamingTransformer(iter([]), self._source_path, total=new_total)
         new_st._operations = self._operations + [{"type": "transform", "func": func}]
 
         def transformed_iterator():
             for item in self._iterator:
                 try:
-                    yield func(item)
+                    yield func(wrapper_func(item))
                 except Exception as e:
+                    if on_error == "raise":
+                        raise
                     new_st._error_count += 1
                     if new_st._first_error is None:
                         new_st._first_error = f"{type(e).__name__}: {e}"
@@ -286,6 +324,238 @@ class StreamingTransformer:
         new_st = StreamingTransformer(skip_iterator(), self._source_path, total=new_total)
         new_st._operations = self._operations + [{"type": "skip", "n": n}]
         return new_st
+
+    def dedupe(
+        self,
+        key: Union[None, str, List[str], Callable[[Any], Any]] = None,
+        raw: bool = False,
+    ) -> "StreamingTransformer":
+        """
+        流式精确去重。
+
+        维护 seen set，O(unique_keys) 内存。
+
+        Args:
+            key: 去重依据，可以是：
+                - None: 全量去重（整条数据比较）
+                - str: 按单个字段去重（支持嵌套路径语法）
+                - list[str]: 按多个字段组合去重
+                - callable: 自定义 key 函数
+            raw: callable key 时是否跳过 DictWrapper
+
+        Returns:
+            新的 StreamingTransformer
+        """
+        from .core import DictWrapper, _fast_json_dumps
+        from .utils.field_path import get_field_with_spec
+
+        wrapper_func = (lambda x: x) if raw else DictWrapper
+
+        def _extract_key(item):
+            if key is None:
+                return _fast_json_dumps(item)
+            elif isinstance(key, str):
+                val = get_field_with_spec(item, key)
+                return tuple(val) if isinstance(val, list) else val
+            elif isinstance(key, list):
+                vals = []
+                for k in key:
+                    v = get_field_with_spec(item, k)
+                    vals.append(tuple(v) if isinstance(v, list) else v)
+                return tuple(vals)
+            elif callable(key):
+                return key(wrapper_func(item))
+            else:
+                raise ValueError(f"不支持的 key 类型: {type(key)}")
+
+        def deduped_iterator():
+            seen = set()
+            for item in self._iterator:
+                k = _extract_key(item)
+                if k not in seen:
+                    seen.add(k)
+                    yield item
+
+        new_st = StreamingTransformer(deduped_iterator(), self._source_path, total=None)
+        new_st._operations = self._operations + [{"type": "dedupe", "key": key}]
+        return new_st
+
+    def flat_map(
+        self,
+        func: Callable[[Any], Any],
+        on_error: Literal["skip", "raise"] = "skip",
+        raw: bool = False,
+    ) -> "StreamingTransformer":
+        """
+        一对多惰性变换。
+
+        func 返回可迭代对象，每个元素 yield 为一条输出。
+        典型场景：拆分多轮对话、展开嵌套数组。
+
+        Args:
+            func: 变换函数，返回可迭代对象
+            on_error: 错误处理策略
+            raw: 原始模式，跳过 DictWrapper
+
+        Returns:
+            新的 StreamingTransformer（total=None，无法预知输出数量）
+        """
+        from .core import DictWrapper
+
+        wrapper_func = (lambda x: x) if raw else DictWrapper
+
+        def flat_mapped_iterator():
+            for item in self._iterator:
+                try:
+                    results = func(wrapper_func(item))
+                    yield from results
+                except Exception:
+                    if on_error == "raise":
+                        raise
+
+        new_st = StreamingTransformer(flat_mapped_iterator(), self._source_path, total=None)
+        new_st._operations = self._operations + [{"type": "flat_map", "func": func}]
+        return new_st
+
+    def tail(self, n: int) -> "StreamingTransformer":
+        """
+        惰性取最后 N 条。
+
+        使用 deque(maxlen=n) 缓冲，O(n) 内存。
+
+        Args:
+            n: 数量
+
+        Returns:
+            新的 StreamingTransformer
+        """
+
+        def tail_iterator():
+            buffer = collections.deque(self._iterator, maxlen=n)
+            yield from buffer
+
+        new_total = min(n, self._total) if self._total is not None else n
+        new_st = StreamingTransformer(tail_iterator(), self._source_path, total=new_total)
+        new_st._operations = self._operations + [{"type": "tail", "n": n}]
+        return new_st
+
+    def sample(self, n: int, seed: Optional[int] = None) -> "StreamingTransformer":
+        """
+        蓄水池采样（Algorithm R），不需要预知总数。
+
+        O(n) 内存，使用独立 Random 实例避免污染全局状态。
+
+        Args:
+            n: 采样数量
+            seed: 随机种子，用于可重现
+
+        Returns:
+            新的 StreamingTransformer
+        """
+
+        def sample_iterator():
+            rng = random.Random(seed)
+            reservoir = []
+            for i, item in enumerate(self._iterator):
+                if i < n:
+                    reservoir.append(item)
+                else:
+                    j = rng.randint(0, i)
+                    if j < n:
+                        reservoir[j] = item
+            yield from reservoir
+
+        new_st = StreamingTransformer(sample_iterator(), self._source_path, total=n)
+        new_st._operations = self._operations + [{"type": "sample", "n": n}]
+        return new_st
+
+    def peek(self, func: Callable[[Dict], None]) -> "StreamingTransformer":
+        """
+        管道调试：对每条数据执行副作用函数，不改变数据流。
+
+        Args:
+            func: 副作用函数（如 print）
+
+        Returns:
+            新的 StreamingTransformer（数据不变，保留 total）
+        """
+
+        def peek_iterator():
+            for item in self._iterator:
+                func(item)
+                yield item
+
+        new_st = StreamingTransformer(peek_iterator(), self._source_path, total=self._total)
+        new_st._operations = self._operations + [{"type": "peek", "func": func}]
+        return new_st
+
+    def shuffle(self, seed: Optional[int] = None) -> "StreamingTransformer":
+        """
+        全量洗牌。
+
+        需要将所有数据加载到内存，O(n) 内存。
+
+        Args:
+            seed: 随机种子
+
+        Returns:
+            新的 StreamingTransformer
+        """
+
+        def shuffle_iterator():
+            data = list(self._iterator)
+            rng = random.Random(seed)
+            rng.shuffle(data)
+            yield from data
+
+        new_st = StreamingTransformer(shuffle_iterator(), self._source_path, total=self._total)
+        new_st._operations = self._operations + [{"type": "shuffle"}]
+        return new_st
+
+    def split(
+        self,
+        ratios: List[float],
+        seed: Optional[int] = None,
+    ) -> List["StreamingTransformer"]:
+        """
+        按比例切分数据集。
+
+        需要将所有数据加载到内存并洗牌后切分。
+
+        Args:
+            ratios: 切分比例列表，如 [0.8, 0.1, 0.1]
+            seed: 随机种子
+
+        Returns:
+            StreamingTransformer 列表，与 ratios 一一对应
+
+        Examples:
+            >>> train, val, test = st.split([0.8, 0.1, 0.1])
+        """
+        # 归一化比例
+        total_ratio = sum(ratios)
+        normed = [r / total_ratio for r in ratios]
+
+        # 消耗迭代器，洗牌
+        data = list(self._iterator)
+        rng = random.Random(seed)
+        rng.shuffle(data)
+
+        # 按比例切分
+        results = []
+        start = 0
+        for i, ratio in enumerate(normed):
+            if i == len(normed) - 1:
+                end = len(data)
+            else:
+                end = start + round(len(data) * ratio)
+            chunk = data[start:end]
+            st = StreamingTransformer(iter(chunk), self._source_path, total=len(chunk))
+            st._operations = self._operations + [{"type": "split", "ratio": ratios[i]}]
+            results.append(st)
+            start = end
+
+        return results
 
     def batch(self, size: int) -> Generator[List[Dict], None, None]:
         """
@@ -740,7 +1010,7 @@ def process_shards(
     return (
         load_sharded(input_pattern)
         .transform(transform_func)
-        .filter(lambda x: x is not None)
+        .filter(lambda x: x is not None, raw=True)
         .save_sharded(output_dir, shard_size=shard_size)
     )
 
