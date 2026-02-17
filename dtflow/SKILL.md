@@ -12,6 +12,7 @@ description: >
   (7) 训练框架导出：dt export / export_for() 一键导出到 llama-factory/swift/axolotl；
   (8) 大文件流式处理：load_stream() O(1) 内存处理 100GB+ 文件。
   注意：此工具专注数据文件的结构化处理，不涉及 LLM 调用（LLM 调用请用 flexllm）。
+  stats 命令增强：--field 指定字段统计，--expand 展开 list 字段统计元素分布（支持 [*] 语法展开嵌套列表，如 messages[*].role）。
 ---
 
 # dtflow - 机器学习训练数据格式转换工具
@@ -146,8 +147,11 @@ dt.stats()                        # 统计
 dt stats data.jsonl                               # 基本统计（文件大小、条数、字段）
 dt stats data.jsonl --full                        # 完整模式：值分布、唯一值、非空率
 dt stats data.jsonl --full -n 20                  # 显示 Top 20 值分布
-dt stats data.jsonl --field=meta.source           # 只统计指定字段（支持嵌套路径，可多次使用）
-dt stats data.jsonl --expand=tags                 # 展开 list 字段统计（可多次使用）
+dt stats data.jsonl --full --field=category       # 只统计指定字段（可多次使用）
+dt stats data.jsonl --full --field=category --field=meta.source  # 多字段
+dt stats data.jsonl --full --expand=tags          # 展开 list 字段统计元素分布（可多次使用）
+dt stats data.jsonl --full --expand='messages[*].role'  # 展开嵌套 list，统计所有 role 分布
+dt stats data.jsonl --full --field=category --expand=tags  # 组合使用
 
 # Token 统计
 dt token-stats data.jsonl                         # 默认统计 messages 字段
