@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+项目skill文件编写注意：需要保持信息密度足够高。
+
 ## 项目概述
 
 dtflow 是一个简洁的机器学习训练数据格式转换工具，支持 SFT、RLHF、Pretrain 等格式。
