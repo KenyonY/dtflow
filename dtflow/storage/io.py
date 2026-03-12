@@ -748,12 +748,12 @@ _FLAXKV_BATCH_SIZE = 10000
 
 
 def _open_flaxlist(filepath: Path, **kwargs):
-    """打开 FlaxList，返回上下文管理器。使用 LMDB 后端支持多进程并发读。"""
+    """打开 FlaxList，返回上下文管理器。基于 LMDB，支持多进程并发读。"""
     from flaxkv2 import FlaxList
 
     db_name = filepath.stem or "data"
     db_path = str(filepath.parent)
-    return FlaxList(db_name, db_path, backend="lmdb", **kwargs)
+    return FlaxList(db_name, db_path, **kwargs)
 
 
 def _save_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:
@@ -786,7 +786,7 @@ def _stream_tail_flaxkv(filepath: Path, num: int) -> List[Dict[str, Any]]:
 def _stream_random_flaxkv(
     filepath: Path, num: int, seed: Optional[int] = None
 ) -> List[Dict[str, Any]]:
-    """FlaxKV 随机采样。"""
+    """FlaxKV 随机采样（利用 FlaxList 原生 sample，O(k) 随机访问）。"""
     import random
 
     with _open_flaxlist(filepath) as lst:
@@ -796,8 +796,7 @@ def _stream_random_flaxkv(
         n = min(num, total)
         if seed is not None:
             random.seed(seed)
-        indices = sorted(random.sample(range(total), n))
-        return [lst[i] for i in indices]
+        return lst.sample(n)
 
 
 def _append_flaxkv(data: List[Dict[str, Any]], filepath: Path) -> None:

@@ -45,9 +45,11 @@ def stats(
         dt stats data.jsonl --full --field=category  # 指定字段
         dt stats data.jsonl --full --expand=tags     # 展开 list 字段
     """
+    from .common import _file_exists
+
     filepath = Path(filename)
 
-    if not filepath.exists():
+    if not _file_exists(filepath):
         print(f"错误: 文件不存在 - {filename}")
         return
 
@@ -88,11 +90,17 @@ def _quick_stats(filepath: Path) -> None:
     - 使用流式计数，不加载全部数据到内存
     - 只读取前几条数据来推断字段结构
     - 不计算值分布、唯一值等耗时统计
+    - FlaxList 源：利用 O(1) 随机访问，免加载统计
     """
-    from ..streaming import _count_rows_fast
+    from ..streaming import _count_rows_fast, _is_flaxkv_path
 
     ext = filepath.suffix.lower()
-    file_size = filepath.stat().st_size
+
+    # FlaxList 是目录，不能用 stat().st_size
+    if ext in (".flaxkv", ".kv") or _is_flaxkv_path(filepath):
+        file_size = None
+    else:
+        file_size = filepath.stat().st_size
 
     # 格式化文件大小
     def format_size(size: int) -> str:
@@ -119,7 +127,14 @@ def _quick_stats(filepath: Path) -> None:
     sample_data = []
     sample_size = 5
     try:
-        if ext == ".jsonl":
+        if ext in (".flaxkv", ".kv") or _is_flaxkv_path(filepath):
+            # FlaxList：O(1) 索引访问，免加载
+            from ..storage.io import _open_flaxlist
+
+            with _open_flaxlist(filepath) as lst:
+                n = min(sample_size, len(lst))
+                sample_data = lst[:n] if n > 0 else []
+        elif ext == ".jsonl":
             with open(filepath, "rb") as f:
                 for i, line in enumerate(f):
                     if i >= sample_size:
@@ -176,10 +191,12 @@ def _quick_stats(filepath: Path) -> None:
         console = Console()
 
         # 概览
+        size_line = (
+            f"\n[bold]大小:[/bold] {format_size(file_size)}" if file_size is not None else ""
+        )
         console.print(
             Panel(
-                f"[bold]文件:[/bold] {filepath.name}\n"
-                f"[bold]大小:[/bold] {format_size(file_size)}\n"
+                f"[bold]文件:[/bold] {filepath.name}{size_line}\n"
                 f"[bold]总数:[/bold] {total:,} 条\n"
                 f"[bold]字段:[/bold] {len(fields)} 个",
                 title="📊 快速统计",
@@ -204,7 +221,8 @@ def _quick_stats(filepath: Path) -> None:
         print("📊 快速统计")
         print(f"{'=' * 40}")
         print(f"文件: {filepath.name}")
-        print(f"大小: {format_size(file_size)}")
+        if file_size is not None:
+            print(f"大小: {format_size(file_size)}")
         print(f"总数: {total:,} 条")
         print(f"字段: {len(fields)} 个")
 
@@ -640,9 +658,11 @@ def token_stats(
         dt token-stats data.jsonl --detailed
         dt token-stats data.jsonl --workers=4   # 使用 4 进程
     """
+    from .common import _file_exists
+
     filepath = Path(filename)
 
-    if not filepath.exists():
+    if not _file_exists(filepath):
         print(f"错误: 文件不存在 - {filename}")
         return
 

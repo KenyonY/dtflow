@@ -322,7 +322,7 @@ def _execute_transform(
             st = load_stream(str(input_path))
             if num:
                 st = st.head(num)
-            count = st.transform(wrapped_transform).save(output_path)
+            count = st.transform(wrapped_transform, raw=True).save(output_path)
             print(f"💾 保存结果: {output_path}")
             print(f"\n✅ 完成! 已转换 {count} 条数据到 {output_path}")
         except Exception as e:
@@ -420,7 +420,7 @@ def _execute_preset_transform(
             st = load_stream(str(input_path))
             if num:
                 st = st.head(num)
-            count = st.transform(wrapped_transform).save(actual_output)
+            count = st.transform(wrapped_transform, raw=True).save(actual_output)
 
             # 如果使用了临时文件，移动到目标位置
             if use_temp_file:

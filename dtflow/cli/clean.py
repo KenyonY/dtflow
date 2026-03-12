@@ -720,10 +720,13 @@ def _clean_streaming(
     # 构建流式处理链
     st = load_stream(input_path)
 
+    # 以下所有 transform/filter 均使用 raw=True，因为清洗函数直接操作原始 dict
+
     # 如果需要 strip，先执行 strip 转换（在过滤之前，这样空值检测更准确）
     if strip:
         st = st.transform(
-            lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()}
+            lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()},
+            raw=True,
         )
 
     # 执行过滤
@@ -734,11 +737,11 @@ def _clean_streaming(
         or min_tokens_field is not None
         or max_tokens_field is not None
     ):
-        st = st.filter(clean_filter)
+        st = st.filter(clean_filter, raw=True)
 
     # 提升嵌套字段（在 drop 之前，否则父字段被删后无法提取）
     if promote_list is not None:
-        st = st.transform(lambda item: _promote_fields(item, promote_list))
+        st = st.transform(lambda item: _promote_fields(item, promote_list), raw=True)
 
     # 执行字段管理（keep/drop）
     if keep_set is not None or drop_fields_set is not None:
@@ -750,22 +753,22 @@ def _clean_streaming(
                 return {k: v for k, v in item.items() if k not in drop_fields_set}
             return item
 
-        st = st.transform(field_transform)
+        st = st.transform(field_transform, raw=True)
 
     # 执行字段重命名
     if rename_map is not None:
-        st = st.transform(lambda item: _rename_item(item, rename_map))
+        st = st.transform(lambda item: _rename_item(item, rename_map), raw=True)
 
     # 添加常量字段
     if add_field_map is not None:
-        st = st.transform(lambda item: _add_fields(item, add_field_map))
+        st = st.transform(lambda item: _add_fields(item, add_field_map), raw=True)
 
     # 填充空值
     if fill_map is not None:
-        st = st.transform(lambda item: _fill_empty(item, fill_map))
+        st = st.transform(lambda item: _fill_empty(item, fill_map), raw=True)
 
     # 字段排序（最后执行）
     if reorder_fields is not None:
-        st = st.transform(lambda item: _reorder_item(item, reorder_fields))
+        st = st.transform(lambda item: _reorder_item(item, reorder_fields), raw=True)
 
     return st.save(output_path)

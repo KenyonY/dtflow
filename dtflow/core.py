@@ -106,20 +106,8 @@ class DataTransformer:
         self._lineage_tracker = _lineage_tracker
 
     @property
-    def _is_persistent(self) -> bool:
-        """后端是否为持久化存储 (FlaxList)"""
-        try:
-            from flaxkv2 import FlaxList
-
-            return isinstance(self._data, FlaxList)
-        except ImportError:
-            return False
-
-    @property
     def data(self) -> List[Dict[str, Any]]:
-        """获取原始数据（FlaxList 后端会物化为 list）"""
-        if self._is_persistent:
-            return self._data.to_list()
+        """获取原始数据"""
         return self._data
 
     def __len__(self) -> int:
@@ -139,24 +127,12 @@ class DataTransformer:
         从文件加载数据。
 
         支持格式: jsonl, json, csv, parquet, flaxkv（自动检测）
-        .kv/.flaxkv 格式使用 FlaxList 持久化后端，不物化到内存。
 
         Args:
             filepath: 文件路径
             track_lineage: 是否追踪血缘（默认 False）
         """
-        from pathlib import Path
-
-        from .storage.io import _detect_format, _open_flaxlist
-
-        fmt = _detect_format(Path(filepath))
-        if fmt == "flaxkv":
-            db_dir = Path(filepath).parent / (Path(filepath).stem or "data")
-            if not db_dir.exists():
-                raise FileNotFoundError(f"FlaxKV database not found: {db_dir}")
-            data = _open_flaxlist(Path(filepath))
-        else:
-            data = load_data(filepath)
+        data = load_data(filepath)
         tracker = LineageTracker(filepath) if track_lineage else None
         return cls(data, _source_path=filepath, _lineage_tracker=tracker)
 
@@ -165,19 +141,11 @@ class DataTransformer:
         保存数据到文件。
 
         支持格式: jsonl, json, csv, parquet, flaxkv（根据扩展名）
-        FlaxList 后端保存到同路径时为无操作（数据已自动持久化）。
 
         Args:
             filepath: 文件路径
             lineage: 是否保存血缘元数据（默认 False）
         """
-        from pathlib import Path
-
-        # 同路径 + FlaxList 后端 → 无操作（已自动持久化）
-        if self._is_persistent and self._source_path:
-            if Path(filepath).resolve() == Path(self._source_path).resolve():
-                return
-
         save_data(self._data, filepath)
 
         # 保存血缘记录
@@ -190,33 +158,14 @@ class DataTransformer:
     # ============ 增量操作 ============
 
     def append(self, item: Dict) -> "DataTransformer":
-        """追加一条数据。FlaxList 后端原地追加并返回 self，list 后端返回新实例。"""
-        if self._is_persistent:
-            self._data.append(item)
-            return self
+        """追加一条数据，返回新实例。"""
         return DataTransformer(self._data + [item])
 
     def extend(self, items) -> "DataTransformer":
-        """批量追加数据。FlaxList 后端原地追加并返回 self，list 后端返回新实例。"""
+        """批量追加数据，返回新实例。"""
         if isinstance(items, DataTransformer):
             items = items.data
-        if self._is_persistent:
-            self._data.extend(items)
-            return self
         return DataTransformer(self._data + list(items))
-
-    # ============ 资源管理 ============
-
-    def close(self):
-        """关闭持久化后端资源"""
-        if self._is_persistent:
-            self._data.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
 
     # ============ 核心转换 ============
 
@@ -391,11 +340,7 @@ class DataTransformer:
 
         input_count = len(self._data)
         if n >= input_count:
-            data = self._data[:] if not self._is_persistent else self._data.to_list()
-        elif self._is_persistent:
-            # FlaxList 不是 abc.Sequence，用随机索引 + O(1) 随机访问
-            indices = random.sample(range(input_count), n)
-            data = [self._data[i] for i in indices]
+            data = self._data[:]
         else:
             data = random.sample(self._data, n)
 
@@ -792,9 +737,7 @@ class DataTransformer:
     # ============ 工具方法 ============
 
     def copy(self) -> "DataTransformer":
-        """深拷贝（FlaxList 后端物化为 list）"""
-        if self._is_persistent:
-            return DataTransformer(self._data.to_list())
+        """深拷贝"""
         return DataTransformer(deepcopy(self._data))
 
     # ============ 数据合并 ============
