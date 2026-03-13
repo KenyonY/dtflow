@@ -37,6 +37,8 @@ def save_data(data: List[Dict[str, Any]], filepath: str, file_format: Optional[s
         _save_json(data, filepath)
     elif file_format == "csv":
         _save_csv(data, filepath)
+    elif file_format == "tsv":
+        _save_tsv(data, filepath)
     elif file_format == "parquet":
         _save_parquet(data, filepath)
     elif file_format == "arrow":
@@ -79,6 +81,8 @@ def load_data(filepath: str, file_format: Optional[str] = None) -> List[Dict[str
         return _load_json(filepath)
     elif file_format == "csv":
         return _load_csv(filepath)
+    elif file_format == "tsv":
+        return _load_tsv(filepath)
     elif file_format == "parquet":
         return _load_parquet(filepath)
     elif file_format == "arrow":
@@ -100,6 +104,8 @@ def _detect_format(filepath: Path) -> str:
         return "json"
     elif ext == ".csv":
         return "csv"
+    elif ext == ".tsv":
+        return "tsv"
     elif ext == ".parquet":
         return "parquet"
     elif ext in (".arrow", ".feather"):
@@ -218,6 +224,27 @@ def _load_csv(filepath: Path) -> List[Dict[str, Any]]:
     df = pl.read_csv(filepath)
     data = df.to_dicts()
     # 反序列化 JSON 字符串
+    return _deserialize_complex_fields(data)
+
+
+# ============ TSV Format (Polars) ============
+
+
+def _save_tsv(data: List[Dict[str, Any]], filepath: Path) -> None:
+    """Save data in TSV format using Polars."""
+    if not data:
+        filepath.touch()
+        return
+
+    serialized = _serialize_complex_fields(data)
+    df = pl.DataFrame(serialized)
+    df.write_csv(filepath, separator="\t")
+
+
+def _load_tsv(filepath: Path) -> List[Dict[str, Any]]:
+    """Load data from TSV format using Polars."""
+    df = pl.read_csv(filepath, separator="\t")
+    data = df.to_dicts()
     return _deserialize_complex_fields(data)
 
 
@@ -426,8 +453,8 @@ def _stream_sample(
     if sample_type == "head":
         if file_format == "jsonl":
             return _stream_head_jsonl(filepath, num)
-        elif file_format == "csv":
-            return _stream_head_csv(filepath, num)
+        elif file_format in ("csv", "tsv"):
+            return _stream_head_csv(filepath, num, separator="\t" if file_format == "tsv" else ",")
         elif file_format == "parquet":
             return _stream_head_parquet(filepath, num)
         elif file_format == "arrow":
@@ -441,8 +468,8 @@ def _stream_sample(
     if sample_type == "tail":
         if file_format == "jsonl":
             return _stream_tail_jsonl(filepath, num)
-        elif file_format == "csv":
-            return _stream_tail_csv(filepath, num)
+        elif file_format in ("csv", "tsv"):
+            return _stream_tail_csv(filepath, num, separator="\t" if file_format == "tsv" else ",")
         elif file_format == "parquet":
             return _stream_tail_parquet(filepath, num)
         elif file_format == "arrow":
@@ -454,8 +481,10 @@ def _stream_sample(
     if sample_type == "random":
         if file_format == "jsonl":
             return _stream_random_jsonl(filepath, num, seed)
-        elif file_format == "csv":
-            return _stream_random_csv(filepath, num, seed)
+        elif file_format in ("csv", "tsv"):
+            return _stream_random_csv(
+                filepath, num, seed, separator="\t" if file_format == "tsv" else ","
+            )
         elif file_format == "parquet":
             return _stream_random_parquet(filepath, num, seed)
         elif file_format == "arrow":
@@ -496,9 +525,9 @@ def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
         return result
 
 
-def _stream_head_csv(filepath: Path, num: int) -> List[Dict[str, Any]]:
-    """CSV 流式读取前 N 行（使用 Polars LazyFrame）"""
-    df = pl.scan_csv(filepath).head(num).collect()
+def _stream_head_csv(filepath: Path, num: int, separator: str = ",") -> List[Dict[str, Any]]:
+    """CSV/TSV 流式读取前 N 行（使用 Polars LazyFrame）"""
+    df = pl.scan_csv(filepath, separator=separator).head(num).collect()
     return _deserialize_complex_fields(df.to_dicts())
 
 
@@ -558,9 +587,9 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
         return result
 
 
-def _stream_tail_csv(filepath: Path, num: int) -> List[Dict[str, Any]]:
-    """CSV 流式读取后 N 行（使用 Polars LazyFrame）"""
-    df = pl.scan_csv(filepath).tail(num).collect()
+def _stream_tail_csv(filepath: Path, num: int, separator: str = ",") -> List[Dict[str, Any]]:
+    """CSV/TSV 流式读取后 N 行（使用 Polars LazyFrame）"""
+    df = pl.scan_csv(filepath, separator=separator).tail(num).collect()
     return _deserialize_complex_fields(df.to_dicts())
 
 
@@ -661,10 +690,10 @@ def _stream_random_jsonl(
 
 
 def _stream_random_csv(
-    filepath: Path, num: int, seed: Optional[int] = None
+    filepath: Path, num: int, seed: Optional[int] = None, separator: str = ","
 ) -> List[Dict[str, Any]]:
-    """CSV 随机采样（使用 Polars）"""
-    df = pl.scan_csv(filepath).collect()
+    """CSV/TSV 随机采样（使用 Polars）"""
+    df = pl.scan_csv(filepath, separator=separator).collect()
     if len(df) <= num:
         return _deserialize_complex_fields(df.to_dicts())
     sampled = df.sample(n=num, seed=seed)
