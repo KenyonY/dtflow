@@ -3,6 +3,7 @@ Tests for CLI stats commands.
 """
 
 import pytest
+import typer
 
 from dtflow.cli.stats import _compute_field_stats, _quick_stats, stats
 from dtflow.storage.io import save_data
@@ -171,19 +172,22 @@ class TestStatsErrors:
 
     def test_stats_file_not_exists(self, tmp_path, capsys):
         """Test error when file doesn't exist."""
-        stats(str(tmp_path / "nonexistent.jsonl"))
+        with pytest.raises(typer.Exit) as exc_info:
+            stats(str(tmp_path / "nonexistent.jsonl"))
+        assert exc_info.value.exit_code == 3  # NOT_FOUND
         captured = capsys.readouterr()
-        assert "文件不存在" in captured.out
+        assert "文件不存在" in captured.err or "file_not_found" in captured.err
 
     def test_stats_empty_file(self, tmp_path, capsys):
         """Test stats on empty file."""
         empty_file = tmp_path / "empty.jsonl"
         empty_file.write_text("")
 
-        stats(str(empty_file), full=True)
+        with pytest.raises(typer.Exit) as exc_info:
+            stats(str(empty_file), full=True)
+        assert exc_info.value.exit_code == 1
         captured = capsys.readouterr()
-        # Should handle empty file gracefully
-        assert "文件为空" in captured.out or "0" in captured.out
+        assert "文件为空" in captured.err or "empty" in captured.err.lower()
 
 
 # ============== Quick Stats Tests ==============
@@ -198,8 +202,8 @@ class TestQuickStats:
         _quick_stats(filepath)
 
         captured = capsys.readouterr()
-        # Should show field count
-        assert "字段" in captured.out or "field" in captured.out.lower()
+        # Should show field count (rendered to stderr via rich)
+        assert "字段" in captured.err or "field" in captured.err.lower()
 
     def test_quick_stats_csv(self, tmp_path, capsys):
         """Test quick stats for CSV file."""
@@ -209,8 +213,8 @@ class TestQuickStats:
 
         _quick_stats(csv_file)
         captured = capsys.readouterr()
-        # Should complete without error
-        assert len(captured.out) > 0
+        # Should complete without error (output goes to stderr)
+        assert len(captured.err) > 0
 
 
 # ============== Field Filtering and Expansion Tests ==============

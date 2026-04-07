@@ -15,7 +15,8 @@ from ..core import DataTransformer, DictWrapper
 from ..presets import get_preset, list_presets
 from ..storage.io import load_data, save_data
 from ..streaming import load_stream
-from .common import _check_file_format, _is_streaming_supported
+from .common import _check_file_format, _is_streaming_supported, _require_file_exists
+from .output import die, die_io_error, die_usage, emit_action, log
 
 CONFIG_DIR = ".dt"
 
@@ -36,6 +37,7 @@ def transform(
     preset: Optional[str] = None,
     config: Optional[str] = None,
     output: Optional[str] = None,
+    dry_run: bool = False,
 ) -> None:
     """
     转换数据格式。
@@ -50,54 +52,55 @@ def transform(
         preset: 使用预设模板（openai_chat, alpaca, sharegpt, dpo_pair, simple_qa）
         config: 配置文件路径（可选，默认 .dt/<filename>.py）
         output: 输出文件路径
+        dry_run: 预演模式。转换前 N 条到内存后输出摘要 + 首条示例，不写出文件
 
     Examples:
         dt transform data.jsonl                        # 首次生成配置
         dt transform data.jsonl 10                     # 只转换前 10 条
         dt transform data.jsonl --preset=openai_chat   # 使用预设
         dt transform data.jsonl 100 --preset=alpaca    # 预设 + 限制数量
+        dt transform data.jsonl --preset=alpaca --dry-run  # 预演转换
     """
     filepath = Path(filename)
-    if not filepath.exists():
-        print(f"错误: 文件不存在 - {filename}")
-        return
-
-    if not _check_file_format(filepath):
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
     # 预设模式：直接使用预设转换
     if preset:
-        _execute_preset_transform(filepath, preset, output, num)
+        _execute_preset_transform(filepath, preset, output, num, dry_run=dry_run)
         return
 
     # 配置文件模式
     config_path = _get_config_path(filepath, config)
 
     if not config_path.exists():
+        if dry_run:
+            die_usage(
+                "首次使用需要先生成配置，--dry-run 对配置生成无效",
+                suggestion=f"先执行: dt transform {filename}",
+            )
         _generate_config(filepath, config_path)
     else:
-        _execute_transform(filepath, config_path, output, num)
+        _execute_transform(filepath, config_path, output, num, dry_run=dry_run)
 
 
 def _generate_config(input_path: Path, config_path: Path) -> None:
     """分析输入数据并生成配置文件"""
-    print(f"📊 分析输入数据: {input_path}")
+    log(f"📊 分析输入数据: {input_path}")
 
     # 读取数据
     try:
         data = load_data(str(input_path))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(input_path))
 
     if not data:
-        print("错误: 文件为空")
-        return
+        die("empty_file", "文件为空", exit_code=1)
 
     total_count = len(data)
     sample_item = data[0]
 
-    print(f"   检测到 {total_count} 条数据")
+    log(f"   检测到 {total_count} 条数据")
 
     # 生成配置内容
     config_content = _build_config_content(sample_item, input_path.name, total_count)
@@ -108,10 +111,17 @@ def _generate_config(input_path: Path, config_path: Path) -> None:
     # 写入配置文件
     config_path.write_text(config_content, encoding="utf-8")
 
-    print(f"\n📝 已生成配置文件: {config_path}")
-    print("\n👉 下一步:")
-    print(f"   1. 编辑 {config_path}，定义 transform 函数")
-    print(f"   2. 再次执行 dt transform {input_path.name} 完成转换")
+    log(f"\n📝 已生成配置文件: {config_path}")
+    log("\n👉 下一步:")
+    log(f"   1. 编辑 {config_path}，定义 transform 函数")
+    log(f"   2. 再次执行 dt transform {input_path.name} 完成转换")
+    emit_action(
+        "transform",
+        status="config_generated",
+        input_files=[str(input_path)],
+        output=str(config_path),
+        stats={"rows": total_count},
+    )
 
 
 def _build_config_content(sample: Dict[str, Any], filename: str, total: int) -> str:
@@ -288,85 +298,98 @@ def _execute_transform(
     config_path: Path,
     output_override: Optional[str],
     num: Optional[int],
+    dry_run: bool = False,
 ) -> None:
     """执行数据转换（默认流式处理）"""
-    print(f"📂 加载配置: {config_path}")
+    log(f"📂 加载配置: {config_path}")
 
     # 动态加载配置文件
     try:
         config_ns = _load_config(config_path)
     except Exception as e:
-        print(f"错误: 无法加载配置文件 - {e}")
-        return
+        die("config_load_failed", f"无法加载配置文件: {e}")
 
     # 获取 transform 函数
     if "transform" not in config_ns:
-        print("错误: 配置文件中未定义 transform 函数")
-        return
+        die_usage(
+            "配置文件中未定义 transform 函数",
+            suggestion=f"编辑 {config_path} 并添加 transform(item) 函数",
+        )
 
     transform_func = config_ns["transform"]
 
     # 获取输出路径
     output_path = output_override or config_ns.get("output", "output.jsonl")
 
-    # 对于 JSONL 文件使用流式处理
-    if _is_streaming_supported(input_path):
-        print(f"📊 流式加载: {input_path}")
-        print("🔄 执行转换...")
-        try:
-            # 包装转换函数以支持属性访问（配置文件中定义的 Item 类）
-            def wrapped_transform(item):
-                result = transform_func(DictWrapper(item))
-                return _unwrap(result)
+    def wrapped_transform(item):
+        result = transform_func(DictWrapper(item))
+        return _unwrap(result)
 
+    # 对于 JSONL 文件使用流式处理（dry-run 时强制走内存模式统计）
+    if _is_streaming_supported(input_path) and not dry_run:
+        log(f"📊 流式加载: {input_path}")
+        log("🔄 执行转换...")
+        try:
             st = load_stream(str(input_path))
             if num:
                 st = st.head(num)
             count = st.transform(wrapped_transform, raw=True).save(output_path)
-            print(f"💾 保存结果: {output_path}")
-            print(f"\n✅ 完成! 已转换 {count} 条数据到 {output_path}")
+            log(f"💾 保存结果: {output_path}")
+            emit_action(
+                "transform",
+                input_files=[str(input_path)],
+                output=output_path,
+                stats={"output_rows": count},
+            )
         except Exception as e:
-            print(f"错误: 转换失败 - {e}")
-            import traceback
-
-            traceback.print_exc()
+            die("transform_failed", f"转换失败: {e}")
         return
 
-    # 非 JSONL 文件使用传统方式
-    print(f"📊 加载数据: {input_path}")
+    # 内存模式（非流式或 dry-run）
+    log(f"📊 加载数据: {input_path}")
     try:
         dt = DataTransformer.load(str(input_path))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(input_path))
 
     total = len(dt)
     if num:
         dt = DataTransformer(dt.data[:num])
-        print(f"   处理前 {len(dt)}/{total} 条数据")
+        log(f"   处理前 {len(dt)}/{total} 条数据")
     else:
-        print(f"   共 {total} 条数据")
+        log(f"   共 {total} 条数据")
 
-    # 执行转换（使用 Core 的 to 方法，自动支持属性访问）
-    print("🔄 执行转换...")
+    log("🔄 执行转换...")
     try:
         results = dt.to(transform_func)
     except Exception as e:
-        print(f"错误: 转换失败 - {e}")
-        import traceback
+        die("transform_failed", f"转换失败: {e}")
 
-        traceback.print_exc()
+    stats = {"input_rows": total, "output_rows": len(results)}
+    if dry_run:
+        preview = results[0] if results else None
+        emit_action(
+            "transform",
+            input_files=[str(input_path)],
+            output=output_path,
+            stats=stats,
+            extra={"preview": preview} if preview is not None else None,
+            dry_run=True,
+        )
         return
 
-    # 保存结果
-    print(f"💾 保存结果: {output_path}")
+    log(f"💾 保存结果: {output_path}")
     try:
         save_data(results, output_path)
     except Exception as e:
-        print(f"错误: 无法保存文件 - {e}")
-        return
+        die_io_error(e, operation="保存", path=output_path)
 
-    print(f"\n✅ 完成! 已转换 {len(results)} 条数据到 {output_path}")
+    emit_action(
+        "transform",
+        input_files=[str(input_path)],
+        output=output_path,
+        stats=stats,
+    )
 
 
 def _execute_preset_transform(
@@ -374,33 +397,37 @@ def _execute_preset_transform(
     preset_name: str,
     output_override: Optional[str],
     num: Optional[int],
+    dry_run: bool = False,
 ) -> None:
     """使用预设模板执行转换（默认流式处理）"""
-    print(f"📂 使用预设: {preset_name}")
+    log(f"📂 使用预设: {preset_name}")
 
     # 获取预设函数
     try:
         transform_func = get_preset(preset_name)
     except ValueError as e:
-        print(f"错误: {e}")
-        print(f"可用预设: {', '.join(list_presets())}")
-        return
+        die_usage(
+            str(e),
+            suggestion=f"可用预设: {', '.join(list_presets())}",
+        )
 
     output_path = output_override or f"{input_path.stem}_{preset_name}.jsonl"
 
-    # 检查输入输出是否相同
-    input_resolved = input_path.resolve()
-    output_resolved = Path(output_path).resolve()
-    use_temp_file = input_resolved == output_resolved
+    def wrapped_transform(item):
+        result = transform_func(DictWrapper(item))
+        return _unwrap(result)
 
-    # 对于 JSONL 文件使用流式处理
-    if _is_streaming_supported(input_path):
-        print(f"📊 流式加载: {input_path}")
-        print("🔄 执行转换...")
+    # 对于 JSONL 文件使用流式处理（dry-run 时走内存模式）
+    if _is_streaming_supported(input_path) and not dry_run:
+        input_resolved = input_path.resolve()
+        output_resolved = Path(output_path).resolve()
+        use_temp_file = input_resolved == output_resolved
 
-        # 如果输入输出相同，使用临时文件
+        log(f"📊 流式加载: {input_path}")
+        log("🔄 执行转换...")
+
         if use_temp_file:
-            print("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
+            log("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
             temp_fd, temp_path = tempfile.mkstemp(
                 suffix=output_resolved.suffix,
                 prefix=".tmp_",
@@ -412,67 +439,72 @@ def _execute_preset_transform(
             actual_output = output_path
 
         try:
-            # 包装转换函数以支持属性访问
-            def wrapped_transform(item):
-                result = transform_func(DictWrapper(item))
-                return _unwrap(result)
-
             st = load_stream(str(input_path))
             if num:
                 st = st.head(num)
             count = st.transform(wrapped_transform, raw=True).save(actual_output)
 
-            # 如果使用了临时文件，移动到目标位置
             if use_temp_file:
                 shutil.move(temp_path, output_path)
 
-            print(f"💾 保存结果: {output_path}")
-            print(f"\n✅ 完成! 已转换 {count} 条数据到 {output_path}")
+            log(f"💾 保存结果: {output_path}")
+            emit_action(
+                "transform",
+                input_files=[str(input_path)],
+                output=output_path,
+                stats={"output_rows": count, "preset": preset_name},
+            )
         except Exception as e:
-            # 清理临时文件
             if use_temp_file and os.path.exists(temp_path):
                 os.unlink(temp_path)
-            print(f"错误: 转换失败 - {e}")
-            import traceback
-
-            traceback.print_exc()
+            die("transform_failed", f"转换失败: {e}")
         return
 
-    # 非 JSONL 文件使用传统方式
-    print(f"📊 加载数据: {input_path}")
+    # 内存模式（非流式或 dry-run）
+    log(f"📊 加载数据: {input_path}")
     try:
         dt = DataTransformer.load(str(input_path))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(input_path))
 
     total = len(dt)
     if num:
         dt = DataTransformer(dt.data[:num])
-        print(f"   处理前 {len(dt)}/{total} 条数据")
+        log(f"   处理前 {len(dt)}/{total} 条数据")
     else:
-        print(f"   共 {total} 条数据")
+        log(f"   共 {total} 条数据")
 
-    # 执行转换
-    print("🔄 执行转换...")
+    log("🔄 执行转换...")
     try:
         results = dt.to(transform_func)
     except Exception as e:
-        print(f"错误: 转换失败 - {e}")
-        import traceback
+        die("transform_failed", f"转换失败: {e}")
 
-        traceback.print_exc()
+    stats = {"input_rows": total, "output_rows": len(results), "preset": preset_name}
+    if dry_run:
+        preview = results[0] if results else None
+        emit_action(
+            "transform",
+            input_files=[str(input_path)],
+            output=output_path,
+            stats=stats,
+            extra={"preview": preview} if preview is not None else None,
+            dry_run=True,
+        )
         return
 
-    # 保存结果
-    print(f"💾 保存结果: {output_path}")
+    log(f"💾 保存结果: {output_path}")
     try:
         save_data(results, output_path)
     except Exception as e:
-        print(f"错误: 无法保存文件 - {e}")
-        return
+        die_io_error(e, operation="保存", path=output_path)
 
-    print(f"\n✅ 完成! 已转换 {len(results)} 条数据到 {output_path}")
+    emit_action(
+        "transform",
+        input_files=[str(input_path)],
+        output=output_path,
+        stats=stats,
+    )
 
 
 def _load_config(config_path: Path) -> Dict[str, Any]:

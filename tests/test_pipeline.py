@@ -1,18 +1,13 @@
 """
 Tests for pipeline module.
 """
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from dtflow import DataTransformer
 from dtflow.pipeline import (
-    generate_pipeline_template,
-    run_pipeline,
-    validate_pipeline,
-    _execute_filter,
     _execute_dedupe,
+    _execute_filter,
     _execute_head,
     _execute_sample,
     _execute_shuffle,
@@ -21,6 +16,9 @@ from dtflow.pipeline import (
     _execute_transform,
     _format_step_description,
     _parse_condition,
+    generate_pipeline_template,
+    run_pipeline,
+    validate_pipeline,
 )
 
 
@@ -112,11 +110,13 @@ class TestExecuteFilter:
 
     def test_filter_with_condition(self):
         """Test filter with condition."""
-        dt = DataTransformer([
-            {"score": 0.8, "text": "high"},
-            {"score": 0.3, "text": "low"},
-            {"score": 0.9, "text": "higher"},
-        ])
+        dt = DataTransformer(
+            [
+                {"score": 0.8, "text": "high"},
+                {"score": 0.3, "text": "low"},
+                {"score": 0.9, "text": "higher"},
+            ]
+        )
 
         result = _execute_filter(dt, {"condition": "score > 0.5"})
 
@@ -125,11 +125,13 @@ class TestExecuteFilter:
 
     def test_filter_with_field(self):
         """Test filter with field only (non-empty check)."""
-        dt = DataTransformer([
-            {"text": "hello"},
-            {"text": ""},
-            {"text": "world"},
-        ])
+        dt = DataTransformer(
+            [
+                {"text": "hello"},
+                {"text": ""},
+                {"text": "world"},
+            ]
+        )
 
         result = _execute_filter(dt, {"field": "text"})
 
@@ -180,11 +182,13 @@ class TestExecuteDedupe:
 
     def test_dedupe_with_key(self):
         """Test dedupe with key."""
-        dt = DataTransformer([
-            {"text": "hello", "id": 1},
-            {"text": "hello", "id": 2},
-            {"text": "world", "id": 3},
-        ])
+        dt = DataTransformer(
+            [
+                {"text": "hello", "id": 1},
+                {"text": "hello", "id": 2},
+                {"text": "world", "id": 3},
+            ]
+        )
 
         result = _execute_dedupe(dt, {"key": "text"})
 
@@ -192,11 +196,13 @@ class TestExecuteDedupe:
 
     def test_dedupe_similar(self):
         """Test dedupe with similarity."""
-        dt = DataTransformer([
-            {"text": "hello world", "id": 1},
-            {"text": "hello there", "id": 2},
-            {"text": "completely different", "id": 3},
-        ])
+        dt = DataTransformer(
+            [
+                {"text": "hello world", "id": 1},
+                {"text": "hello there", "id": 2},
+                {"text": "completely different", "id": 3},
+            ]
+        )
 
         result = _execute_dedupe(dt, {"key": "text", "similar": 0.5})
 
@@ -212,11 +218,13 @@ class TestExecuteDedupe:
 
     def test_dedupe_multi_field_key(self):
         """Test dedupe with comma-separated multi-field key."""
-        dt = DataTransformer([
-            {"a": 1, "b": 2, "value": "x"},
-            {"a": 1, "b": 2, "value": "y"},
-            {"a": 1, "b": 3, "value": "z"},
-        ])
+        dt = DataTransformer(
+            [
+                {"a": 1, "b": 2, "value": "x"},
+                {"a": 1, "b": 2, "value": "y"},
+                {"a": 1, "b": 3, "value": "z"},
+            ]
+        )
 
         result = _execute_dedupe(dt, {"key": "a,b"})
 
@@ -403,15 +411,18 @@ class TestRunPipeline:
         """Test basic pipeline execution."""
         # 创建输入文件
         input_file = tmp_path / "input.jsonl"
-        DataTransformer([
-            {"score": 0.8, "text": "high"},
-            {"score": 0.3, "text": "low"},
-            {"score": 0.9, "text": "higher"},
-        ]).save(str(input_file))
+        DataTransformer(
+            [
+                {"score": 0.8, "text": "high"},
+                {"score": 0.3, "text": "low"},
+                {"score": 0.9, "text": "higher"},
+            ]
+        ).save(str(input_file))
 
         # 创建配置文件
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text(f"""
+        config_file.write_text(
+            f"""
 version: "1.0"
 seed: 42
 input: {input_file}
@@ -424,7 +435,8 @@ steps:
     params:
       user_field: text
       assistant_field: text
-""")
+"""
+        )
 
         # 执行 pipeline
         result = run_pipeline(str(config_file), verbose=False)
@@ -441,21 +453,23 @@ steps:
 
         # 创建配置文件
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 input: default.jsonl
 output: default_output.jsonl
 steps:
   - type: head
     num: 1
-""")
+"""
+        )
 
         # 执行 pipeline，覆盖输入输出
         result = run_pipeline(
             str(config_file),
             input_file=str(input_file),
             output_file=str(output_file),
-            verbose=False
+            verbose=False,
         )
 
         assert len(result) == 1
@@ -464,10 +478,12 @@ steps:
     def test_run_pipeline_no_input(self, tmp_path):
         """Test pipeline without input raises error."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 steps: []
-""")
+"""
+        )
 
         with pytest.raises(ValueError, match="未指定输入文件"):
             run_pipeline(str(config_file), verbose=False)
@@ -478,12 +494,14 @@ steps: []
         DataTransformer([{"text": "hello"}]).save(str(input_file))
 
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text(f"""
+        config_file.write_text(
+            f"""
 version: "1.0"
 input: {input_file}
 steps:
   - type: invalid_type
-""")
+"""
+        )
 
         with pytest.raises(ValueError, match="未知步骤类型"):
             run_pipeline(str(config_file), verbose=False)
@@ -494,12 +512,14 @@ steps:
         DataTransformer([{"text": "hello"}]).save(str(input_file))
 
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text(f"""
+        config_file.write_text(
+            f"""
 version: "1.0"
 input: {input_file}
 steps:
   - condition: "score > 0.5"
-""")
+"""
+        )
 
         with pytest.raises(ValueError, match="未指定 type"):
             run_pipeline(str(config_file), verbose=False)
@@ -511,14 +531,16 @@ class TestValidatePipeline:
     def test_validate_valid_pipeline(self, tmp_path):
         """Test validating a valid pipeline."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 steps:
   - type: filter
     condition: "score > 0.5"
   - type: transform
     preset: openai_chat
-""")
+"""
+        )
 
         errors = validate_pipeline(str(config_file))
 
@@ -527,9 +549,11 @@ steps:
     def test_validate_missing_steps(self, tmp_path):
         """Test validating pipeline without steps."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
-""")
+"""
+        )
 
         errors = validate_pipeline(str(config_file))
 
@@ -538,11 +562,13 @@ version: "1.0"
     def test_validate_missing_step_type(self, tmp_path):
         """Test validating step without type."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 steps:
   - condition: "score > 0.5"
-""")
+"""
+        )
 
         errors = validate_pipeline(str(config_file))
 
@@ -551,11 +577,13 @@ steps:
     def test_validate_invalid_step_type(self, tmp_path):
         """Test validating step with invalid type."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 steps:
   - type: invalid_type
-""")
+"""
+        )
 
         errors = validate_pipeline(str(config_file))
 
@@ -564,11 +592,13 @@ steps:
     def test_validate_transform_without_preset(self, tmp_path):
         """Test validating transform without preset."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 steps:
   - type: transform
-""")
+"""
+        )
 
         errors = validate_pipeline(str(config_file))
 
@@ -577,11 +607,13 @@ steps:
     def test_validate_filter_without_condition(self, tmp_path):
         """Test validating filter without condition."""
         config_file = tmp_path / "pipeline.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 version: "1.0"
 steps:
   - type: filter
-""")
+"""
+        )
 
         errors = validate_pipeline(str(config_file))
 
@@ -638,7 +670,7 @@ class TestGeneratePipelineTemplate:
 
         output_file = tmp_path / "pipeline.yaml"
 
-        result = generate_pipeline_template(str(input_file), str(output_file))
+        generate_pipeline_template(str(input_file), str(output_file))
 
         content = output_file.read_text()
         assert "openai_chat" in content

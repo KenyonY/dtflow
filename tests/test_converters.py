@@ -1,22 +1,22 @@
 """
 Tests for converters module.
 """
+
 import pytest
+
 from dtflow import DataTransformer
-from dtflow.converters import (
-    to_hf_dataset,
+from dtflow.converters import (  # LLaMA-Factory 扩展; ms-swift
     from_hf_dataset,
-    to_hf_chat_format,
     from_openai_batch,
-    to_openai_batch,
-    to_llama_factory,
-    to_axolotl,
     messages_to_text,
-    # LLaMA-Factory 扩展
+    to_axolotl,
+    to_hf_chat_format,
+    to_hf_dataset,
+    to_llama_factory,
     to_llama_factory_sharegpt,
     to_llama_factory_vlm,
     to_llama_factory_vlm_sharegpt,
-    # ms-swift
+    to_openai_batch,
     to_swift_messages,
     to_swift_query_response,
     to_swift_vlm,
@@ -79,11 +79,7 @@ class TestOpenAIBatchConverters:
 
     def test_to_openai_batch(self):
         """Test conversion to OpenAI batch format."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"}
-            ]
-        }]
+        data = [{"messages": [{"role": "user", "content": "Hello"}]}]
         dt = DataTransformer(data)
 
         result = dt.to(to_openai_batch(model="gpt-4o"))
@@ -97,10 +93,7 @@ class TestOpenAIBatchConverters:
 
     def test_to_openai_batch_with_custom_id(self):
         """Test with custom ID field."""
-        data = [{
-            "id": "my-request-1",
-            "messages": [{"role": "user", "content": "Hello"}]
-        }]
+        data = [{"id": "my-request-1", "messages": [{"role": "user", "content": "Hello"}]}]
         dt = DataTransformer(data)
 
         result = dt.to(to_openai_batch(custom_id_field="id"))
@@ -109,17 +102,19 @@ class TestOpenAIBatchConverters:
 
     def test_from_openai_batch(self):
         """Test conversion from OpenAI batch results."""
-        batch_output = [{
-            "custom_id": "req-1",
-            "response": {
-                "status_code": 200,
-                "body": {
-                    "choices": [{"message": {"content": "Hi there!"}}],
-                    "model": "gpt-4o",
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5}
-                }
+        batch_output = [
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "choices": [{"message": {"content": "Hi there!"}}],
+                        "model": "gpt-4o",
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                    },
+                },
             }
-        }]
+        ]
 
         results = from_openai_batch(batch_output)
 
@@ -135,19 +130,13 @@ class TestOpenAIBatchConverters:
                 "custom_id": "req-1",
                 "response": {
                     "status_code": 200,
-                    "body": {
-                        "choices": [{"message": {"content": "Success"}}],
-                        "model": "gpt-4o"
-                    }
-                }
+                    "body": {"choices": [{"message": {"content": "Success"}}], "model": "gpt-4o"},
+                },
             },
             {
                 "custom_id": "req-2",
-                "response": {
-                    "status_code": 500,
-                    "body": {"error": "Internal error"}
-                }
-            }
+                "response": {"status_code": 500, "body": {"error": "Internal error"}},
+            },
         ]
 
         results = from_openai_batch(batch_output)
@@ -161,11 +150,7 @@ class TestLLaMAFactoryConverter:
 
     def test_to_llama_factory_basic(self):
         """Test basic conversion."""
-        data = [{
-            "instruction": "写一首诗",
-            "input": "",
-            "output": "春风吹过..."
-        }]
+        data = [{"instruction": "写一首诗", "input": "", "output": "春风吹过..."}]
         dt = DataTransformer(data)
 
         result = dt.to(to_llama_factory())
@@ -179,11 +164,7 @@ class TestLLaMAFactoryConverter:
         data = [{"q": "问题", "ctx": "上下文", "a": "回答"}]
         dt = DataTransformer(data)
 
-        result = dt.to(to_llama_factory(
-            instruction_field="q",
-            input_field="ctx",
-            output_field="a"
-        ))
+        result = dt.to(to_llama_factory(instruction_field="q", input_field="ctx", output_field="a"))
 
         assert result[0]["instruction"] == "问题"
         assert result[0]["input"] == "上下文"
@@ -191,12 +172,7 @@ class TestLLaMAFactoryConverter:
 
     def test_to_llama_factory_with_system(self):
         """Test with system prompt."""
-        data = [{
-            "instruction": "问题",
-            "input": "",
-            "output": "回答",
-            "sys": "你是助手"
-        }]
+        data = [{"instruction": "问题", "input": "", "output": "回答", "sys": "你是助手"}]
         dt = DataTransformer(data)
 
         result = dt.to(to_llama_factory(system_field="sys"))
@@ -209,12 +185,14 @@ class TestAxolotlConverter:
 
     def test_to_axolotl_with_conversations(self):
         """Test conversion with existing conversations."""
-        data = [{
-            "conversations": [
-                {"from": "human", "value": "Hi"},
-                {"from": "gpt", "value": "Hello!"}
-            ]
-        }]
+        data = [
+            {
+                "conversations": [
+                    {"from": "human", "value": "Hi"},
+                    {"from": "gpt", "value": "Hello!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
 
         result = dt.to(to_axolotl())
@@ -224,12 +202,14 @@ class TestAxolotlConverter:
 
     def test_to_axolotl_from_messages(self):
         """Test conversion from messages format."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hi"},
-                {"role": "assistant", "content": "Hello!"}
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
 
         result = dt.to(to_axolotl())
@@ -244,13 +224,15 @@ class TestMessagesToText:
 
     @pytest.fixture
     def messages_data(self):
-        return [{
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hi"},
-                {"role": "assistant", "content": "Hello!"}
-            ]
-        }]
+        return [
+            {
+                "messages": [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello!"},
+                ]
+            }
+        ]
 
     def test_messages_to_text_chatml(self, messages_data):
         """Test ChatML template."""
@@ -326,12 +308,14 @@ class TestConvertersEdgeCases:
 
     def test_to_llama_factory_with_history(self):
         """Test LLaMA-Factory converter with history field."""
-        data = [{
-            "instruction": "问题",
-            "input": "",
-            "output": "回答",
-            "hist": [["之前的问题", "之前的回答"]]
-        }]
+        data = [
+            {
+                "instruction": "问题",
+                "input": "",
+                "output": "回答",
+                "hist": [["之前的问题", "之前的回答"]],
+            }
+        ]
         dt = DataTransformer(data)
 
         result = dt.to(to_llama_factory(history_field="hist"))
@@ -349,12 +333,14 @@ class TestConvertersEdgeCases:
 
     def test_to_axolotl_custom_keys(self):
         """Test Axolotl converter with custom keys."""
-        data = [{
-            "conversations": [
-                {"speaker": "human", "text": "Hi"},
-                {"speaker": "gpt", "text": "Hello!"}
-            ]
-        }]
+        data = [
+            {
+                "conversations": [
+                    {"speaker": "human", "text": "Hi"},
+                    {"speaker": "gpt", "text": "Hello!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
 
         result = dt.to(to_axolotl(from_key="speaker", value_key="text"))
@@ -373,11 +359,13 @@ class TestConvertersEdgeCases:
 
     def test_messages_to_text_preserves_original_fields(self):
         """Test that messages_to_text preserves original fields."""
-        data = [{
-            "id": "123",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "metadata": {"source": "test"}
-        }]
+        data = [
+            {
+                "id": "123",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "metadata": {"source": "test"},
+            }
+        ]
         dt = DataTransformer(data)
 
         result = dt.to(messages_to_text())
@@ -388,12 +376,14 @@ class TestConvertersEdgeCases:
 
     def test_messages_to_text_llama2_template(self):
         """Test llama2 template format."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi there!"}
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi there!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
 
         result = dt.to(messages_to_text(template="llama2"))
@@ -421,17 +411,19 @@ class TestConvertersEdgeCases:
 
     def test_from_openai_batch_with_usage(self):
         """Test from_openai_batch extracts usage info."""
-        batch_output = [{
-            "custom_id": "req-1",
-            "response": {
-                "status_code": 200,
-                "body": {
-                    "choices": [{"message": {"content": "Response"}}],
-                    "model": "gpt-4o",
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
-                }
+        batch_output = [
+            {
+                "custom_id": "req-1",
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "choices": [{"message": {"content": "Response"}}],
+                        "model": "gpt-4o",
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+                    },
+                },
             }
-        }]
+        ]
 
         results = from_openai_batch(batch_output)
 
@@ -448,10 +440,12 @@ class TestHuggingFaceDatasetDict:
         datasets = pytest.importorskip("datasets")
 
         # 创建一个 DatasetDict
-        ds_dict = datasets.DatasetDict({
-            "train": datasets.Dataset.from_list([{"text": "train"}]),
-            "test": datasets.Dataset.from_list([{"text": "test"}]),
-        })
+        ds_dict = datasets.DatasetDict(
+            {
+                "train": datasets.Dataset.from_list([{"text": "train"}]),
+                "test": datasets.Dataset.from_list([{"text": "test"}]),
+            }
+        )
 
         data = from_hf_dataset(ds_dict, split="test")
 
@@ -462,10 +456,12 @@ class TestHuggingFaceDatasetDict:
         """Test from_hf_dataset with DatasetDict uses first split."""
         datasets = pytest.importorskip("datasets")
 
-        ds_dict = datasets.DatasetDict({
-            "train": datasets.Dataset.from_list([{"text": "first"}]),
-            "test": datasets.Dataset.from_list([{"text": "second"}]),
-        })
+        ds_dict = datasets.DatasetDict(
+            {
+                "train": datasets.Dataset.from_list([{"text": "first"}]),
+                "test": datasets.Dataset.from_list([{"text": "second"}]),
+            }
+        )
 
         data = from_hf_dataset(ds_dict)
 
@@ -475,7 +471,7 @@ class TestHuggingFaceDatasetDict:
 
     def test_to_hf_dataset_empty(self):
         """Test to_hf_dataset with empty data."""
-        datasets = pytest.importorskip("datasets")
+        pytest.importorskip("datasets")
 
         ds = to_hf_dataset([])
 
@@ -487,15 +483,17 @@ class TestLLaMAFactoryShareGPT:
 
     @pytest.fixture
     def messages_data(self):
-        return [{
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi there!"},
-                {"role": "user", "content": "How are you?"},
-                {"role": "assistant", "content": "I am fine."},
-            ]
-        }]
+        return [
+            {
+                "messages": [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi there!"},
+                    {"role": "user", "content": "How are you?"},
+                    {"role": "assistant", "content": "I am fine."},
+                ]
+            }
+        ]
 
     def test_to_llama_factory_sharegpt_basic(self, messages_data):
         """Test basic ShareGPT conversion."""
@@ -511,12 +509,14 @@ class TestLLaMAFactoryShareGPT:
 
     def test_to_llama_factory_sharegpt_no_system(self):
         """Test conversion without system message."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hi"},
-                {"role": "assistant", "content": "Hello!"},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_sharegpt())
 
@@ -526,13 +526,15 @@ class TestLLaMAFactoryShareGPT:
 
     def test_to_llama_factory_sharegpt_with_system_field(self):
         """Test conversion with explicit system field."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hi"},
-                {"role": "assistant", "content": "Hello!"},
-            ],
-            "system_prompt": "Custom system message",
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello!"},
+                ],
+                "system_prompt": "Custom system message",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_sharegpt(system_field="system_prompt"))
 
@@ -540,13 +542,15 @@ class TestLLaMAFactoryShareGPT:
 
     def test_to_llama_factory_sharegpt_with_tools(self):
         """Test conversion with tools field."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Use calculator"},
-                {"role": "assistant", "content": "OK"},
-            ],
-            "tools_desc": "Calculator tool available",
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Use calculator"},
+                    {"role": "assistant", "content": "OK"},
+                ],
+                "tools_desc": "Calculator tool available",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_sharegpt(tools_field="tools_desc"))
 
@@ -554,13 +558,15 @@ class TestLLaMAFactoryShareGPT:
 
     def test_to_llama_factory_sharegpt_role_mapping(self):
         """Test correct role mapping."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Query"},
-                {"role": "assistant", "content": "Response"},
-                {"role": "tool", "content": "Tool result"},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Query"},
+                    {"role": "assistant", "content": "Response"},
+                    {"role": "tool", "content": "Tool result"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_sharegpt())
 
@@ -574,14 +580,16 @@ class TestLLaMAFactoryVLM:
 
     @pytest.fixture
     def vlm_data(self):
-        return [{
-            "messages": [
-                {"role": "system", "content": "Describe images."},
-                {"role": "user", "content": "What is in this image?"},
-                {"role": "assistant", "content": "A cat sitting on a couch."},
-            ],
-            "images": ["/path/to/cat.jpg"],
-        }]
+        return [
+            {
+                "messages": [
+                    {"role": "system", "content": "Describe images."},
+                    {"role": "user", "content": "What is in this image?"},
+                    {"role": "assistant", "content": "A cat sitting on a couch."},
+                ],
+                "images": ["/path/to/cat.jpg"],
+            }
+        ]
 
     def test_to_llama_factory_vlm_basic(self, vlm_data):
         """Test basic VLM conversion."""
@@ -596,13 +604,15 @@ class TestLLaMAFactoryVLM:
 
     def test_to_llama_factory_vlm_multiple_images(self):
         """Test VLM with multiple images."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Compare these images."},
-                {"role": "assistant", "content": "The first shows..."},
-            ],
-            "images": ["/path/to/img1.jpg", "/path/to/img2.jpg"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Compare these images."},
+                    {"role": "assistant", "content": "The first shows..."},
+                ],
+                "images": ["/path/to/img1.jpg", "/path/to/img2.jpg"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_vlm())
 
@@ -610,13 +620,15 @@ class TestLLaMAFactoryVLM:
 
     def test_to_llama_factory_vlm_single_image_string(self):
         """Test VLM with single image as string."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Describe."},
-                {"role": "assistant", "content": "A dog."},
-            ],
-            "image": "/path/to/dog.jpg",
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Describe."},
+                    {"role": "assistant", "content": "A dog."},
+                ],
+                "image": "/path/to/dog.jpg",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_vlm(images_field="image"))
 
@@ -624,14 +636,16 @@ class TestLLaMAFactoryVLM:
 
     def test_to_llama_factory_vlm_with_videos(self):
         """Test VLM with video support."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "What happens?"},
-                {"role": "assistant", "content": "A person walks."},
-            ],
-            "images": ["/path/to/frame.jpg"],
-            "videos": ["/path/to/video.mp4"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "What happens?"},
+                    {"role": "assistant", "content": "A person walks."},
+                ],
+                "images": ["/path/to/frame.jpg"],
+                "videos": ["/path/to/video.mp4"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_vlm(videos_field="videos"))
 
@@ -640,12 +654,14 @@ class TestLLaMAFactoryVLM:
 
     def test_to_llama_factory_vlm_no_images(self):
         """Test VLM without images field."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi"},
-            ],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi"},
+                ],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_vlm())
 
@@ -657,14 +673,16 @@ class TestLLaMAFactoryVLMShareGPT:
 
     def test_to_llama_factory_vlm_sharegpt_basic(self):
         """Test basic VLM ShareGPT conversion."""
-        data = [{
-            "messages": [
-                {"role": "system", "content": "You can see images."},
-                {"role": "user", "content": "<image>Describe this."},
-                {"role": "assistant", "content": "This is a landscape."},
-            ],
-            "images": ["/path/to/landscape.jpg"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "system", "content": "You can see images."},
+                    {"role": "user", "content": "<image>Describe this."},
+                    {"role": "assistant", "content": "This is a landscape."},
+                ],
+                "images": ["/path/to/landscape.jpg"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_vlm_sharegpt())
 
@@ -676,15 +694,17 @@ class TestLLaMAFactoryVLMShareGPT:
 
     def test_to_llama_factory_vlm_sharegpt_multi_turn(self):
         """Test VLM ShareGPT with multiple turns."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "<image>What is this?"},
-                {"role": "assistant", "content": "A flower."},
-                {"role": "user", "content": "What color?"},
-                {"role": "assistant", "content": "It's red."},
-            ],
-            "images": ["/path/to/flower.jpg"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "<image>What is this?"},
+                    {"role": "assistant", "content": "A flower."},
+                    {"role": "user", "content": "What color?"},
+                    {"role": "assistant", "content": "It's red."},
+                ],
+                "images": ["/path/to/flower.jpg"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_llama_factory_vlm_sharegpt())
 
@@ -697,13 +717,15 @@ class TestSwiftMessages:
 
     def test_to_swift_messages_basic(self):
         """Test basic messages conversion."""
-        data = [{
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_messages())
 
@@ -715,13 +737,15 @@ class TestSwiftMessages:
 
     def test_to_swift_messages_with_system_field(self):
         """Test messages conversion with external system field."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ],
-            "sys_prompt": "Be helpful.",
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ],
+                "sys_prompt": "Be helpful.",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_messages(system_field="sys_prompt"))
 
@@ -731,11 +755,13 @@ class TestSwiftMessages:
 
     def test_to_swift_messages_standardizes_format(self):
         """Test that messages are standardized."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hi", "extra": "field"},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi", "extra": "field"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_messages())
 
@@ -748,10 +774,12 @@ class TestSwiftQueryResponse:
 
     def test_to_swift_query_response_basic(self):
         """Test basic query-response conversion."""
-        data = [{
-            "query": "What is Python?",
-            "response": "A programming language.",
-        }]
+        data = [
+            {
+                "query": "What is Python?",
+                "response": "A programming language.",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_query_response())
 
@@ -760,11 +788,13 @@ class TestSwiftQueryResponse:
 
     def test_to_swift_query_response_with_system(self):
         """Test query-response with system prompt."""
-        data = [{
-            "query": "Hello",
-            "response": "Hi!",
-            "sys": "Be friendly.",
-        }]
+        data = [
+            {
+                "query": "Hello",
+                "response": "Hi!",
+                "sys": "Be friendly.",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_query_response(system_field="sys"))
 
@@ -772,11 +802,13 @@ class TestSwiftQueryResponse:
 
     def test_to_swift_query_response_with_history(self):
         """Test query-response with history."""
-        data = [{
-            "query": "And you?",
-            "response": "I'm fine too.",
-            "hist": [["Hello", "Hi!"], ["How are you?", "I'm good."]],
-        }]
+        data = [
+            {
+                "query": "And you?",
+                "response": "I'm fine too.",
+                "hist": [["Hello", "Hi!"], ["How are you?", "I'm good."]],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_query_response(history_field="hist"))
 
@@ -784,15 +816,17 @@ class TestSwiftQueryResponse:
 
     def test_to_swift_query_response_from_messages(self):
         """Test conversion from messages format."""
-        data = [{
-            "messages": [
-                {"role": "system", "content": "Be helpful."},
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-                {"role": "user", "content": "How are you?"},
-                {"role": "assistant", "content": "I'm fine."},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "system", "content": "Be helpful."},
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                    {"role": "user", "content": "How are you?"},
+                    {"role": "assistant", "content": "I'm fine."},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_query_response(query_field="messages"))
 
@@ -803,12 +837,14 @@ class TestSwiftQueryResponse:
 
     def test_to_swift_query_response_from_messages_single_turn(self):
         """Test conversion from single-turn messages."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_query_response(query_field="messages"))
 
@@ -822,13 +858,15 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_basic(self):
         """Test basic VLM conversion."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "<image>Describe this."},
-                {"role": "assistant", "content": "A beautiful sunset."},
-            ],
-            "images": ["/path/to/sunset.jpg"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "<image>Describe this."},
+                    {"role": "assistant", "content": "A beautiful sunset."},
+                ],
+                "images": ["/path/to/sunset.jpg"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm())
 
@@ -838,14 +876,16 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_with_system(self):
         """Test VLM with system message in messages."""
-        data = [{
-            "messages": [
-                {"role": "system", "content": "You can see images."},
-                {"role": "user", "content": "What is this?"},
-                {"role": "assistant", "content": "A cat."},
-            ],
-            "images": ["/path/to/cat.jpg"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "system", "content": "You can see images."},
+                    {"role": "user", "content": "What is this?"},
+                    {"role": "assistant", "content": "A cat."},
+                ],
+                "images": ["/path/to/cat.jpg"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm())
 
@@ -854,14 +894,16 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_with_external_system(self):
         """Test VLM with external system field."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Describe."},
-                {"role": "assistant", "content": "A dog."},
-            ],
-            "images": ["/path/to/dog.jpg"],
-            "sys_prompt": "Describe images accurately.",
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Describe."},
+                    {"role": "assistant", "content": "A dog."},
+                ],
+                "images": ["/path/to/dog.jpg"],
+                "sys_prompt": "Describe images accurately.",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm(system_field="sys_prompt"))
 
@@ -870,13 +912,15 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_multiple_images(self):
         """Test VLM with multiple images."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Compare."},
-                {"role": "assistant", "content": "Different."},
-            ],
-            "images": ["/path/to/img1.jpg", "/path/to/img2.jpg"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Compare."},
+                    {"role": "assistant", "content": "Different."},
+                ],
+                "images": ["/path/to/img1.jpg", "/path/to/img2.jpg"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm())
 
@@ -884,14 +928,16 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_with_videos(self):
         """Test VLM with video support."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "What happens?"},
-                {"role": "assistant", "content": "Dancing."},
-            ],
-            "images": [],
-            "videos": ["/path/to/dance.mp4"],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "What happens?"},
+                    {"role": "assistant", "content": "Dancing."},
+                ],
+                "images": [],
+                "videos": ["/path/to/dance.mp4"],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm(videos_field="videos"))
 
@@ -899,13 +945,15 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_single_image_string(self):
         """Test VLM with single image as string."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Describe."},
-                {"role": "assistant", "content": "A bird."},
-            ],
-            "image": "/path/to/bird.jpg",
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Describe."},
+                    {"role": "assistant", "content": "A bird."},
+                ],
+                "image": "/path/to/bird.jpg",
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm(images_field="image"))
 
@@ -913,12 +961,14 @@ class TestSwiftVLM:
 
     def test_to_swift_vlm_no_images(self):
         """Test VLM without images (text only)."""
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ],
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ],
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(to_swift_vlm())
 

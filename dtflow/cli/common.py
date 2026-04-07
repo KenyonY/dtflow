@@ -50,13 +50,25 @@ def _file_exists(filepath: Path) -> bool:
 
 
 def _check_file_format(filepath: Path) -> bool:
-    """检查文件格式是否支持，不支持则打印错误信息并返回 False"""
+    """检查文件格式是否支持。
+
+    行为: 不支持则通过 `die` 以结构化错误终止进程（退出码 2，写 stderr）。
+    为保持历史返回约定，成功路径返回 True；调用方无需再检查。
+    """
     ext = filepath.suffix.lower()
     if ext not in SUPPORTED_FORMATS and not _is_flaxkv_path(filepath):
-        print(f"错误: 不支持的文件格式 - {ext}")
-        print(f"支持的格式: {', '.join(sorted(SUPPORTED_FORMATS))}")
-        return False
+        from .output import die_unsupported_format
+
+        die_unsupported_format(str(filepath), SUPPORTED_FORMATS)
     return True
+
+
+def _require_file_exists(filepath: Path) -> None:
+    """若文件不存在则以结构化错误终止。"""
+    if not _file_exists(filepath):
+        from .output import die_file_not_found
+
+        die_file_not_found(str(filepath))
 
 
 def _get_file_row_count(filepath: Path) -> Optional[int]:

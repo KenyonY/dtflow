@@ -4,6 +4,7 @@ Schema 验证模块测试
 
 import pytest
 
+from dtflow import DataTransformer
 from dtflow.schema import (
     Field,
     Schema,
@@ -15,7 +16,6 @@ from dtflow.schema import (
     sharegpt_schema,
     validate_data,
 )
-from dtflow import DataTransformer
 
 
 class TestField:
@@ -219,9 +219,7 @@ class TestSchema:
         schema = Schema(
             {
                 "messages": Field(type="list", required=True, min_length=1),
-                "messages[*].role": Field(
-                    type="str", choices=["user", "assistant", "system"]
-                ),
+                "messages[*].role": Field(type="str", choices=["user", "assistant", "system"]),
                 "messages[*].content": Field(type="str", min_length=1),
             }
         )
@@ -238,9 +236,7 @@ class TestSchema:
         assert result.valid
 
         # 无效角色
-        result = schema.validate(
-            {"messages": [{"role": "admin", "content": "hello"}]}
-        )
+        result = schema.validate({"messages": [{"role": "admin", "content": "hello"}]})
         assert not result.valid
         assert any("role" in e.path for e in result.errors)
 
@@ -267,9 +263,7 @@ class TestSchema:
 
     def test_nullable_field_in_schema(self):
         """测试 Schema 中的可空字段"""
-        schema = Schema(
-            {"score": Field(type="float", min=0, max=1, nullable=True, required=False)}
-        )
+        schema = Schema({"score": Field(type="float", min=0, max=1, nullable=True, required=False)})
 
         result = schema.validate({"score": None})
         assert result.valid
@@ -312,9 +306,7 @@ class TestPresetSchemas:
         schema = openai_chat_schema()
 
         # 有效数据
-        result = schema.validate(
-            {"messages": [{"role": "user", "content": "hello"}]}
-        )
+        result = schema.validate({"messages": [{"role": "user", "content": "hello"}]})
         assert result.valid
 
         # 空消息
@@ -322,32 +314,24 @@ class TestPresetSchemas:
         assert not result.valid
 
         # 无效角色
-        result = schema.validate(
-            {"messages": [{"role": "admin", "content": "hello"}]}
-        )
+        result = schema.validate({"messages": [{"role": "admin", "content": "hello"}]})
         assert not result.valid
 
     def test_openai_chat_schema_custom_roles(self):
         """测试自定义角色"""
         schema = openai_chat_schema(roles=["human", "ai"])
 
-        result = schema.validate(
-            {"messages": [{"role": "human", "content": "hello"}]}
-        )
+        result = schema.validate({"messages": [{"role": "human", "content": "hello"}]})
         assert result.valid
 
-        result = schema.validate(
-            {"messages": [{"role": "user", "content": "hello"}]}
-        )
+        result = schema.validate({"messages": [{"role": "user", "content": "hello"}]})
         assert not result.valid
 
     def test_alpaca_schema(self):
         """测试 Alpaca Schema"""
         schema = alpaca_schema()
 
-        result = schema.validate(
-            {"instruction": "Write a poem", "output": "Roses are red..."}
-        )
+        result = schema.validate({"instruction": "Write a poem", "output": "Roses are red..."})
         assert result.valid
 
         result = schema.validate(
@@ -367,18 +351,14 @@ class TestPresetSchemas:
         """测试 Alpaca Schema 必填 input"""
         schema = alpaca_schema(require_input=True)
 
-        result = schema.validate(
-            {"instruction": "Write a poem", "output": "Roses are red..."}
-        )
+        result = schema.validate({"instruction": "Write a poem", "output": "Roses are red..."})
         assert not result.valid
 
     def test_dpo_schema(self):
         """测试 DPO Schema"""
         schema = dpo_schema()
 
-        result = schema.validate(
-            {"prompt": "What is 2+2?", "chosen": "4", "rejected": "5"}
-        )
+        result = schema.validate({"prompt": "What is 2+2?", "chosen": "4", "rejected": "5"})
         assert result.valid
 
         # 缺少 rejected
@@ -400,9 +380,7 @@ class TestPresetSchemas:
         assert result.valid
 
         # 无效角色
-        result = schema.validate(
-            {"conversations": [{"from": "user", "value": "hello"}]}
-        )
+        result = schema.validate({"conversations": [{"from": "user", "value": "hello"}]})
         assert not result.valid
 
 
@@ -412,9 +390,7 @@ class TestDataTransformerIntegration:
     def test_validate_schema_skip(self):
         """测试 validate_schema 的 skip 模式"""
         schema = Schema({"value": Field(type="int", min=0)})
-        dt = DataTransformer(
-            [{"value": 1}, {"value": -1}, {"value": 2}, {"value": -2}]
-        )
+        dt = DataTransformer([{"value": 1}, {"value": -1}, {"value": 2}, {"value": -2}])
 
         errors = dt.validate_schema(schema, on_error="skip")
         assert len(errors) == 2
@@ -431,9 +407,7 @@ class TestDataTransformerIntegration:
     def test_validate_schema_filter(self):
         """测试 validate_schema 的 filter 模式"""
         schema = Schema({"value": Field(type="int", min=0)})
-        dt = DataTransformer(
-            [{"value": 1}, {"value": -1}, {"value": 2}, {"value": -2}]
-        )
+        dt = DataTransformer([{"value": 1}, {"value": -1}, {"value": 2}, {"value": -2}])
 
         valid_dt = dt.validate_schema(schema, on_error="filter")
         assert len(valid_dt) == 2
@@ -487,9 +461,7 @@ class TestEdgeCases:
 
     def test_deeply_nested_path(self):
         """测试深层嵌套路径"""
-        schema = Schema(
-            {"a.b.c.d": Field(type="int")}
-        )
+        schema = Schema({"a.b.c.d": Field(type="int")})
 
         result = schema.validate({"a": {"b": {"c": {"d": 42}}}})
         assert result.valid

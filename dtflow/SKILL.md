@@ -1,255 +1,139 @@
 ---
 name: dtflow
 description: >
-  当用户需要处理 JSONL/CSV/Parquet/JSON/Arrow 数据文件时使用此 skill。
+  处理结构化数据文件 (JSONL/JSON/CSV/Parquet/Arrow/TSV) 时使用此 skill。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
-  适用场景：(1) 查看数据：dt sample/head/tail 采样预览，dt slice 按行范围查看，dt stats 统计字段分布；
-  (2) 数据清洗：dt clean 支持 --drop-empty/--min-len/--max-len 过滤行，--keep/--drop/--rename/--promote/--add-field/--fill/--reorder 操作字段；
-  (3) 去重：dt dedupe 精确去重或 --similar 相似度去重；
-  (4) 格式转换：dt transform 预设模板(openai_chat/alpaca/sharegpt/dpo)或自定义配置；
-  (5) Schema 验证：dt validate --preset 验证数据格式；
-  (6) 数据集切分：dt split 按比例切分 train/test/val；
-  (7) 训练框架导出：dt export / export_for() 一键导出到 llama-factory/swift/axolotl；
-  (8) 大文件流式处理：load_stream() O(1) 内存处理 100GB+ 文件。
-  注意：此工具专注数据文件的结构化处理，不涉及 LLM 调用（LLM 调用请用 flexllm）。
-  stats 命令增强：--field 指定字段统计，--expand 展开 list 字段统计元素分布（支持 [*] 语法展开嵌套列表，如 messages[*].role）。
+  典型场景：数据预览/统计/清洗/去重/Schema 验证、格式转换
+  (openai_chat/alpaca/sharegpt/dpo)、数据集切分、导出到训练框架
+  (llama-factory/swift/axolotl)、Token 统计、大文件流式处理。
+  不涉及 LLM 调用（LLM 调用用 flexllm）。
 ---
 
-# dtflow - 机器学习训练数据格式转换工具
+# dtflow - 数据转换工具
 
-## 设计理念
+## 何时使用
 
-- **函数式优于类继承**：直接用 lambda/函数做转换，不需要 OOP 抽象
-- **KISS 原则**：一个 `DataTransformer` 类搞定所有操作
-- **链式 API**：`dt.filter(...).to(...).save(...)`
+- **使用 dtflow** —— 结构化数据文件的读/写、统计、清洗、转换、去重、切分
+- **使用 flexllm** —— 需要调用大模型生成/评估
+- **用 Python 直写** —— 纯业务脚本、一次性处理、无格式转换需求
 
-## Python API
+## Agent 探索入口
 
-```python
-from dtflow import DataTransformer
-
-# 加载数据（支持 JSONL/JSON/CSV/Parquet/Arrow，使用 Polars 引擎）
-dt = DataTransformer.load("data.jsonl")
-
-# 链式操作
-(dt.filter(lambda x: x.score > 0.8)
-   .to(lambda x: {"q": x.question, "a": x.answer})
-   .dedupe("text")
-   .save("output.jsonl"))
-```
-
-### 数据过滤
-
-```python
-dt.filter(lambda x: x.score > 0.8)
-dt.filter(lambda x: x.language == "zh")
-```
-
-### 数据验证
-
-```python
-# 简单验证
-errors = dt.validate(lambda x: len(x.messages) >= 2)
-
-# Schema 验证
-from dtflow import Schema, Field, openai_chat_schema
-
-result = dt.validate_schema(openai_chat_schema)  # 预设 Schema
-valid_dt = dt.validate_schema(schema, filter_invalid=True)  # 过滤无效数据
-```
-
-**预设 Schema**：`openai_chat_schema`、`alpaca_schema`、`sharegpt_schema`、`dpo_schema`
-
-### 数据转换
-
-```python
-# 自定义转换
-dt.to(lambda x: {"question": x.q, "answer": x.a})
-
-# 使用预设模板
-dt.to(preset="openai_chat", user_field="q", assistant_field="a")
-```
-
-**预设模板**：`openai_chat`、`alpaca`、`sharegpt`、`dpo_pair`、`simple_qa`
-
-### Token 统计
-
-```python
-from dtflow import count_tokens, token_counter, token_filter, token_stats
-
-count = count_tokens("Hello world", model="gpt-4")
-dt.transform(token_counter("text")).save("with_tokens.jsonl")
-dt.filter(token_filter("text", max_tokens=2048))
-
-# Messages Token 统计（多轮对话）
-from dtflow import messages_token_counter, messages_token_filter
-dt.transform(messages_token_counter(model="gpt-4", detailed=True))
-dt.filter(messages_token_filter(min_turns=2, max_turns=10))
-```
-
-### 格式转换器
-
-```python
-from dtflow import (
-    to_hf_dataset, from_hf_dataset,      # HuggingFace Dataset
-    to_openai_batch, from_openai_batch,  # OpenAI Batch API
-    to_llama_factory, to_llama_factory_sharegpt,  # LLaMA-Factory
-    to_swift_messages, to_swift_query_response,   # ms-swift
-    messages_to_text,                    # messages 转纯文本
-)
-```
-
-### 训练框架导出
-
-```python
-# 检查兼容性
-result = dt.check_compatibility("llama-factory")
-
-# 一键导出
-files = dt.export_for("llama-factory", "./output/")  # 生成 data.json + dataset_info.json + train_args.yaml
-files = dt.export_for("swift", "./output/")          # 生成 data.jsonl + train_swift.sh
-files = dt.export_for("axolotl", "./output/")        # 生成 data.jsonl + config.yaml
-```
-
-### 大文件流式处理
-
-```python
-from dtflow import load_stream, load_sharded
-
-# O(1) 内存，100GB 文件也能处理
-(load_stream("huge.jsonl")
-    .filter(lambda x: x["score"] > 0.5)
-    .save("output.jsonl"))
-
-# 分片文件加载
-(load_sharded("data/train_*.parquet")
-    .filter(lambda x: len(x["text"]) > 10)
-    .save("merged.jsonl"))
-
-# 分片保存
-load_stream("huge.jsonl").save_sharded("output/", shard_size=100000)
-```
-
-### 其他操作
-
-```python
-dt.sample(100)                    # 随机采样
-dt.head(10) / dt.tail(10)         # 取前/后 N 条
-train, test = dt.split(ratio=0.8) # 分割
-dt.shuffle(seed=42)               # 打乱
-dt.stats()                        # 统计
-```
-
-## CLI 命令
+**永远先问 CLI 自己**，不要凭记忆猜参数：
 
 ```bash
-# 统计（推荐首先使用）
-dt stats data.jsonl                               # 基本统计（文件大小、条数、字段）
-dt stats data.jsonl --full                        # 完整模式：值分布、唯一值、非空率
-dt stats data.jsonl --full -n 20                  # 显示 Top 20 值分布
-dt stats data.jsonl --full --field=category       # 只统计指定字段（可多次使用）
-dt stats data.jsonl --full --field=category --field=meta.source  # 多字段
-dt stats data.jsonl --full --expand=tags          # 展开 list 字段统计元素分布（可多次使用）
-dt stats data.jsonl --full --expand='messages[*].role'  # 展开嵌套 list，统计所有 role 分布
-dt stats data.jsonl --full --field=category --expand=tags  # 组合使用
-
-# Token 统计
-dt token-stats data.jsonl                         # 默认统计 messages 字段
-dt token-stats data.jsonl -f text                 # 指定统计字段
-dt token-stats data.jsonl -m qwen2.5              # 指定分词器 (cl100k_base/qwen2.5/llama3)
-dt token-stats data.jsonl --detailed              # 显示详细统计
-dt token-stats data.jsonl -w 4                    # 多进程加速（数据量>=1000时自动启用）
-
-# 采样（支持字段路径语法）
-dt sample data.jsonl 100                          # 随机采样 100 条
-dt sample data.jsonl 100 -t head                  # 取前 100 条 (head/tail/random)
-dt sample data.jsonl 1000 --by=category           # 分层采样
-dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
-dt sample data.jsonl --where="messages.#>=2"      # 条件筛选
-dt sample data.jsonl 10 -f input,output           # 只显示指定字段
-dt sample data.jsonl 10 --pretty                  # 表格预览模式（默认原始 JSON）
-dt sample data.jsonl 100 --seed=42 -o out.jsonl   # 固定随机种子并保存
-
-# 去重
-dt dedupe data.jsonl --key=text                   # 精确去重
-dt dedupe data.jsonl --key=meta.id                # 按嵌套字段去重
-dt dedupe data.jsonl --key=text --similar=0.8    # 相似度去重
-dt dedupe data.jsonl --key=text -o deduped.jsonl  # 指定输出文件
-
-# 清洗
-dt clean data.jsonl --drop-empty=text,answer      # 删除空值记录
-dt clean data.jsonl --min-len=text:10             # 最小长度过滤
-dt clean data.jsonl --max-len=text:2000           # 最大长度过滤
-dt clean data.jsonl --min-len=messages.#:2        # 最少 2 条消息
-dt clean data.jsonl --keep=question,answer        # 只保留指定字段
-dt clean data.jsonl --drop=metadata               # 删除指定字段
-dt clean data.jsonl --rename=question:instruction,answer:output  # 重命名字段
-dt clean data.jsonl --promote=meta.label          # 提升嵌套字段到顶层
-dt clean data.jsonl --promote=meta.label:tag      # 提升并自定义名称
-dt clean data.jsonl --add-field=source:web        # 添加常量字段
-dt clean data.jsonl --fill=label:unknown          # 填充空值/缺失字段
-dt clean data.jsonl --reorder=id,text,label       # 控制字段输出顺序
-dt clean data.jsonl --strip                       # 去除字符串首尾空白
-dt clean data.jsonl --min-tokens=content:10          # 最少 10 tokens
-dt clean data.jsonl --max-tokens=content:1000 -m gpt-4  # 最多 1000 tokens（指定分词器）
-dt clean data.jsonl --promote=meta.label --drop=meta --fill=label:unknown  # 组合使用
-
-# 数据集切分
-dt split data.jsonl --ratio=0.8 --seed=42           # 二分: train/test
-dt split data.jsonl --ratio=0.7,0.15,0.15           # 三分: train/val/test
-dt split data.jsonl --ratio=0.8 -o /tmp/output      # 指定输出目录
-
-# 训练框架导出
-dt export data.jsonl --framework=llama-factory       # 导出到 LLaMA-Factory
-dt export data.jsonl -f swift -o ./swift_out         # 导出到 ms-swift
-dt export data.jsonl -f llama-factory --check        # 仅检查兼容性
-
-# 验证
-dt validate data.jsonl --preset=openai_chat       # 预设: openai_chat/alpaca/dpo/sharegpt
-dt validate data.jsonl -p alpaca -f -o valid.jsonl  # 过滤无效数据并保存
-dt validate data.jsonl -p openai_chat -v          # 显示详细信息
-dt validate data.jsonl -p openai_chat --max-errors=50  # 最多显示 50 条错误
-dt validate data.jsonl -p openai_chat -w 4        # 多进程加速
-
-# 转换
-dt transform data.jsonl --preset=openai_chat
-dt transform data.jsonl                           # 交互式生成配置文件
-
-# 合并与对比
-dt concat a.jsonl b.jsonl -o merged.jsonl         # 合并文件
-dt concat a.jsonl b.jsonl -o merged.jsonl --strict  # 严格模式（字段必须一致）
-dt diff a.jsonl b.jsonl --key=id                  # 对比差异
-dt diff a.jsonl b.jsonl --key=id -o report.md     # 输出对比报告
-
-# 查看数据
-dt head data.jsonl 10                             # 前 10 条（默认原始 JSON）
-dt head data.jsonl 10 -f input,output             # 只显示指定字段
-dt head data.jsonl 10 --pretty                    # 表格预览模式
-dt tail data.jsonl 10                             # 后 10 条
-dt slice data.jsonl 10:20                         # 第 10-19 行（Python 切片语法）
-dt slice data.jsonl :100                          # 前 100 行
-dt slice data.jsonl 100:                          # 第 100 行到末尾
-
-# 其他
-dt run pipeline.yaml                              # Pipeline 执行
-dt history processed.jsonl                        # 数据血缘
-dt install-skill                                  # 安装 Claude Code skill
+dt --help                # 命令列表 + 全局选项
+dt schema                # 机器可读命令树 (JSON)，适合 jq 解析
+dt schema <cmd>          # 单个命令完整 schema
+dt <cmd> --help          # 具体命令的参数/示例/退出码
 ```
+
+`dt schema | jq '.commands[] | .name'` 一眼看完所有命令名。
+
+## 输出契约（Agent 必读）
+
+| 通道 | 承载 | 场景 |
+|------|------|------|
+| **stdout** | 数据 (JSON/NDJSON/CSV/Table) | 被管道消费 |
+| **stderr** | 进度/警告/错误/动作摘要 | 人类阅读或日志 |
+| **退出码** | 任务状态 | **必须** 检查 |
+
+**退出码约定：**
+- `0` 成功
+- `1` 一般错误（读写失败、运行时错误）
+- `2` 参数错误（未知预设、非法取值、必填缺失）
+- `3` 资源不存在（文件找不到）
+- `4` 权限拒绝
+- `5` 冲突
+- `10` **dry-run 预演成功**（仍然是"成功"，但没有真正写出）
+
+**Agent 规则：** 判断成败 **只看退出码**，不要解析文本输出。
+
+## 输出格式
+
+- **TTY** → 默认 `table`（彩色表格 + panel 到 stderr）
+- **非 TTY**（管道/重定向） → 默认 `ndjson`（记录类） 或 `json`（报告类）
+- 任意时候可用 `dt --format=json <cmd>` 强制指定
+
+## 副作用命令都有 --dry-run
+
+修改数据前先预演，所有副作用命令都支持：
+
+```
+clean / transform / concat / dedupe / split / export / run / eval
+```
+
+Dry-run 会：
+1. 完整执行所有读/过滤/计算
+2. **不写出**到 output
+3. 输出结构化 `action` 摘要到 stdout（`action`, `input_rows`, `output_rows`, `removed_rows`, …）
+4. **退出码 10**（区别于 0 的实际执行成功）
+
+Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run 再执行`。
+
+## 典型思维模型
+
+**从"未知数据"到"训练文件"的路径：**
+
+1. **探结构** — `dt stats data.jsonl` 或 `dt head data.jsonl`，搞清字段类型和嵌套结构
+2. **探内容** — `dt stats --full --field=<key>` 看值分布；必要时用 `dt sample --where=...` 抽样
+3. **小样本跑通** — 先在 100 条上验证转换逻辑，避免大文件反复
+4. **dry-run 预演** — `... --dry-run`，确认影响范围
+5. **大规模执行** — 去掉 `--dry-run`，看最终退出码
+
+**遇到字段嵌套问题：** dtflow 的字段路径 DSL 在所有命令中语义一致，见下表。
 
 ## 字段路径语法
 
 | 语法 | 含义 | 示例 |
 |------|------|------|
 | `a.b.c` | 嵌套字段 | `meta.source` |
-| `a[0].b` | 数组索引 | `messages[0].role` |
-| `a[-1].b` | 负索引 | `messages[-1].content` |
+| `a[0].b` | 索引（支持负索引） | `messages[0].role`, `messages[-1].content` |
 | `a.#` | 数组长度 | `messages.#` |
 | `a[*].b` | 展开所有元素 | `messages[*].role` |
 
-## Pipeline 配置
+用于：`--key`、`--by`、`--field`、`--drop-empty`、`--where` 等等。
+
+## Python API 何时用
+
+CLI 覆盖 80% 场景。**转向 Python API** 当：
+
+- 需要自定义 lambda/函数做转换（CLI 预设不够用）
+- 需要复杂的 filter/validate 逻辑
+- 需要组合多个步骤但又不想写 YAML pipeline
+- 大文件流式处理（`load_stream` / `load_sharded`，O(1) 内存）
+
+```python
+from dtflow import DataTransformer, load_stream
+
+# 链式 API
+(DataTransformer.load("data.jsonl")
+    .filter(lambda x: x.score > 0.8)
+    .to(lambda x: {"q": x.question, "a": x.answer})
+    .dedupe("q")
+    .save("output.jsonl"))
+
+# 流式（100GB+ 文件）
+(load_stream("huge.jsonl")
+    .filter(lambda x: x["score"] > 0.5)
+    .save("output.jsonl"))
+```
+
+**Python 侧对外 API**（详见源码 docstring，这里只列路标）：
+
+- `DataTransformer` / `DictWrapper` — 核心类，支持 `.filter / .to / .map / .dedupe / .split / .save`
+- 预设模板：`openai_chat / alpaca / sharegpt / dpo_pair / simple_qa`（`dt.to(preset="openai_chat", ...)`）
+- Schema：`openai_chat_schema / alpaca_schema / sharegpt_schema / dpo_schema`（`dt.validate_schema(...)`）
+- Token：`count_tokens / token_counter / token_filter / messages_token_counter`
+- 转换器：`to_hf_dataset / to_openai_batch / to_llama_factory / to_swift_messages / messages_to_text`
+- 导出：`dt.export_for("llama-factory" | "swift" | "axolotl", output_dir)`
+- 流式：`load_stream("data.jsonl") / load_sharded("data/*.parquet")`
+
+## Pipeline 配置 (YAML)
+
+当需要把多步操作固化为可复用/可版本化的流程时：
 
 ```yaml
-# pipeline.yaml
 version: "1.0"
 seed: 42
 input: raw_data.jsonl
@@ -262,4 +146,21 @@ steps:
     preset: openai_chat
   - type: dedupe
     key: text
+```
+
+运行：`dt run pipeline.yaml`（支持 `--dry-run` 打印步骤链）。
+
+## 常见坑
+
+1. **大文件 OOM** — `dt` 默认内存模式，>1GB 文件用 Python `load_stream(...)`。
+2. **字段路径不通** — CLI 支持 `a.b[0].c`，但 `--where` 只支持简单表达式，复杂逻辑转 Python。
+3. **TTY vs 非 TTY 输出差异** — 被 agent 管道捕获时自动变 ndjson；测试命令时用 `dt --format=json <cmd>` 强制一致。
+4. **`--preset` 误写** — 不同命令预设名不同：`transform/validate` 都用 `openai_chat`；`alpaca` vs `dpo` vs `sharegpt` 拼写要准。
+5. **dry-run 退出码** — 10 不是 0；脚本里用 `[[ $? == 0 || $? == 10 ]]` 区分真正失败。
+6. **history --json 已过渡** — 新代码用 `dt --format=json history ...`，旧 `--json` 仅作向后兼容。
+
+## 补全安装
+
+```bash
+dt --install-completion    # bash/zsh/fish 自动补全
 ```

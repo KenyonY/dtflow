@@ -9,13 +9,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from rich.console import Console
-
 from ..storage.io import load_data
 from ..utils.field_path import get_field
 from ..utils.text_parser import extract_code_snippets, parse_generic_tags, strip_think_tags
-
-console = Console()
+from .common import _require_file_exists
+from .output import die, die_io_error, die_usage, emit_action, log
 
 # 自动检测 label 的候选字段名
 LABEL_CANDIDATES = ["label", "labels", "content_label", "target", "ground_truth", "answer"]
@@ -30,6 +28,7 @@ def eval(
     sep: Optional[str] = None,
     mapping: Optional[str] = None,
     output_dir: str = "record",
+    dry_run: bool = False,
 ):
     """对模型输出 .jsonl 文件进行解析和指标计算
 
@@ -46,50 +45,68 @@ def eval(
         sep: 配合 index 算子使用的分隔符
         mapping: 值映射，格式 "k1:v1,k2:v2"
         output_dir: 指标报告输出目录
+        dry_run: 预演模式，仅解析但不写出 metrics 报告
     """
     import pandas as pd
 
     from ..eval import export_eval_report
 
+    _require_file_exists(Path(result_file))
+
     # --- 加载数据 ---
-    data = load_data(result_file)
+    try:
+        data = load_data(result_file)
+    except Exception as e:
+        die_io_error(e, operation="读取", path=result_file)
     df = pd.DataFrame(data)
-    console.print(f"[cyan]加载 {result_file}，共 {len(df)} 条[/cyan]")
+    log(f"[cyan]加载 {result_file}，共 {len(df)} 条[/cyan]")
 
     # 合并 source 文件
     if source:
-        source_data = load_data(source)
+        _require_file_exists(Path(source))
+        try:
+            source_data = load_data(source)
+        except Exception as e:
+            die_io_error(e, operation="读取 source 文件", path=source)
         source_df = pd.DataFrame(source_data)
         if len(source_df) != len(df):
-            console.print(f"[red]行数不一致: result={len(df)}, source={len(source_df)}[/red]")
-            return
+            die(
+                "row_count_mismatch",
+                f"行数不一致: result={len(df)}, source={len(source_df)}",
+                suggestion="确保 result_file 与 source 一一对应",
+                exit_code=2,
+            )
         for col in source_df.columns:
             if col not in df.columns:
                 df[col] = source_df[col].values
-        console.print(f"[dim]已合并 source 文件: {source}[/dim]")
+        log(f"[dim]已合并 source 文件: {source}[/dim]")
 
     # --- 解析 response_col（支持嵌套）---
     response_col_resolved = _resolve_nested_col(df, response_col)
     if response_col_resolved is None:
-        console.print(f"[red]响应列 '{response_col}' 不存在。可用列: {list(df.columns)}[/red]")
-        return
+        die_usage(
+            f"响应列 '{response_col}' 不存在",
+            suggestion=f"可用列: {list(df.columns)}",
+        )
 
     # --- 自动检测 label_col ---
     if label_col is None:
         label_col = _auto_detect_label_col(df)
         if label_col is None:
-            console.print(
-                f"[red]未找到标签列，请通过 --label-col 指定。可用列: {list(df.columns)}[/red]"
+            die_usage(
+                "未找到标签列",
+                suggestion=f"通过 --label-col 指定. 可用列: {list(df.columns)}",
             )
-            return
 
     # 解析 label_col（支持嵌套）
     label_col_resolved = _resolve_nested_col(df, label_col)
     if label_col_resolved is None:
-        console.print(f"[red]标签列 '{label_col}' 不存在。可用列: {list(df.columns)}[/red]")
-        return
+        die_usage(
+            f"标签列 '{label_col}' 不存在",
+            suggestion=f"可用列: {list(df.columns)}",
+        )
 
-    console.print(
+    log(
         f"[dim]response_col={response_col_resolved}, "
         f"label_col={label_col_resolved}, extract={extract}[/dim]"
     )
@@ -125,15 +142,49 @@ def eval(
         lambda x: str(x).strip() if not isinstance(x, str) else x.strip()
     )
 
+    stats = {
+        "input_rows": int(len(df)),
+        "response_col": response_col_resolved,
+        "label_col": label_col_resolved,
+        "extract": extract,
+    }
+
+    if dry_run:
+        # 预演: 只解析, 不生成 metrics 报告
+        preview = df[[pred_col, label_col_resolved]].head(3).to_dict(orient="records")
+        emit_action(
+            "eval",
+            input_files=[str(result_file)],
+            output=str(output_dir),
+            stats=stats,
+            dry_run=True,
+            extra={"preview": preview},
+        )
+        return
+
     # --- 调用 export_eval_report ---
-    console.print("\n[bold green]评估结果[/bold green]")
+    log("[bold green]评估结果[/bold green]")
     input_name = Path(result_file).stem
-    export_eval_report(
-        df,
-        pred_col=pred_col,
-        label_col=label_col_resolved,
-        record_folder=output_dir,
-        input_name=input_name,
+    try:
+        export_eval_report(
+            df,
+            pred_col=pred_col,
+            label_col=label_col_resolved,
+            record_folder=output_dir,
+            input_name=input_name,
+        )
+    except Exception as e:
+        die(
+            "eval_failed",
+            f"指标计算失败: {e}",
+            exit_code=1,
+        )
+
+    emit_action(
+        "eval",
+        input_files=[str(result_file)],
+        output=str(output_dir),
+        stats=stats,
     )
 
 
@@ -248,7 +299,7 @@ def _apply_op(text: str, op: str, sep: Optional[str] = None) -> str:
             return m.group(1) if m.lastindex else m.group(0)
         return text
     else:
-        console.print(f"[yellow]未知算子: {op}，跳过[/yellow]")
+        log(f"[yellow]未知算子: {op}，跳过[/yellow]")
         return text
 
 

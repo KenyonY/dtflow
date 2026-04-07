@@ -1,6 +1,7 @@
 """
 Tests for lineage module.
 """
+
 import json
 import os
 import tempfile
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from dtflow.lineage import (
+    LINEAGE_SUFFIX,
     LineageRecord,
     LineageTracker,
     delete_lineage,
@@ -16,7 +18,6 @@ from dtflow.lineage import (
     get_lineage_chain,
     has_lineage,
     load_lineage,
-    LINEAGE_SUFFIX,
 )
 
 
@@ -36,9 +37,7 @@ class TestLineageRecord:
     def test_init_with_params(self):
         """Test initialization with parameters."""
         record = LineageRecord(
-            source="data.jsonl",
-            operations=[{"type": "filter"}],
-            metadata={"key": "value"}
+            source="data.jsonl", operations=[{"type": "filter"}], metadata={"key": "value"}
         )
         assert record.source == "data.jsonl"
         assert len(record.operations) == 1
@@ -295,27 +294,35 @@ class TestLineageFunctions:
             middle_path = Path(tmpdir) / "middle.jsonl"
             middle_path.write_text('{"text": "middle"}\n')
             middle_lineage = Path(str(middle_path) + LINEAGE_SUFFIX)
-            middle_lineage.write_text(json.dumps({
-                "version": "1.0",
-                "created_at": "2024-01-01T00:00:00",
-                "source": {"path": str(source_path)},
-                "operations": [{"type": "filter"}],
-                "metadata": {},
-                "environment": {},
-            }))
+            middle_lineage.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "created_at": "2024-01-01T00:00:00",
+                        "source": {"path": str(source_path)},
+                        "operations": [{"type": "filter"}],
+                        "metadata": {},
+                        "environment": {},
+                    }
+                )
+            )
 
             # 创建最终文件
             final_path = Path(tmpdir) / "final.jsonl"
             final_path.write_text('{"text": "final"}\n')
             final_lineage = Path(str(final_path) + LINEAGE_SUFFIX)
-            final_lineage.write_text(json.dumps({
-                "version": "1.0",
-                "created_at": "2024-01-01T01:00:00",
-                "source": {"path": str(middle_path)},
-                "operations": [{"type": "transform"}],
-                "metadata": {},
-                "environment": {},
-            }))
+            final_lineage.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "created_at": "2024-01-01T01:00:00",
+                        "source": {"path": str(middle_path)},
+                        "operations": [{"type": "transform"}],
+                        "metadata": {},
+                        "environment": {},
+                    }
+                )
+            )
 
             chain = get_lineage_chain(str(final_path))
 
@@ -334,27 +341,35 @@ class TestLineageFunctions:
             middle_path = Path(tmpdir) / "middle.jsonl"
             middle_path.write_text('{"text": "middle"}\n')
             middle_lineage = Path(str(middle_path) + LINEAGE_SUFFIX)
-            middle_lineage.write_text(json.dumps({
-                "version": "1.0",
-                "created_at": "2024-01-01T00:00:00",
-                "source": {"path": str(source_path)},
-                "operations": [{"type": "filter"}],
-                "metadata": {},
-                "environment": {},
-            }))
+            middle_lineage.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "created_at": "2024-01-01T00:00:00",
+                        "source": {"path": str(source_path)},
+                        "operations": [{"type": "filter"}],
+                        "metadata": {},
+                        "environment": {},
+                    }
+                )
+            )
 
             # 创建最终文件
             final_path = Path(tmpdir) / "final.jsonl"
             final_path.write_text('{"text": "final"}\n')
             final_lineage = Path(str(final_path) + LINEAGE_SUFFIX)
-            final_lineage.write_text(json.dumps({
-                "version": "1.0",
-                "created_at": "2024-01-01T01:00:00",
-                "source": {"path": str(middle_path)},
-                "operations": [{"type": "transform"}],
-                "metadata": {},
-                "environment": {},
-            }))
+            final_lineage.write_text(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "created_at": "2024-01-01T01:00:00",
+                        "source": {"path": str(middle_path)},
+                        "operations": [{"type": "transform"}],
+                        "metadata": {},
+                        "environment": {},
+                    }
+                )
+            )
 
             chain = get_lineage_chain(str(final_path), max_depth=1)
 

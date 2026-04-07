@@ -1,17 +1,19 @@
 """
 Tests for tokenizers module.
 """
+
 import pytest
+
 from dtflow import DataTransformer
 from dtflow.tokenizers import (
-    count_tokens,
-    token_counter,
-    token_filter,
-    token_stats,
     _auto_backend,
+    count_tokens,
     messages_token_counter,
     messages_token_filter,
     messages_token_stats,
+    token_counter,
+    token_filter,
+    token_stats,
 )
 
 
@@ -157,11 +159,7 @@ class TestTokenizersWithTransformers:
         """Test token counting with transformers backend."""
         pytest.importorskip("transformers")
 
-        count = count_tokens(
-            "Hello world",
-            model="bert-base-uncased",
-            backend="transformers"
-        )
+        count = count_tokens("Hello world", model="bert-base-uncased", backend="transformers")
         assert count > 0
 
 
@@ -387,12 +385,14 @@ class TestMessagesTokenCounter:
         """Test with custom messages field name."""
         pytest.importorskip("tiktoken")
 
-        data = [{
-            "conversation": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ]
-        }]
+        data = [
+            {
+                "conversation": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ]
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(messages_token_counter(messages_field="conversation"))
 
@@ -402,11 +402,13 @@ class TestMessagesTokenCounter:
         """Test that original fields are preserved."""
         pytest.importorskip("tiktoken")
 
-        data = [{
-            "id": "123",
-            "messages": [{"role": "user", "content": "Hi"}],
-            "metadata": {"source": "test"},
-        }]
+        data = [
+            {
+                "id": "123",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "metadata": {"source": "test"},
+            }
+        ]
         dt = DataTransformer(data)
         result = dt.to(messages_token_counter())
 
@@ -433,7 +435,10 @@ class TestMessagesTokenFilter:
                 "messages": [
                     {"role": "system", "content": "You are a helpful assistant."},
                     {"role": "user", "content": "Can you explain quantum computing in detail?"},
-                    {"role": "assistant", "content": "Quantum computing is a type of computation that harnesses quantum mechanical phenomena."},
+                    {
+                        "role": "assistant",
+                        "content": "Quantum computing is a type of computation that harnesses quantum mechanical phenomena.",
+                    },
                 ],
             },
         ]
@@ -570,12 +575,14 @@ class TestMessagesTokenStats:
         """Test stats with custom messages field."""
         pytest.importorskip("tiktoken")
 
-        data = [{
-            "conversation": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ]
-        }]
+        data = [
+            {
+                "conversation": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ]
+            }
+        ]
 
         stats = messages_token_stats(data, messages_field="conversation")
 
@@ -596,12 +603,14 @@ class TestMessagesTokenStats:
         """Test stats with single item."""
         pytest.importorskip("tiktoken")
 
-        data = [{
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!"},
-            ]
-        }]
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi!"},
+                ]
+            }
+        ]
 
         stats = messages_token_stats(data)
 

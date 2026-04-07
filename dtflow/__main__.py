@@ -1,14 +1,36 @@
 """
-Datatron CLI entry point.
+Datatron CLI (dt) — Agent 友好的数据转换工具
 
-Usage:
+基本用法:
     dt <command> [options]
-    dt --install-completion  # 安装 shell 自动补全
+    dt --install-completion            # 安装 shell 自动补全
+
+Agent 探索入口:
+    dt --help                          # 查看所有命令
+    dt schema                          # 机器可读的命令树 (JSON)
+    dt schema <command>                # 单个命令的参数定义
+    dt <command> --help                # 某命令的详细参数和示例
+
+输出契约:
+    stdout  只承载数据（JSON / NDJSON / CSV / Table）
+    stderr  承载进度、警告、错误等消息
+    退出码  0=成功, 1=一般错误, 2=参数错误, 3=资源不存在,
+            4=权限拒绝, 5=冲突, 10=dry-run 预演成功
+
+全局选项:
+    --format json|ndjson|csv|table     指定输出格式（非 TTY 默认 ndjson, TTY 默认 table）
+    --no-color                          禁用彩色（同样响应 NO_COLOR 环境变量）
+    --yes                               跳过所有确认
+    --verbose / --quiet                 日志等级
+
+副作用命令（clean / transform / concat / dedupe / split / export / run / eval）
+都支持 --dry-run，可先预演再执行实际写入。
 
 Commands:
     sample        从数据文件中采样
     head          显示文件的前 N 条数据
     tail          显示文件的后 N 条数据
+    slice         按行号范围查看数据
     transform     转换数据格式（核心命令）
     stats         显示数据文件的统计信息
     token-stats   Token 统计
@@ -21,12 +43,14 @@ Commands:
     split         分割数据集
     export        导出到训练框架
     validate      使用 Schema 验证数据格式
+    schema        输出命令树 / 参数定义 (JSON)
     logs          日志查看工具使用说明
     install-skill 安装 dtflow skill 到 Claude Code
 """
 
 import os
 import sys
+from enum import Enum
 from typing import List, Optional
 
 import typer
@@ -51,14 +75,95 @@ from .cli.commands import token_stats as _token_stats
 from .cli.commands import transform as _transform
 from .cli.commands import uninstall_skill as _uninstall_skill
 from .cli.commands import validate as _validate
+from .cli.output import CLIState, set_state
+
+# ============ 受约束参数枚举 ============
+# 这些枚举让 click 在解析层就拒绝非法值，并把 choices 暴露给 `dt schema`。
+
+
+class SampleType(str, Enum):
+    """sample 命令的 --type 取值。"""
+
+    random = "random"
+    head = "head"
+    tail = "tail"
+
+
+class TransformPreset(str, Enum):
+    """transform 命令的 --preset 取值。"""
+
+    openai_chat = "openai_chat"
+    alpaca = "alpaca"
+    sharegpt = "sharegpt"
+    dpo_pair = "dpo_pair"
+    simple_qa = "simple_qa"
+
+
+class ValidatePreset(str, Enum):
+    """validate 命令的 --preset 取值。"""
+
+    openai_chat = "openai_chat"
+    alpaca = "alpaca"
+    dpo = "dpo"
+    sharegpt = "sharegpt"
+
+
+class Framework(str, Enum):
+    """export 命令的 --framework 取值。"""
+
+    llama_factory = "llama-factory"
+    swift = "swift"
+    axolotl = "axolotl"
+
 
 # 创建主应用
 app = typer.Typer(
     name="dt",
-    help="Datatron CLI - 数据转换工具",
+    help=(
+        "Datatron CLI - 数据转换工具 (Agent 友好)\n\n"
+        "stdout=数据, stderr=消息, 退出码见 --help.\n"
+        "Agent 建议先运行: dt schema | dt --help | dt <cmd> --help"
+    ),
     add_completion=True,
     no_args_is_help=True,
 )
+
+
+# ============ 全局选项 (注入 CLIState) ============
+
+
+@app.callback()
+def _global_options(
+    ctx: typer.Context,
+    fmt: Optional[str] = typer.Option(
+        None,
+        "--format",
+        help="输出格式: json|ndjson|csv|table (非 TTY 默认 ndjson, TTY 默认 table)",
+    ),
+    no_color: bool = typer.Option(
+        False, "--no-color", help="禁用彩色输出 (同样响应 NO_COLOR / TERM=dumb)"
+    ),
+    yes: bool = typer.Option(False, "--yes", help="跳过所有交互确认"),
+    verbose: bool = typer.Option(False, "--verbose", "-V", help="显示更详细的日志"),
+    quiet: bool = typer.Option(False, "--quiet", "-Q", help="抑制所有 stderr 消息"),
+):
+    """全局运行状态注入；各命令通过 dtflow.cli.output.get_state() 读取。"""
+    if fmt is not None and fmt not in {"json", "ndjson", "csv", "table"}:
+        from .cli.output import die_usage
+
+        die_usage(
+            f"不支持的 --format 值: {fmt}",
+            suggestion="可选值: json | ndjson | csv | table",
+        )
+    set_state(
+        CLIState(
+            fmt=fmt,
+            no_color=no_color,
+            yes=yes,
+            verbose=verbose,
+            quiet=quiet,
+        )
+    )
 
 
 # ============ 数据预览命令 ============
@@ -69,20 +174,50 @@ def sample(
     filename: str = typer.Argument(..., help="输入文件路径"),
     num_arg: Optional[int] = typer.Argument(None, help="采样数量", metavar="NUM"),
     num: int = typer.Option(10, "--num", "-n", help="采样数量", show_default=True),
-    type: Optional[str] = typer.Option(
-        None, "--type", "-t", help="采样方式: random/head/tail（默认 random，n=0 时默认 head）"
+    type: Optional[SampleType] = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="采样方式: random|head|tail（默认 random，n=0 时默认 head）",
+        case_sensitive=False,
     ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
     by: Optional[str] = typer.Option(None, "--by", help="分层采样字段"),
     uniform: bool = typer.Option(False, "--uniform", help="均匀采样模式"),
+    dist: Optional[str] = typer.Option(
+        None, "--dist", help='自定义分布 (JSON), 如 \'{"A":0.5,"B":0.3,"C":0.2}\''
+    ),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段（逗号分隔）"),
     pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
     where: Optional[List[str]] = typer.Option(None, "--where", "-w", help="筛选条件 (可多次使用)"),
 ):
-    """从数据文件中采样指定数量的数据"""
+    """从数据文件中采样指定数量的数据
+
+    示例:
+        dt sample data.jsonl --num=10                     # 随机 10 条
+        dt sample data.jsonl 100 --by=category            # 按字段分层 100 条
+        dt sample data.jsonl --where="messages.#>=2"      # 筛选后采样
+        dt sample data.jsonl --dist='{"A":0.5,"B":0.5}' --by=label
+        dt --format=json sample data.jsonl                # stdout 输出 JSON
+
+    退出码: 0 成功, 1 筛选后无数据, 2 参数错误, 3 文件不存在
+    """
     actual_num = num_arg if num_arg is not None else num
-    _sample(filename, actual_num, type, output, seed, by, uniform, fields, not pretty, where)
+    type_value = type.value if isinstance(type, SampleType) else type
+    _sample(
+        filename,
+        actual_num,
+        type_value,
+        output,
+        seed,
+        by,
+        uniform,
+        fields,
+        not pretty,
+        where,
+        dist,
+    )
 
 
 @app.command()
@@ -94,7 +229,13 @@ def head(
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
     pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
 ):
-    """显示文件的前 N 条数据"""
+    """显示文件的前 N 条数据
+
+    示例:
+        dt head data.jsonl 5                     # 前 5 条
+        dt head data.jsonl --fields=id,text      # 只显示部分字段
+        dt --format=json head data.jsonl | jq .  # 机器可读输出
+    """
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
     _head(filename, actual_num, output, fields, not pretty)
@@ -109,7 +250,12 @@ def tail(
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
     pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
 ):
-    """显示文件的后 N 条数据"""
+    """显示文件的后 N 条数据
+
+    示例:
+        dt tail data.jsonl 5                     # 后 5 条
+        dt tail data.jsonl --fields=id,label
+    """
     # 位置参数优先于选项参数
     actual_num = num_arg if num_arg is not None else num
     _tail(filename, actual_num, output, fields, not pretty)
@@ -141,12 +287,26 @@ def slice_cmd(
 def transform(
     filename: str = typer.Argument(..., help="输入文件路径"),
     num: Optional[int] = typer.Argument(None, help="只转换前 N 条数据"),
-    preset: Optional[str] = typer.Option(None, "--preset", "-p", help="使用预设模板"),
+    preset: Optional[TransformPreset] = typer.Option(
+        None,
+        "--preset",
+        "-p",
+        help="使用预设模板: openai_chat|alpaca|sharegpt|dpo_pair|simple_qa",
+        case_sensitive=False,
+    ),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="配置文件路径"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="预演: 计算结果但不写出 (退出码 10)"),
 ):
-    """转换数据格式"""
-    _transform(filename, num, preset, config, output)
+    """转换数据格式
+
+    示例:
+        dt transform data.jsonl --preset=openai_chat
+        dt transform data.jsonl --config=./config.yaml -o out.jsonl
+        dt transform data.jsonl --preset=alpaca --dry-run
+    """
+    preset_value = preset.value if isinstance(preset, TransformPreset) else preset
+    _transform(filename, num, preset_value, config, output, dry_run=dry_run)
 
 
 @app.command()
@@ -154,9 +314,16 @@ def run(
     config: str = typer.Argument(..., help="Pipeline YAML 配置文件"),
     input: Optional[str] = typer.Option(None, "--input", "-i", help="输入文件路径"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="预演: 验证配置并打印步骤链 (退出码 10)"),
 ):
-    """执行 Pipeline 配置文件"""
-    _run(config, input, output)
+    """执行 Pipeline 配置文件
+
+    示例:
+        dt run pipeline.yaml
+        dt run pipeline.yaml --input=data.jsonl --output=result.jsonl
+        dt run pipeline.yaml --dry-run
+    """
+    _run(config, input, output, dry_run=dry_run)
 
 
 # ============ 数据处理命令 ============
@@ -168,19 +335,37 @@ def dedupe(
     key: Optional[str] = typer.Option(None, "--key", "-k", help="去重依据字段"),
     similar: Optional[float] = typer.Option(None, "--similar", "-s", help="相似度阈值 (0-1)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="预演: 计算结果但不写出 (退出码 10)"),
 ):
-    """数据去重"""
-    _dedupe(filename, key, similar, output)
+    """数据去重
+
+    示例:
+        dt dedupe data.jsonl --key=text                  # 精确去重
+        dt dedupe data.jsonl --key=messages[0].content   # 按嵌套字段去重
+        dt dedupe data.jsonl --key=text --similar=0.9    # 模糊去重（相似度 >= 0.9）
+        dt dedupe data.jsonl --key=text --dry-run        # 预演
+    """
+    _dedupe(filename, key, similar, output, dry_run=dry_run)
 
 
 @app.command()
 def concat(
-    files: List[str] = typer.Argument(..., help="输入文件列表"),
+    files: List[str] = typer.Argument(..., help="输入文件列表 (至少两个)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径（必须）"),
     strict: bool = typer.Option(False, "--strict", help="严格模式，字段必须一致"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="预演: 分析字段/行数但不写出 (退出码 10)"
+    ),
 ):
-    """拼接多个数据文件"""
-    _concat(*files, output=output, strict=strict)
+    """拼接多个数据文件
+
+    示例:
+        dt concat a.jsonl b.jsonl -o merged.jsonl
+        dt concat data1.csv data2.csv data3.csv -o all.jsonl
+        dt concat a.jsonl b.jsonl --strict -o merged.jsonl
+        dt concat a.jsonl b.jsonl --dry-run -o merged.jsonl
+    """
+    _concat(*files, output=output, strict=strict, dry_run=dry_run)
 
 
 @app.command()
@@ -209,8 +394,17 @@ def clean(
     ),
     model: str = typer.Option("cl100k_base", "--model", "-m", help="分词器模型 (默认 cl100k_base)"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="预演: 计算结果但不写出 (退出码 10)"),
 ):
-    """数据清洗"""
+    """数据清洗
+
+    示例:
+        dt clean data.jsonl --drop-empty=text -o out.jsonl
+        dt clean data.jsonl --min-len=messages.#:2       # 至少 2 条消息
+        dt clean data.jsonl --rename=old:new --drop=debug
+        dt clean data.jsonl --promote=meta.label --strip  # 提升嵌套字段 + 去空白
+        dt clean data.jsonl --drop-empty=text --dry-run  # 预演, 退出码 10
+    """
     _clean(
         filename,
         drop_empty,
@@ -228,6 +422,7 @@ def clean(
         max_tokens,
         model,
         output,
+        dry_run=dry_run,
     )
 
 
@@ -246,7 +441,15 @@ def stats(
         None, "--expand", help="展开 list 字段统计（可多次使用）"
     ),
 ):
-    """显示数据文件的统计信息"""
+    """显示数据文件的统计信息
+
+    示例:
+        dt stats data.jsonl                       # 快速模式: 字段结构
+        dt stats data.jsonl --full                # 完整模式: 值分布/唯一值
+        dt stats data.jsonl --full --field=label  # 仅统计 label 字段
+        dt stats data.jsonl --full --expand=tags  # 展开 list 字段
+        dt --format=json stats data.jsonl         # 机器可读报告
+    """
     _stats(filename, top, full, field, expand)
 
 
@@ -262,7 +465,14 @@ def token_stats(
         None, "--workers", "-w", help="并行进程数 (默认自动, 1 禁用并行)"
     ),
 ):
-    """统计数据集的 Token 信息"""
+    """统计数据集的 Token 信息
+
+    示例:
+        dt token-stats data.jsonl --field=messages          # 默认 cl100k_base
+        dt token-stats data.jsonl --field=text --model=qwen2.5
+        dt token-stats data.jsonl --detailed
+        dt --format=json token-stats data.jsonl             # JSON 报告
+    """
     _token_stats(filename, field, model, detailed, workers)
 
 
@@ -273,16 +483,30 @@ def diff(
     key: Optional[str] = typer.Option(None, "--key", "-k", help="匹配键字段"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="报告输出路径"),
 ):
-    """对比两个数据集的差异"""
+    """对比两个数据集的差异
+
+    示例:
+        dt diff v1.jsonl v2.jsonl                    # 无 key, 按行号对比
+        dt diff v1.jsonl v2.jsonl --key=id           # 按 id 字段对齐
+        dt diff v1.jsonl v2.jsonl --key=meta.uuid    # 按嵌套字段
+        dt --format=json diff a.jsonl b.jsonl --key=id | jq .
+    """
     _diff(file1, file2, key, output)
 
 
 @app.command()
 def history(
     filename: str = typer.Argument(..., help="数据文件路径"),
-    json: bool = typer.Option(False, "--json", "-j", help="JSON 格式输出"),
+    json: bool = typer.Option(
+        False, "--json", "-j", help="JSON 格式输出 (已废弃, 建议用 --format=json)"
+    ),
 ):
-    """显示数据文件的血缘历史"""
+    """显示数据文件的血缘历史
+
+    示例:
+        dt history processed.jsonl                   # TTY: 表格, 非 TTY: JSON
+        dt --format=json history processed.jsonl     # 强制 JSON
+    """
     _history(filename, json)
 
 
@@ -295,23 +519,44 @@ def split(
     ratio: str = typer.Option("0.8", "--ratio", "-r", help="分割比例，如 0.8 或 0.7,0.15,0.15"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录（默认同目录）"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="预演: 计算各切分行数但不写出 (退出码 10)"
+    ),
 ):
-    """分割数据集为 train/test (或 train/val/test)"""
-    _split(filename, ratio, seed, output)
+    """分割数据集为 train/test (或 train/val/test)
+
+    示例:
+        dt split data.jsonl --ratio=0.8
+        dt split data.jsonl --ratio=0.7,0.15,0.15 --seed=42
+        dt split data.jsonl --ratio=0.8 --dry-run
+    """
+    _split(filename, ratio, seed, output, dry_run=dry_run)
 
 
 @app.command()
 def export(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    framework: str = typer.Option(
-        ..., "--framework", "-f", help="目标框架: llama-factory, swift, axolotl"
+    framework: Framework = typer.Option(
+        ...,
+        "--framework",
+        "-f",
+        help="目标框架: llama-factory|swift|axolotl",
+        case_sensitive=False,
     ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录"),
     name: Optional[str] = typer.Option(None, "--name", "-n", help="数据集名称"),
-    check: bool = typer.Option(False, "--check", help="仅检查兼容性，不导出"),
+    check: bool = typer.Option(False, "--check", help="仅检查兼容性，不导出 (等价 --dry-run)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="预演: 同 --check (退出码 10)"),
 ):
-    """导出数据到训练框架 (LLaMA-Factory, ms-swift, Axolotl)"""
-    _export(filename, framework, output, name, check)
+    """导出数据到训练框架 (LLaMA-Factory, ms-swift, Axolotl)
+
+    示例:
+        dt export data.jsonl --framework=llama-factory
+        dt export data.jsonl --framework=swift -o dataset/
+        dt export data.jsonl --framework=axolotl --dry-run
+    """
+    framework_value = framework.value if isinstance(framework, Framework) else framework
+    _export(filename, framework_value, output, name, check, dry_run=dry_run)
 
 
 # ============ 评估命令 ============
@@ -336,6 +581,9 @@ def eval(
     sep: Optional[str] = typer.Option(None, "--sep", help="配合 index 算子使用的分隔符"),
     mapping: Optional[str] = typer.Option(None, "--mapping", "-m", help="值映射 (k1:v1,k2:v2)"),
     output_dir: str = typer.Option("record", "--output-dir", "-o", help="指标报告输出目录"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="预演: 解析预览但不生成 metrics 报告 (退出码 10)"
+    ),
 ):
     """对模型输出进行解析和指标评估
 
@@ -347,8 +595,19 @@ def eval(
         dt eval result.jsonl --source=input.jsonl --response-col=api_output.content
         dt eval result.jsonl --extract="json_key:result | index:0" --sep=","
         dt eval result.jsonl --extract="lines | index:1" --sep="|"
+        dt eval result.jsonl --label-col=label --dry-run
     """
-    _eval(result_file, source, response_col, label_col, extract, sep, mapping, output_dir)
+    _eval(
+        result_file,
+        source,
+        response_col,
+        label_col,
+        extract,
+        sep,
+        mapping,
+        output_dir,
+        dry_run=dry_run,
+    )
 
 
 # ============ 验证命令 ============
@@ -357,8 +616,12 @@ def eval(
 @app.command()
 def validate(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    preset: Optional[str] = typer.Option(
-        None, "--preset", "-p", help="预设 Schema: openai_chat, alpaca, dpo, sharegpt"
+    preset: Optional[ValidatePreset] = typer.Option(
+        None,
+        "--preset",
+        "-p",
+        help="预设 Schema: openai_chat|alpaca|dpo|sharegpt",
+        case_sensitive=False,
     ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出有效数据的文件路径"),
     filter: bool = typer.Option(False, "--filter", "-f", help="过滤无效数据并保存"),
@@ -368,8 +631,20 @@ def validate(
         None, "--workers", "-w", help="并行进程数 (默认自动, 1 禁用并行)"
     ),
 ):
-    """使用预设 Schema 验证数据格式"""
-    _validate(filename, preset, output, filter, max_errors, verbose, workers)
+    """使用预设 Schema 验证数据格式
+
+    可用预设: openai_chat, alpaca, dpo, sharegpt
+
+    示例:
+        dt validate data.jsonl --preset=openai_chat
+        dt validate data.jsonl --preset=alpaca -o valid.jsonl
+        dt validate data.jsonl --preset=openai_chat --filter   # 过滤无效
+        dt --format=json validate data.jsonl --preset=openai_chat  # JSON 报告
+
+    退出码: 0 全部有效或命令成功, 2 参数错误 (未知预设), 3 文件不存在
+    """
+    preset_value = preset.value if isinstance(preset, ValidatePreset) else preset
+    _validate(filename, preset_value, output, filter, max_errors, verbose, workers)
 
 
 # ============ 工具命令 ============
@@ -378,6 +653,8 @@ def validate(
 @app.command()
 def logs():
     """日志查看工具使用说明"""
+    from .cli.output import log
+
     help_text = """
 日志查看工具 (tl)
 
@@ -400,10 +677,29 @@ dtflow 内置了 toolong 日志查看器，安装后可直接使用 tl 命令：
     pip install dtflow[logs]   # 仅安装日志工具
     pip install dtflow[full]   # 安装全部可选依赖
 """
-    print(help_text)
+    log(help_text)
 
 
 # ============ Skill 命令 ============
+
+
+@app.command("schema")
+def schema_cmd(
+    command: Optional[str] = typer.Argument(
+        None,
+        help="若指定则只输出该命令的 schema；否则输出所有命令的完整 schema",
+    ),
+):
+    """输出命令树与参数定义 (JSON), 供 agent 内省使用.
+
+    示例:
+        dt schema                    # 输出完整命令树
+        dt schema clean              # 输出 clean 命令的参数定义
+        dt schema | jq '.commands[].name'
+    """
+    from .cli.schema import schema as _schema
+
+    _schema(command, app=app)
 
 
 @app.command("install-skill")

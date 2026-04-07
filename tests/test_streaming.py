@@ -6,12 +6,7 @@ import tempfile
 
 import pytest
 
-from dtflow.streaming import (
-    StreamingTransformer,
-    load_sharded,
-    load_stream,
-    process_shards,
-)
+from dtflow.streaming import StreamingTransformer, load_sharded, load_stream, process_shards
 
 
 @pytest.fixture

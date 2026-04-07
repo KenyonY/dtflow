@@ -3,6 +3,7 @@ Tests for CLI clean and dedupe commands.
 """
 
 import pytest
+import typer
 
 from dtflow.cli.clean import (
     _clean_data_single_pass,
@@ -533,20 +534,26 @@ class TestCleanErrors:
 
     def test_clean_file_not_exists(self, tmp_path, capsys):
         """Test error when file doesn't exist."""
-        clean(str(tmp_path / "nonexistent.jsonl"))
+        with pytest.raises(typer.Exit) as exc_info:
+            clean(str(tmp_path / "nonexistent.jsonl"))
+        assert exc_info.value.exit_code == 3  # NOT_FOUND
         captured = capsys.readouterr()
-        assert "文件不存在" in captured.out
+        assert "文件不存在" in captured.err or "file_not_found" in captured.err
 
     def test_dedupe_similar_without_key(self, sample_data_file, capsys):
         """Test error when using similar without key."""
         filepath, _ = sample_data_file
-        dedupe(str(filepath), similar=0.8)
+        with pytest.raises(typer.Exit) as exc_info:
+            dedupe(str(filepath), similar=0.8)
+        assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
-        assert "需要指定 --key" in captured.out
+        assert "需要指定 --key" in captured.err
 
     def test_dedupe_invalid_similar_range(self, sample_data_file, capsys):
         """Test error when similar value is out of range."""
         filepath, _ = sample_data_file
-        dedupe(str(filepath), key="text", similar=1.5)
+        with pytest.raises(typer.Exit) as exc_info:
+            dedupe(str(filepath), key="text", similar=1.5)
+        assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
-        assert "0-1 之间" in captured.out
+        assert "0-1 之间" in captured.err

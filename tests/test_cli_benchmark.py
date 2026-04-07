@@ -9,30 +9,28 @@ CLI 核心方法性能测试
 注意: 需要安装 pytest-benchmark: pip install pytest-benchmark
 """
 
-import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Dict, List
 
 import pytest
 
 # 尝试导入 benchmark，如果没有则使用简单计时
 try:
-    from pytest_benchmark.fixture import BenchmarkFixture
+    from pytest_benchmark.fixture import BenchmarkFixture  # noqa: F401
 
     HAS_BENCHMARK = True
 except ImportError:
     HAS_BENCHMARK = False
 
-from dtflow.cli.sample import sample, head, tail
-from dtflow.cli.stats import stats, token_stats
+from dtflow.cli.clean import clean, dedupe
 from dtflow.cli.io_ops import concat, diff
-from dtflow.cli.clean import dedupe, clean
+from dtflow.cli.sample import head, sample, tail
+from dtflow.cli.stats import stats, token_stats
 from dtflow.cli.transform import transform
 from dtflow.cli.validate import validate
 from dtflow.storage.io import save_data
-
 
 # ============ 测试数据生成 ============
 
@@ -65,7 +63,10 @@ def generate_test_data(num_rows: int, data_type: str = "simple") -> List[Dict]:
                 "messages": [
                     {"role": "system", "content": "你是一个助手。"},
                     {"role": "user", "content": f"问题 {i}: 请解释什么是机器学习？"},
-                    {"role": "assistant", "content": f"回答 {i}: 机器学习是人工智能的一个分支..." * 10},
+                    {
+                        "role": "assistant",
+                        "content": f"回答 {i}: 机器学习是人工智能的一个分支..." * 10,
+                    },
                 ],
             }
             for i in range(num_rows)
@@ -321,7 +322,9 @@ class TestValidateBenchmark:
         """验证 ShareGPT 格式并过滤"""
         output = temp_dir / "validate_valid.jsonl"
         with Timer("验证过滤 5000条 preset=sharegpt"):
-            validate(str(messages_data_file), preset="sharegpt", output=str(output), filter_invalid=True)
+            validate(
+                str(messages_data_file), preset="sharegpt", output=str(output), filter_invalid=True
+            )
 
 
 # ============ Clean 命令性能测试 ============
@@ -509,7 +512,9 @@ class TestComprehensiveBenchmark:
 
         with Timer("完整流程 50000条 -> 采样10000 -> 清洗 -> 去重"):
             # Step 1: 采样
-            sample(str(large_data_file), num=10000, type="random", output=str(step1_output), seed=42)
+            sample(
+                str(large_data_file), num=10000, type="random", output=str(step1_output), seed=42
+            )
 
             # Step 2: 清洗
             clean(str(step1_output), min_len="text:10", strip=True, output=str(step2_output))
@@ -533,7 +538,8 @@ def test_performance_summary():
     print("\n" + "=" * 60)
     print("CLI 性能测试说明")
     print("=" * 60)
-    print("""
+    print(
+        """
 测试覆盖的核心 CLI 方法:
   - sample/head/tail: 数据采样 (random/head/tail/stratified)
   - stats/token-stats: 数据统计和 Token 统计
@@ -561,5 +567,6 @@ def test_performance_summary():
 使用 pytest-benchmark (可选):
   pip install pytest-benchmark
   pytest tests/test_cli_benchmark.py --benchmark-only
-""")
+"""
+    )
     print("=" * 60)

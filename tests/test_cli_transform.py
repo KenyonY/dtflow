@@ -3,6 +3,7 @@ Tests for CLI transform command.
 """
 
 import pytest
+import typer
 
 from dtflow.cli.transform import (
     _build_config_content,
@@ -114,10 +115,11 @@ class TestPresetTransform:
     def test_transform_invalid_preset(self, sample_qa_file, capsys):
         """Test error with invalid preset name."""
         filepath, _ = sample_qa_file
-        transform(str(filepath), preset="invalid_preset")
-
+        with pytest.raises(typer.Exit) as exc_info:
+            transform(str(filepath), preset="invalid_preset")
+        assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
-        assert "未知预设" in captured.out or "错误" in captured.out
+        assert "未知预设" in captured.err or "usage_error" in captured.err
 
 
 # ============== Config Generation Tests ==============
@@ -134,7 +136,7 @@ class TestConfigGeneration:
         transform(str(filepath))
 
         captured = capsys.readouterr()
-        assert "生成配置文件" in captured.out
+        assert "生成配置文件" in captured.err
 
         # Config file should exist
         config_path = filepath.parent / ".dt" / f"{filepath.stem}.py"
@@ -290,15 +292,19 @@ class TestTransformErrors:
 
     def test_file_not_exists(self, tmp_path, capsys):
         """Test error when file doesn't exist."""
-        transform(str(tmp_path / "nonexistent.jsonl"))
+        with pytest.raises(typer.Exit) as exc_info:
+            transform(str(tmp_path / "nonexistent.jsonl"))
+        assert exc_info.value.exit_code == 3  # NOT_FOUND
         captured = capsys.readouterr()
-        assert "文件不存在" in captured.out
+        assert "文件不存在" in captured.err or "file_not_found" in captured.err
 
     def test_empty_file(self, tmp_path, capsys):
         """Test error when file is empty."""
         empty_file = tmp_path / "empty.jsonl"
         empty_file.write_text("")
 
-        transform(str(empty_file))
+        with pytest.raises(typer.Exit) as exc_info:
+            transform(str(empty_file))
+        assert exc_info.value.exit_code == 1
         captured = capsys.readouterr()
-        assert "文件为空" in captured.out or "错误" in captured.out
+        assert "文件为空" in captured.err or "empty" in captured.err.lower()

@@ -6,21 +6,29 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
-import orjson
-
 from ..storage.io import load_data, sample_file, save_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
     _check_file_format,
-    _file_exists,
     _get_file_row_count,
     _is_flaxkv_path,
     _parse_field_list,
     _print_samples,
+    _require_file_exists,
+)
+from .output import (
+    die,
+    die_io_error,
+    die_usage,
+    emit_data,
+    emit_json,
+    is_stdout_tty,
+    log,
+    resolve_format,
 )
 
 # where 条件解析正则：field op value
-_WHERE_PATTERN = re.compile(r"^(.+?)(!=|~=|>=|<=|>|<|=)(.*)$")
+_WHERE_PATTERN = re.compile(r"^(.+?)(!=|~=|>=|<=|==|>|<|=)(.*)$")
 
 
 def _parse_where(condition: str) -> Callable[[dict], bool]:
@@ -67,7 +75,7 @@ def _parse_where(condition: str) -> Callable[[dict], bool]:
     def filter_fn(item: dict) -> bool:
         field_value = get_field_with_spec(item, field)
 
-        if op == "=":
+        if op in ("=", "=="):
             # 字符串比较或数值比较
             if field_value is None:
                 return value == "" or value.lower() == "none"
@@ -147,6 +155,8 @@ def sample(
     fields: Optional[str] = None,
     raw: bool = True,
     where: Optional[List[str]] = None,
+    dist: Optional[str] = None,
+    format: Optional[str] = None,
 ) -> None:
     """
     从数据文件中采样指定数量的数据。
@@ -165,6 +175,8 @@ def sample(
         fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
         raw: 输出原始 JSON 格式（不截断，完整显示所有内容）
         where: 筛选条件列表，支持 =, !=, ~=, >, >=, <, <= 操作符
+        dist: 自定义分布 JSON 字符串（需配合 --by 使用，与 --uniform 互斥），
+            如 '{"A":0.5,"B":0.3,"C":0.2}'
 
     Examples:
         dt sample data.jsonl 5
@@ -175,6 +187,7 @@ def sample(
         dt sample data.jsonl -10 # 最后 10 条数据
         dt sample data.jsonl 1000 --by=category           # 按比例分层采样
         dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
+        dt sample data.jsonl 1000 --by=label --dist='{"合规":0.5,"违规":0.3,"中立":0.2}'
         dt sample data.jsonl --fields=question,answer     # 只显示指定字段
         dt sample data.jsonl --where="category=tech"      # 筛选 category 为 tech 的数据
         dt sample data.jsonl --where="meta.source~=wiki"  # 筛选 meta.source 包含 wiki
@@ -185,17 +198,39 @@ def sample(
         type = "head" if num == 0 else "random"
     filepath = Path(filename)
 
-    if not _file_exists(filepath):
-        print(f"错误: 文件不存在 - {filename}")
-        return
-
-    if not _check_file_format(filepath):
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
     # uniform 必须配合 by 使用
     if uniform and not by:
-        print("错误: --uniform 必须配合 --by 使用")
-        return
+        die_usage(
+            "--uniform 必须配合 --by 使用",
+            suggestion="例: dt sample data.jsonl 100 --by=category --uniform",
+        )
+
+    # dist 验证
+    dist_dict = None
+    if dist:
+        if not by:
+            die_usage(
+                "--dist 必须配合 --by 使用",
+                suggestion='例: dt sample data.jsonl 100 --by=label --dist=\'{"A":0.5,"B":0.5}\'',
+            )
+        if uniform:
+            die_usage("--dist 和 --uniform 不能同时使用")
+        import json
+
+        try:
+            dist_dict = json.loads(dist)
+        except json.JSONDecodeError:
+            die_usage(
+                f"--dist 不是合法的 JSON: {dist}", suggestion='示例: --dist=\'{"A":0.5,"B":0.5}\''
+            )
+        if not isinstance(dist_dict, dict) or not dist_dict:
+            die_usage("--dist 必须是非空的 JSON 对象")
+        total_ratio = sum(dist_dict.values())
+        if abs(total_ratio - 1.0) > 0.01:
+            die_usage(f"--dist 比例之和必须为 1.0，当前为 {total_ratio}")
 
     # 处理 where 筛选
     where_conditions = where or []
@@ -208,21 +243,25 @@ def sample(
             all_data = load_data(str(filepath))
             original_count = len(all_data)
             filtered_data = _apply_where_filters(all_data, where_conditions)
-            print(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
+            log(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
             if not filtered_data:
-                print("⚠️  筛选后无数据")
-                return
+                die(
+                    "empty_result",
+                    "筛选后无数据",
+                    suggestion="放宽 --where 条件或检查字段路径",
+                    exit_code=1,
+                )
         except ValueError as e:
-            print(f"错误: {e}")
-            return
+            die_usage(f"无效的 where 条件: {e}")
 
     # 分层采样模式
     if by:
         try:
-            sampled = _stratified_sample(filepath, num, by, uniform, seed, type, data=filtered_data)
+            sampled = _stratified_sample(
+                filepath, num, by, uniform, seed, type, data=filtered_data, dist=dist_dict
+            )
         except Exception as e:
-            print(f"错误: {e}")
-            return
+            die("sample_error", str(e), suggestion="检查 --by 字段是否存在且可用")
     else:
         # 普通采样
         try:
@@ -238,32 +277,58 @@ def sample(
                     output=None,  # 先不保存，统一在最后处理
                 )
         except Exception as e:
-            print(f"错误: {e}")
-            return
+            die("sample_error", str(e))
 
     # 输出结果
     if output:
         save_data(sampled, output)
-        print(f"已保存 {len(sampled)} 条数据到 {output}")
-    elif raw:
-        # 原始 JSON 输出（不截断）
+        log(f"已保存 {len(sampled)} 条数据到 {output}")
+        return
+
+    field_list = _parse_field_list(fields) if fields else None
+    if field_list:
+        sampled = [
+            (
+                {k: v for k, v in item.items() if k in set(field_list)}
+                if isinstance(item, dict)
+                else item
+            )
+            for item in sampled
+        ]
+
+    # 输出格式决策:
+    # - 显式 --format 最高优先
+    # - 非 TTY → ndjson (agent 友好)
+    # - TTY + --pretty → rich 表格展示
+    # - TTY + 默认 → 逐条 pretty JSON (保留人类可读的原 raw 行为)
+    fmt = resolve_format(format, default_for_tty="table")
+
+    if fmt != "table":
+        emit_data(sampled, format=fmt)
+        return
+
+    if not is_stdout_tty():
+        # 非 TTY 但 resolve_format 拿到 table 通常是用户显式要求,降级为 ndjson
+        emit_data(sampled, format="ndjson")
+        return
+
+    if raw:
+        # TTY raw 模式: 逐条多行 pretty JSON, 和历史行为一致
         for item in sampled:
-            print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
+            emit_json(item, indent=True)
+        return
+
+    # TTY --pretty: 走 rich 表格展示
+    if _is_flaxkv_path(filepath):
+        total_count = _get_file_row_count(filepath)
+        file_size = None
     else:
-        # 大文件跳过行数统计（50MB 阈值）
-        if _is_flaxkv_path(filepath):
-            # flaxkv 是目录，用 keys_count 获取总数
+        file_size = filepath.stat().st_size
+        if file_size < 50 * 1024 * 1024:
             total_count = _get_file_row_count(filepath)
-            file_size = None
         else:
-            file_size = filepath.stat().st_size
-            if file_size < 50 * 1024 * 1024:
-                total_count = _get_file_row_count(filepath)
-            else:
-                total_count = None
-        # 解析 fields 参数
-        field_list = _parse_field_list(fields) if fields else None
-        _print_samples(sampled, filepath.name, total_count, field_list, file_size)
+            total_count = None
+    _print_samples(sampled, filepath.name, total_count, field_list, file_size)
 
 
 def _stratified_sample(
@@ -274,6 +339,7 @@ def _stratified_sample(
     seed: Optional[int],
     sample_type: str,
     data: Optional[List[Dict]] = None,
+    dist: Optional[Dict[str, float]] = None,
 ) -> List[Dict]:
     """
     分层采样实现。
@@ -291,6 +357,7 @@ def _stratified_sample(
         seed: 随机种子
         sample_type: 采样方式（用于组内采样）
         data: 预筛选的数据（可选，如果提供则不从文件加载）
+        dist: 自定义分布，键为组名，值为目标比例（如 {"A": 0.5, "B": 0.3, "C": 0.2}）
 
     Returns:
         采样后的数据列表
@@ -321,16 +388,38 @@ def _stratified_sample(
     group_keys = list(groups.keys())
     num_groups = len(group_keys)
 
-    # 打印分组信息
-    print(f"📊 分层采样: 字段={stratify_field}, 共 {num_groups} 组")
+    # 打印分组信息（写 stderr，不污染 stdout）
+    log(f"📊 分层采样: 字段={stratify_field}, 共 {num_groups} 组")
     for key in sorted(group_keys, key=lambda x: -len(groups[x])):
         count = len(groups[key])
         pct = count / total * 100
         display_key = key if key != "__null__" else "[空值]"
-        print(f"   {display_key}: {count} 条 ({pct:.1f}%)")
+        log(f"   {display_key}: {count} 条 ({pct:.1f}%)")
 
     # 计算各组采样数量
-    if uniform:
+    if dist:
+        # 自定义分布：按指定比例分配
+        sample_counts = {}
+        allocated = 0
+        # 将 dist 的 key 转为与 groups 一致的类型（groups key 可能是 int/tuple 等）
+        str_to_group_key = {str(k): k for k in group_keys}
+        dist_keys = [k for k in dist.keys() if k in str_to_group_key]
+        for k in dist:
+            if k not in str_to_group_key:
+                log(f"  ⚠️  分布中的 '{k}' 在数据中不存在，跳过")
+        for i, dk in enumerate(dist_keys):
+            gk = str_to_group_key[dk]
+            if i == len(dist_keys) - 1:
+                sample_counts[gk] = num - allocated
+            else:
+                count = int(num * dist[dk])
+                sample_counts[gk] = count
+                allocated += count
+        # 未在 dist 中指定的组不采样
+        for key in group_keys:
+            if key not in sample_counts:
+                sample_counts[key] = 0
+    elif uniform:
         # 均匀采样：各组数量相等
         per_group = num // num_groups
         remainder = num % num_groups
@@ -359,7 +448,7 @@ def _stratified_sample(
 
     # 执行各组采样
     result = []
-    print("🔄 执行采样...")
+    log("🔄 执行采样...")
     for key in group_keys:
         group_data = groups[key]
         target = min(sample_counts[key], len(group_data))
@@ -377,8 +466,8 @@ def _stratified_sample(
 
         result.extend(sampled)
 
-    # 打印采样结果
-    print("\n📋 采样结果:")
+    # 打印采样结果（写 stderr）
+    log("📋 采样结果:")
     result_groups: Dict[Any, int] = defaultdict(int)
     for item in result:
         key = item.get(stratify_field, "__null__")
@@ -388,9 +477,9 @@ def _stratified_sample(
         orig = len(groups[key])
         sampled_count = result_groups.get(key, 0)
         display_key = key if key != "__null__" else "[空值]"
-        print(f"   {display_key}: {orig} → {sampled_count}")
+        log(f"   {display_key}: {orig} → {sampled_count}")
 
-    print(f"\n✅ 总计: {total} → {len(result)} 条")
+    log(f"✅ 总计: {total} → {len(result)} 条")
 
     return result
 
@@ -401,6 +490,7 @@ def head(
     output: Optional[str] = None,
     fields: Optional[str] = None,
     raw: bool = True,
+    format: Optional[str] = None,
 ) -> None:
     """
     显示文件的前 N 条数据（dt sample --type=head 的快捷方式）。
@@ -423,7 +513,7 @@ def head(
         dt head data.jsonl --fields=question,answer
         dt head data.jsonl 1 --raw  # 完整 JSON 输出
     """
-    sample(filename, num=num, type="head", output=output, fields=fields, raw=raw)
+    sample(filename, num=num, type="head", output=output, fields=fields, raw=raw, format=format)
 
 
 def slice_data(
@@ -432,6 +522,7 @@ def slice_data(
     output: Optional[str] = None,
     fields: Optional[str] = None,
     raw: bool = True,
+    format: Optional[str] = None,
 ) -> None:
     """
     按行号范围查看数据（Python 切片语法）。
@@ -457,17 +548,15 @@ def slice_data(
     """
     filepath = Path(filename)
 
-    if not _file_exists(filepath):
-        print(f"错误: 文件不存在 - {filename}")
-        return
-
-    if not _check_file_format(filepath):
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
     # 解析 range
     if ":" not in range_str:
-        print(f"错误: 无效的范围格式 '{range_str}'，应为 start:end（如 10:20）")
-        return
+        die_usage(
+            f"无效的范围格式 '{range_str}'，应为 start:end（如 10:20）",
+            suggestion="示例: 10:20 / :100 / 100: / -10:",
+        )
 
     parts = range_str.split(":", 1)
     start_str, end_str = parts[0].strip(), parts[1].strip()
@@ -476,42 +565,66 @@ def slice_data(
         start = int(start_str) if start_str else None
         end = int(end_str) if end_str else None
     except ValueError:
-        print(f"错误: 无效的范围格式 '{range_str}'，start 和 end 必须为整数")
-        return
+        die_usage(f"无效的范围格式 '{range_str}'，start 和 end 必须为整数")
 
     # 加载数据并切片
     try:
         data = load_data(str(filepath))
     except Exception as e:
-        print(f"错误: {e}")
-        return
+        die_io_error(e, operation="读取", path=str(filepath))
 
     sliced = data[start:end]
 
     if not sliced:
         total = len(data)
-        print(f"⚠️  范围 [{range_str}] 无数据（文件共 {total} 行）")
-        return
+        die(
+            "empty_result",
+            f"范围 [{range_str}] 无数据（文件共 {total} 行）",
+            suggestion="调整 start:end 范围",
+            exit_code=1,
+        )
 
-    # 显示范围信息
+    # 显示范围信息（写 stderr）
     total = len(data)
     actual_start = start if start is not None else 0
     if actual_start < 0:
         actual_start = max(0, total + actual_start)
     actual_end = min(end, total) if end is not None else total
-    print(f"📍 行 {actual_start}-{actual_end - 1}（共 {len(sliced)} 条，文件共 {total} 行）")
+    log(f"📍 行 {actual_start}-{actual_end - 1}（共 {len(sliced)} 条，文件共 {total} 行）")
 
     # 输出结果
     if output:
         save_data(sliced, output)
-        print(f"已保存 {len(sliced)} 条数据到 {output}")
-    elif raw:
+        log(f"已保存 {len(sliced)} 条数据到 {output}")
+        return
+
+    field_list = _parse_field_list(fields) if fields else None
+    if field_list:
+        sliced = [
+            (
+                {k: v for k, v in item.items() if k in set(field_list)}
+                if isinstance(item, dict)
+                else item
+            )
+            for item in sliced
+        ]
+
+    fmt = resolve_format(format, default_for_tty="table")
+    if fmt != "table":
+        emit_data(sliced, format=fmt)
+        return
+
+    if not is_stdout_tty():
+        emit_data(sliced, format="ndjson")
+        return
+
+    if raw:
         for item in sliced:
-            print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
-    else:
-        field_list = _parse_field_list(fields) if fields else None
-        file_size = None if _is_flaxkv_path(filepath) else filepath.stat().st_size
-        _print_samples(sliced, filepath.name, total, field_list, file_size)
+            emit_json(item, indent=True)
+        return
+
+    file_size = None if _is_flaxkv_path(filepath) else filepath.stat().st_size
+    _print_samples(sliced, filepath.name, total, field_list, file_size)
 
 
 def tail(
@@ -520,6 +633,7 @@ def tail(
     output: Optional[str] = None,
     fields: Optional[str] = None,
     raw: bool = True,
+    format: Optional[str] = None,
 ) -> None:
     """
     显示文件的后 N 条数据（dt sample --type=tail 的快捷方式）。
@@ -542,4 +656,4 @@ def tail(
         dt tail data.jsonl --fields=question,answer
         dt tail data.jsonl 1 --raw  # 完整 JSON 输出
     """
-    sample(filename, num=num, type="tail", output=output, fields=fields, raw=raw)
+    sample(filename, num=num, type="tail", output=output, fields=fields, raw=raw, format=format)

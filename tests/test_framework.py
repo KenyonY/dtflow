@@ -3,19 +3,11 @@
 """
 
 import json
-import os
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from dtflow import DataTransformer
-from dtflow.framework import (
-    CompatibilityResult,
-    check_compatibility,
-    detect_format,
-    export_for,
-)
+from dtflow.framework import CompatibilityResult, check_compatibility, detect_format, export_for
 
 
 class TestDetectFormat:
@@ -99,7 +91,12 @@ class TestExportFor:
 
     def test_export_llama_factory(self):
         data = [
-            {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
+            {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "hello"},
+                ]
+            }
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:

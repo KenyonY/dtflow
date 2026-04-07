@@ -3,6 +3,7 @@ Tests for CLI sample/head/tail commands.
 """
 
 import pytest
+import typer
 
 from dtflow.cli.sample import head, sample, tail
 from dtflow.storage.io import load_data, save_data
@@ -197,10 +198,86 @@ class TestStratifiedSample:
     def test_uniform_requires_by(self, sample_qa_file, capsys):
         """Test that --uniform requires --by parameter."""
         filepath, _ = sample_qa_file
-        sample(str(filepath), num=5, uniform=True)
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(str(filepath), num=5, uniform=True)
+        assert exc_info.value.exit_code == 2  # usage error
 
         captured = capsys.readouterr()
-        assert "--uniform 必须配合 --by 使用" in captured.out
+        assert "--uniform 必须配合 --by 使用" in captured.err
+
+    def test_stratified_sample_custom_dist(self, sample_qa_file, tmp_path):
+        """Test stratified sampling with custom distribution."""
+        filepath, data = sample_qa_file
+        output_file = tmp_path / "output.jsonl"
+
+        # data has 20 items: cat0(7), cat1(7), cat2(6)
+        # Request 10 items with dist: cat0=50%, cat1=30%, cat2=20%
+        sample(
+            str(filepath),
+            num=10,
+            type="random",
+            output=str(output_file),
+            by="category",
+            seed=42,
+            dist='{"cat0":0.5,"cat1":0.3,"cat2":0.2}',
+        )
+
+        result = load_data(str(output_file))
+        assert len(result) == 10
+
+        counts = {}
+        for item in result:
+            cat = item["category"]
+            counts[cat] = counts.get(cat, 0) + 1
+
+        assert counts["cat0"] == 5
+        assert counts["cat1"] == 3
+        assert counts["cat2"] == 2
+
+    def test_dist_requires_by(self, sample_qa_file, capsys):
+        """Test that --dist requires --by parameter."""
+        filepath, _ = sample_qa_file
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(str(filepath), num=5, dist='{"cat0":0.5,"cat1":0.5}')
+        assert exc_info.value.exit_code == 2  # USAGE
+        captured = capsys.readouterr()
+        assert "--dist 必须配合 --by 使用" in captured.err
+
+    def test_dist_conflicts_uniform(self, sample_qa_file, capsys):
+        """Test that --dist and --uniform are mutually exclusive."""
+        filepath, _ = sample_qa_file
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(
+                str(filepath),
+                num=5,
+                by="category",
+                uniform=True,
+                dist='{"cat0":0.5,"cat1":0.5}',
+            )
+        assert exc_info.value.exit_code == 2  # USAGE
+        captured = capsys.readouterr()
+        assert "--dist 和 --uniform 不能同时使用" in captured.err
+
+    def test_dist_missing_group(self, sample_qa_file, tmp_path, capsys):
+        """Test warning when dist references a non-existent group."""
+        filepath, _ = sample_qa_file
+        output_file = tmp_path / "output.jsonl"
+
+        # "nonexistent" is not a real category
+        sample(
+            str(filepath),
+            num=10,
+            type="random",
+            output=str(output_file),
+            by="category",
+            seed=42,
+            dist='{"cat0":0.5,"cat1":0.3,"nonexistent":0.2}',
+        )
+
+        captured = capsys.readouterr()
+        # 警告通过 log() 写到 stderr
+        assert "nonexistent" in captured.err
+        assert "不存在" in captured.err
 
 
 # ============== Error Handling Tests ==============
@@ -211,18 +288,22 @@ class TestSampleErrors:
 
     def test_file_not_exists(self, tmp_path, capsys):
         """Test error when file doesn't exist."""
-        sample(str(tmp_path / "nonexistent.jsonl"))
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(str(tmp_path / "nonexistent.jsonl"))
+        assert exc_info.value.exit_code == 3  # NOT_FOUND
         captured = capsys.readouterr()
-        assert "文件不存在" in captured.out
+        assert "文件不存在" in captured.err or "file_not_found" in captured.err
 
     def test_invalid_file_format(self, tmp_path, capsys):
         """Test error for unsupported file format."""
         invalid_file = tmp_path / "test.xyz"
         invalid_file.write_text("test")
 
-        sample(str(invalid_file))
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(str(invalid_file))
+        assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
-        assert "不支持" in captured.out or "格式" in captured.out or len(captured.out) > 0
+        assert "不支持" in captured.err or "格式" in captured.err
 
 
 # ============== Raw Output Tests ==============
@@ -326,19 +407,21 @@ class TestWhereFilter:
         """Test where filter with no matching results."""
         filepath, _ = sample_qa_file
 
-        sample(str(filepath), num=10, where=["category=nonexistent"])
-
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(str(filepath), num=10, where=["category=nonexistent"])
+        assert exc_info.value.exit_code == 1
         captured = capsys.readouterr()
-        assert "筛选后无数据" in captured.out
+        assert "筛选后无数据" in captured.err
 
     def test_where_invalid_condition(self, sample_qa_file, capsys):
         """Test where filter with invalid condition format."""
         filepath, _ = sample_qa_file
 
-        sample(str(filepath), num=10, where=["invalid_condition"])
-
+        with pytest.raises(typer.Exit) as exc_info:
+            sample(str(filepath), num=10, where=["invalid_condition"])
+        assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
-        assert "无效的 where 条件" in captured.out
+        assert "无效的 where 条件" in captured.err
 
 
 # ============== FlaxKV Format Conversion Tests ==============

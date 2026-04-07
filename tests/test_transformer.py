@@ -1,13 +1,15 @@
 """
 Tests for DataTransformer core functionality.
 """
-import pytest
+
 import tempfile
 from pathlib import Path
+
+import pytest
+
 from dtflow import (
     DataTransformer,
     DictWrapper,
-    TransformError,
     TransformErrors,
     get_preset,
     list_presets,
@@ -50,11 +52,13 @@ class TestDataTransformer:
 
     def test_filter_with_attribute_access(self):
         """Test filtering with attribute access."""
-        dt = DataTransformer([
-            {"score": 0.8, "text": "high"},
-            {"score": 0.3, "text": "low"},
-            {"score": 0.9, "text": "highest"}
-        ])
+        dt = DataTransformer(
+            [
+                {"score": 0.8, "text": "high"},
+                {"score": 0.3, "text": "low"},
+                {"score": 0.9, "text": "highest"},
+            ]
+        )
         filtered = dt.filter(lambda x: x.score > 0.5)
         assert len(filtered) == 2
         assert all(item["score"] > 0.5 for item in filtered.data)
@@ -89,10 +93,9 @@ class TestDataTransformer:
 
     def test_stats(self):
         """Test statistics."""
-        dt = DataTransformer([
-            {"text": "hello", "label": "positive"},
-            {"text": "world", "label": "negative"}
-        ])
+        dt = DataTransformer(
+            [{"text": "hello", "label": "positive"}, {"text": "world", "label": "negative"}]
+        )
         stats = dt.stats()
         assert stats["total"] == 2
         assert "text" in stats["fields"]
@@ -228,11 +231,13 @@ class TestErrorHandling:
 
     def test_to_default_skip_on_error(self, capsys):
         """Test default behavior skips errors and prints warning."""
-        dt = DataTransformer([
-            {"q": "问题1", "a": "回答1"},
-            {"q": "问题2"},  # 缺少 'a' 字段
-            {"q": "问题3", "a": "回答3"},
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1", "a": "回答1"},
+                {"q": "问题2"},  # 缺少 'a' 字段
+                {"q": "问题3", "a": "回答3"},
+            ]
+        )
 
         results = dt.to(lambda x: {"instruction": x.q, "output": x.a})
 
@@ -247,11 +252,13 @@ class TestErrorHandling:
 
     def test_to_raise_on_error(self):
         """Test raise strategy stops on first error."""
-        dt = DataTransformer([
-            {"q": "问题1", "a": "回答1"},
-            {"q": "问题2"},  # 缺少 'a' 字段
-            {"q": "问题3", "a": "回答3"},
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1", "a": "回答1"},
+                {"q": "问题2"},  # 缺少 'a' 字段
+                {"q": "问题3", "a": "回答3"},
+            ]
+        )
 
         with pytest.raises(TransformErrors) as exc_info:
             dt.to(lambda x: {"instruction": x.q, "output": x.a}, on_error="raise")
@@ -262,11 +269,13 @@ class TestErrorHandling:
 
     def test_to_skip_on_error(self, capsys):
         """Test skip strategy continues processing."""
-        dt = DataTransformer([
-            {"q": "问题1", "a": "回答1"},
-            {"q": "问题2"},  # 缺少 'a' 字段
-            {"q": "问题3", "a": "回答3"},
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1", "a": "回答1"},
+                {"q": "问题2"},  # 缺少 'a' 字段
+                {"q": "问题3", "a": "回答3"},
+            ]
+        )
 
         results = dt.to(lambda x: {"instruction": x.q, "output": x.a}, on_error="skip")
 
@@ -276,11 +285,13 @@ class TestErrorHandling:
 
     def test_to_null_on_error(self):
         """Test null strategy returns None for errors."""
-        dt = DataTransformer([
-            {"q": "问题1", "a": "回答1"},
-            {"q": "问题2"},  # 缺少 'a' 字段
-            {"q": "问题3", "a": "回答3"},
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1", "a": "回答1"},
+                {"q": "问题2"},  # 缺少 'a' 字段
+                {"q": "问题3", "a": "回答3"},
+            ]
+        )
 
         results = dt.to(lambda x: {"instruction": x.q, "output": x.a}, on_error="null")
 
@@ -291,17 +302,17 @@ class TestErrorHandling:
 
     def test_to_return_errors(self):
         """Test return_errors flag returns error details."""
-        dt = DataTransformer([
-            {"q": "问题1", "a": "回答1"},
-            {"q": "问题2"},  # 缺少 'a' 字段
-            {"q": "问题3"},  # 缺少 'a' 字段
-            {"q": "问题4", "a": "回答4"},
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1", "a": "回答1"},
+                {"q": "问题2"},  # 缺少 'a' 字段
+                {"q": "问题3"},  # 缺少 'a' 字段
+                {"q": "问题4", "a": "回答4"},
+            ]
+        )
 
         results, errors = dt.to(
-            lambda x: {"instruction": x.q, "output": x.a},
-            on_error="skip",
-            return_errors=True
+            lambda x: {"instruction": x.q, "output": x.a}, on_error="skip", return_errors=True
         )
 
         assert len(results) == 2
@@ -312,10 +323,12 @@ class TestErrorHandling:
 
     def test_transform_skip_on_error(self):
         """Test transform with skip strategy."""
-        dt = DataTransformer([
-            {"q": "问题1", "a": "回答1"},
-            {"q": "问题2"},  # 缺少 'a' 字段
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1", "a": "回答1"},
+                {"q": "问题2"},  # 缺少 'a' 字段
+            ]
+        )
 
         result = dt.transform(lambda x: {"q": x.q, "a": x.a}, on_error="skip")
 
@@ -324,11 +337,13 @@ class TestErrorHandling:
 
     def test_filter_default_skip_on_error(self, capsys):
         """Test filter default skips errors and prints warning."""
-        dt = DataTransformer([
-            {"score": 0.8},
-            {"value": 0.5},  # 缺少 'score' 字段
-            {"score": 0.9},
-        ])
+        dt = DataTransformer(
+            [
+                {"score": 0.8},
+                {"value": 0.5},  # 缺少 'score' 字段
+                {"score": 0.9},
+            ]
+        )
 
         result = dt.filter(lambda x: x.score > 0.5)
 
@@ -340,22 +355,26 @@ class TestErrorHandling:
 
     def test_filter_raise_on_error(self):
         """Test filter raise strategy."""
-        dt = DataTransformer([
-            {"score": 0.8},
-            {"value": 0.5},  # 缺少 'score' 字段
-            {"score": 0.9},
-        ])
+        dt = DataTransformer(
+            [
+                {"score": 0.8},
+                {"value": 0.5},  # 缺少 'score' 字段
+                {"score": 0.9},
+            ]
+        )
 
         with pytest.raises(TransformErrors):
             dt.filter(lambda x: x.score > 0.5, on_error="raise")
 
     def test_filter_skip_on_error(self, capsys):
         """Test filter skip strategy."""
-        dt = DataTransformer([
-            {"score": 0.8},
-            {"value": 0.5},  # 缺少 'score' 字段
-            {"score": 0.9},
-        ])
+        dt = DataTransformer(
+            [
+                {"score": 0.8},
+                {"value": 0.5},  # 缺少 'score' 字段
+                {"score": 0.9},
+            ]
+        )
 
         result = dt.filter(lambda x: x.score > 0.5, on_error="skip")
 
@@ -363,11 +382,13 @@ class TestErrorHandling:
 
     def test_filter_keep_on_error(self):
         """Test filter keep strategy preserves error rows."""
-        dt = DataTransformer([
-            {"score": 0.8},
-            {"value": 0.5},  # 缺少 'score' 字段
-            {"score": 0.3},
-        ])
+        dt = DataTransformer(
+            [
+                {"score": 0.8},
+                {"value": 0.5},  # 缺少 'score' 字段
+                {"score": 0.3},
+            ]
+        )
 
         result = dt.filter(lambda x: x.score > 0.5, on_error="keep")
 
@@ -390,10 +411,12 @@ class TestErrorHandling:
 
     def test_transform_errors_message(self):
         """Test TransformErrors provides clear message."""
-        dt = DataTransformer([
-            {"q": "问题1"},
-            {"q": "问题2"},
-        ])
+        dt = DataTransformer(
+            [
+                {"q": "问题1"},
+                {"q": "问题2"},
+            ]
+        )
 
         with pytest.raises(TransformErrors) as exc_info:
             dt.to(lambda x: {"a": x.missing}, on_error="raise")
@@ -442,10 +465,7 @@ class TestPresets:
         """Test OpenAI Chat preset with system prompt."""
         dt = DataTransformer([{"q": "问题", "a": "回答"}])
         transform_func = get_preset(
-            "openai_chat",
-            user_field="q",
-            assistant_field="a",
-            system_prompt="你是一个助手"
+            "openai_chat", user_field="q", assistant_field="a", system_prompt="你是一个助手"
         )
         result = dt.to(transform_func)
 
@@ -458,10 +478,7 @@ class TestPresets:
         """Test Alpaca preset."""
         dt = DataTransformer([{"q": "问题", "input": "", "a": "回答"}])
         transform_func = get_preset(
-            "alpaca",
-            instruction_field="q",
-            input_field="input",
-            output_field="a"
+            "alpaca", instruction_field="q", input_field="input", output_field="a"
         )
         result = dt.to(transform_func)
 
@@ -471,11 +488,7 @@ class TestPresets:
 
     def test_dpo_pair_preset(self):
         """Test DPO pair preset."""
-        dt = DataTransformer([{
-            "prompt": "问题",
-            "chosen": "好回答",
-            "rejected": "差回答"
-        }])
+        dt = DataTransformer([{"prompt": "问题", "chosen": "好回答", "rejected": "差回答"}])
         transform_func = get_preset("dpo_pair")
         result = dt.to(transform_func)
 

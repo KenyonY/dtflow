@@ -7,7 +7,8 @@ from typing import Optional
 
 from ..core import DataTransformer
 from ..framework import check_compatibility, detect_format, export_for
-from .common import _check_file_format
+from .common import _check_file_format, _require_file_exists
+from .output import die, die_io_error, emit_action, log
 
 
 def export(
@@ -16,6 +17,7 @@ def export(
     output: Optional[str] = None,
     name: Optional[str] = None,
     check: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """
     导出数据到训练框架 (LLaMA-Factory, ms-swift, Axolotl)。
@@ -25,57 +27,91 @@ def export(
         framework: 目标框架 (llama-factory, swift, axolotl)
         output: 输出目录（默认 {stem}_{framework}/）
         name: 数据集名称（默认 custom_dataset）
-        check: 仅检查兼容性，不导出
+        check: 仅检查兼容性，不导出 (等价于 --dry-run)
+        dry_run: 同 --check
+
+    Examples:
+        dt export data.jsonl --framework=llama-factory
+        dt export data.jsonl --framework=swift -o dataset/
+        dt export data.jsonl --framework=axolotl --check
     """
     filepath = Path(filename)
 
-    if not filepath.exists():
-        print(f"错误: 文件不存在 - {filename}")
-        return
-
-    if not _check_file_format(filepath):
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
     # 加载数据
-    print(f"📊 加载数据: {filepath}")
+    log(f"[bold]📊 加载数据:[/bold] {filepath}")
     try:
         dt = DataTransformer.load(str(filepath))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(filepath))
 
     data = dt.data
     total = len(data)
-    print(f"   共 {total} 条数据")
+    log(f"   共 {total} 条数据")
 
     # 检测格式
     fmt = detect_format(data)
-    print(f"📋 检测到格式: {fmt}")
+    log(f"[bold]📋 检测到格式:[/bold] {fmt}")
 
     # 兼容性检查
     result = check_compatibility(data, framework)
-    print(f"\n{result}")
+    log(str(result))
 
-    if check:
-        return
+    # --check 或 --dry-run 都视为预演
+    is_dry_run = check or dry_run
 
-    if not result.valid:
-        print("\n❌ 兼容性检查未通过，跳过导出")
-        return
-
-    # 确定输出目录
+    # 确定输出目录 (所有分支都需要)
     if output is None:
         fw_short = framework.lower().replace("-", "_")
         output = str(filepath.parent / f"{filepath.stem}_{fw_short}")
-
     dataset_name = name or "custom_dataset"
 
-    # 执行导出
-    print(f"\n📦 导出到 {framework}...")
-    try:
-        export_for(data, framework, output, dataset_name=dataset_name)
-    except Exception as e:
-        print(f"错误: 导出失败 - {e}")
+    stats = {
+        "framework": framework,
+        "detected_format": str(fmt),
+        "input_rows": total,
+        "compatible": bool(getattr(result, "valid", True)),
+        "dataset_name": dataset_name,
+    }
+
+    if is_dry_run:
+        emit_action(
+            "export",
+            input_files=[str(filepath)],
+            output=output,
+            stats=stats,
+            dry_run=True,
+        )
         return
 
-    print(f"\n✅ 导出完成! 文件保存在: {output}")
+    if not result.valid:
+        die(
+            "incompatible_data",
+            "兼容性检查未通过，跳过导出",
+            suggestion="使用 --check 查看具体不兼容点, 或先用 clean/transform 修正数据",
+            exit_code=2,
+            context={"framework": framework},
+        )
+
+    # 执行导出
+    log(f"[bold]📦 导出到 {framework}...[/bold]")
+    try:
+        export_for(data, framework, output, dataset_name=dataset_name)
+    except (PermissionError, FileExistsError, IsADirectoryError, FileNotFoundError) as e:
+        die_io_error(e, operation="导出", path=output)
+    except Exception as e:
+        die(
+            "export_failed",
+            f"导出失败: {e}",
+            suggestion="查看 framework 模块的支持格式 / 确认输出目录可写",
+            exit_code=1,
+        )
+
+    emit_action(
+        "export",
+        input_files=[str(filepath)],
+        output=output,
+        stats=stats,
+    )

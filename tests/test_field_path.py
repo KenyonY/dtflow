@@ -2,11 +2,7 @@
 
 import pytest
 
-from dtflow.utils.field_path import (
-    get_field,
-    get_field_with_spec,
-    parse_field_spec,
-)
+from dtflow.utils.field_path import get_field, get_field_with_spec, parse_field_spec
 
 
 class TestParseFieldSpec:

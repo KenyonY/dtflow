@@ -26,12 +26,7 @@ from .converters import (  # LLaMA-Factory 扩展; ms-swift
     to_swift_vlm,
 )
 from .core import DataTransformer, DictWrapper, TransformError, TransformErrors
-from .framework import (
-    CompatibilityResult,
-    check_compatibility,
-    detect_format,
-    export_for,
-)
+from .framework import CompatibilityResult, check_compatibility, detect_format, export_for
 from .presets import get_preset, list_presets
 from .schema import (
     Field,

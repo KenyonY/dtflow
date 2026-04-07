@@ -7,21 +7,20 @@ ShareGPT 数据集性能测试报告生成器
 
 import os
 import sys
-import time
 import tempfile
-import json
-from pathlib import Path
+import time
 from dataclasses import dataclass
-from typing import List, Dict, Any, Callable
 from datetime import datetime
+from pathlib import Path
+from typing import Callable, List
 
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dtflow.cli.sample import sample, head, tail
-from dtflow.cli.stats import stats
+from dtflow.cli.clean import clean, dedupe
 from dtflow.cli.io_ops import concat, diff
-from dtflow.cli.clean import dedupe, clean
+from dtflow.cli.sample import head, sample, tail
+from dtflow.cli.stats import stats
 from dtflow.cli.transform import transform
 from dtflow.storage.io import load_data, save_data
 
@@ -29,6 +28,7 @@ from dtflow.storage.io import load_data, save_data
 @dataclass
 class BenchmarkResult:
     """性能测试结果"""
+
     name: str
     elapsed: float
     input_size: int
@@ -60,17 +60,19 @@ class PerformanceBenchmark:
         print()
 
         # 记录加载性能
-        self.results.append(BenchmarkResult(
-            name="load_data (JSON)",
-            elapsed=load_time,
-            input_size=self.data_count,
-            throughput=self.data_count / load_time,
-            notes=f"{self.file_size_mb:.1f}MB JSON 文件"
-        ))
+        self.results.append(
+            BenchmarkResult(
+                name="load_data (JSON)",
+                elapsed=load_time,
+                input_size=self.data_count,
+                throughput=self.data_count / load_time,
+                notes=f"{self.file_size_mb:.1f}MB JSON 文件",
+            )
+        )
 
         # 保存为 JSONL 格式用于后续测试
         self.jsonl_file = Path(self.temp_dir) / "sharegpt.jsonl"
-        print(f"📝 转换为 JSONL 格式...")
+        print("📝 转换为 JSONL 格式...")
         start = time.perf_counter()
         save_data(self.data, str(self.jsonl_file))
         save_time = time.perf_counter() - start
@@ -79,15 +81,19 @@ class PerformanceBenchmark:
         print(f"   保存耗时: {save_time:.2f}s")
         print()
 
-        self.results.append(BenchmarkResult(
-            name="save_data (JSONL)",
-            elapsed=save_time,
-            input_size=self.data_count,
-            throughput=self.data_count / save_time,
-            notes=f"输出 {jsonl_size:.1f}MB JSONL"
-        ))
+        self.results.append(
+            BenchmarkResult(
+                name="save_data (JSONL)",
+                elapsed=save_time,
+                input_size=self.data_count,
+                throughput=self.data_count / save_time,
+                notes=f"输出 {jsonl_size:.1f}MB JSONL",
+            )
+        )
 
-    def run(self, name: str, func: Callable, input_size: int = 0, notes: str = "") -> BenchmarkResult:
+    def run(
+        self, name: str, func: Callable, input_size: int = 0, notes: str = ""
+    ) -> BenchmarkResult:
         """运行单个测试"""
         print(f"  ⏱ {name}...", end=" ", flush=True)
         start = time.perf_counter()
@@ -104,7 +110,7 @@ class PerformanceBenchmark:
                 input_size=input_size or self.data_count,
                 output_size=output_size,
                 throughput=throughput,
-                notes=notes
+                notes=notes,
             )
             self.results.append(br)
             return br
@@ -115,7 +121,7 @@ class PerformanceBenchmark:
                 name=name,
                 elapsed=elapsed,
                 input_size=input_size or self.data_count,
-                notes=f"错误: {e}"
+                notes=f"错误: {e}",
             )
             self.results.append(br)
             return br
@@ -130,7 +136,7 @@ class PerformanceBenchmark:
         self.run(
             "head 1000条",
             lambda: head(str(self.jsonl_file), num=1000, output=str(output)),
-            notes="从头部采样"
+            notes="从头部采样",
         )
 
         # head 大量采样
@@ -138,7 +144,7 @@ class PerformanceBenchmark:
         self.run(
             "head 10000条",
             lambda: head(str(self.jsonl_file), num=10000, output=str(output)),
-            notes="从头部采样"
+            notes="从头部采样",
         )
 
         # tail 采样
@@ -146,15 +152,17 @@ class PerformanceBenchmark:
         self.run(
             "tail 1000条",
             lambda: tail(str(self.jsonl_file), num=1000, output=str(output)),
-            notes="从尾部采样"
+            notes="从尾部采样",
         )
 
         # 随机采样
         output = Path(self.temp_dir) / "sample_random.jsonl"
         self.run(
             "random 5000条",
-            lambda: sample(str(self.jsonl_file), num=5000, type="random", output=str(output), seed=42),
-            notes="随机采样"
+            lambda: sample(
+                str(self.jsonl_file), num=5000, type="random", output=str(output), seed=42
+            ),
+            notes="随机采样",
         )
 
     def benchmark_stats(self):
@@ -166,14 +174,12 @@ class PerformanceBenchmark:
         self.run(
             "stats 快速模式",
             lambda: stats(str(self.jsonl_file), full=False),
-            notes="只统计行数和字段结构"
+            notes="只统计行数和字段结构",
         )
 
         # 完整统计（较慢）
         self.run(
-            "stats 完整模式",
-            lambda: stats(str(self.jsonl_file), full=True),
-            notes="完整值分布统计"
+            "stats 完整模式", lambda: stats(str(self.jsonl_file), full=True), notes="完整值分布统计"
         )
 
     def benchmark_clean(self):
@@ -186,7 +192,7 @@ class PerformanceBenchmark:
         self.run(
             "clean --strip",
             lambda: clean(str(self.jsonl_file), strip=True, output=str(output)),
-            notes="去除字符串首尾空白"
+            notes="去除字符串首尾空白",
         )
 
         # drop-empty 清洗
@@ -194,7 +200,7 @@ class PerformanceBenchmark:
         self.run(
             "clean --drop-empty=system",
             lambda: clean(str(self.jsonl_file), drop_empty="system", output=str(output)),
-            notes="删除 system 为空的记录"
+            notes="删除 system 为空的记录",
         )
 
         # keep 字段
@@ -202,7 +208,7 @@ class PerformanceBenchmark:
         self.run(
             "clean --keep=conversations",
             lambda: clean(str(self.jsonl_file), keep="conversations", output=str(output)),
-            notes="只保留 conversations 字段"
+            notes="只保留 conversations 字段",
         )
 
     def benchmark_dedupe(self):
@@ -215,7 +221,7 @@ class PerformanceBenchmark:
         self.run(
             "dedupe 全量精确去重",
             lambda: dedupe(str(self.jsonl_file), output=str(output)),
-            notes="基于完整内容哈希"
+            notes="基于完整内容哈希",
         )
 
         # 按字段去重
@@ -223,7 +229,7 @@ class PerformanceBenchmark:
         self.run(
             "dedupe --key=system",
             lambda: dedupe(str(self.jsonl_file), key="system", output=str(output)),
-            notes="按 system 字段去重"
+            notes="按 system 字段去重",
         )
 
     def benchmark_io(self):
@@ -243,7 +249,7 @@ class PerformanceBenchmark:
             "concat 2个文件 (各30000条)",
             lambda: concat(str(part1), str(part2), output=str(output)),
             input_size=60000,
-            notes="合并两个文件"
+            notes="合并两个文件",
         )
 
         # diff
@@ -251,7 +257,7 @@ class PerformanceBenchmark:
             "diff 2个文件 (各30000条)",
             lambda: diff(str(part1), str(part2)),
             input_size=60000,
-            notes="对比两个文件"
+            notes="对比两个文件",
         )
 
     def benchmark_transform(self):
@@ -264,7 +270,7 @@ class PerformanceBenchmark:
         self.run(
             "transform --preset=sharegpt",
             lambda: transform(str(self.jsonl_file), preset="sharegpt", output=str(output)),
-            notes="ShareGPT 格式转换"
+            notes="ShareGPT 格式转换",
         )
 
         # 使用 openai_chat 预设（限制数量）
@@ -277,7 +283,7 @@ class PerformanceBenchmark:
             "transform --preset=openai_chat (10000条)",
             lambda: transform(str(small_file), preset="openai_chat", output=str(output)),
             input_size=10000,
-            notes="转换为 OpenAI Chat 格式"
+            notes="转换为 OpenAI Chat 格式",
         )
 
     def generate_report(self) -> str:
@@ -307,7 +313,7 @@ class PerformanceBenchmark:
         report.append(f"{'测试项':<35} {'耗时(s)':<10} {'吞吐量(条/s)':<15} {'备注'}")
         report.append("-" * 70)
 
-        for cat, items in categories.items():
+        for _cat, items in categories.items():
             for r in items:
                 throughput_str = f"{r.throughput:,.0f}" if r.throughput > 0 else "-"
                 report.append(f"{r.name:<35} {r.elapsed:<10.3f} {throughput_str:<15} {r.notes}")
@@ -345,6 +351,7 @@ class PerformanceBenchmark:
     def cleanup(self):
         """清理临时文件"""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
             print(f"\n🧹 已清理临时目录: {self.temp_dir}")

@@ -14,8 +14,10 @@ from .common import (
     _infer_type,
     _is_numeric,
     _pad_to_width,
+    _require_file_exists,
     _truncate,
 )
+from .output import die, die_io_error, emit_json, log, log_panel, log_table, resolve_format
 
 
 def stats(
@@ -24,6 +26,7 @@ def stats(
     full: bool = False,
     fields: Optional[List[str]] = None,
     expand_fields: Optional[List[str]] = None,
+    format: Optional[str] = None,
 ) -> None:
     """
     显示数据文件的统计信息。
@@ -45,44 +48,46 @@ def stats(
         dt stats data.jsonl --full --field=category  # 指定字段
         dt stats data.jsonl --full --expand=tags     # 展开 list 字段
     """
-    from .common import _file_exists
-
     filepath = Path(filename)
 
-    if not _file_exists(filepath):
-        print(f"错误: 文件不存在 - {filename}")
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
-    if not _check_file_format(filepath):
-        return
+    fmt = resolve_format(format, default_for_tty="table")
 
     # 快速模式：忽略 --field 和 --expand 参数
     if not full:
         if fields or expand_fields:
-            print("⚠️  警告: --field 和 --expand 参数仅在完整模式 (--full) 下生效")
-        _quick_stats(filepath)
+            log("[yellow]⚠️  警告: --field 和 --expand 参数仅在完整模式 (--full) 下生效[/yellow]")
+        _quick_stats(filepath, fmt=fmt)
         return
 
     # 加载数据
     try:
         data = load_data(str(filepath))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(filepath))
 
     if not data:
-        print("文件为空")
-        return
+        die("empty_file", "文件为空", exit_code=1)
 
     # 计算统计信息
     total = len(data)
     field_stats = _compute_field_stats(data, top, fields, expand_fields)
 
     # 输出统计信息
-    _print_stats(filepath.name, total, field_stats)
+    if fmt == "table":
+        _print_stats(filepath.name, total, field_stats)
+    else:
+        payload = {
+            "file": filepath.name,
+            "total": total,
+            "fields": field_stats,
+        }
+        emit_json(payload)
 
 
-def _quick_stats(filepath: Path) -> None:
+def _quick_stats(filepath: Path, fmt: str = "table") -> None:
     """
     快速统计模式：只统计行数和字段结构，不遍历全部数据。
 
@@ -182,54 +187,40 @@ def _quick_stats(filepath: Path) -> None:
                 field_type = "unknown"
             fields.append({"field": key, "type": field_type})
 
-    # 输出
-    try:
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.table import Table
+    # 非 table 模式：输出结构化 JSON
+    if fmt != "table":
+        payload = {
+            "file": filepath.name,
+            "total": total,
+            "file_size": file_size,
+            "fields": fields,
+        }
+        emit_json(payload)
+        return
 
-        console = Console()
+    # TTY table 模式：rich 渲染到 stderr
+    from rich.table import Table
 
-        # 概览
-        size_line = (
-            f"\n[bold]大小:[/bold] {format_size(file_size)}" if file_size is not None else ""
-        )
-        console.print(
-            Panel(
-                f"[bold]文件:[/bold] {filepath.name}{size_line}\n"
-                f"[bold]总数:[/bold] {total:,} 条\n"
-                f"[bold]字段:[/bold] {len(fields)} 个",
-                title="📊 快速统计",
-                expand=False,
-            )
-        )
+    size_line = f"\n[bold]大小:[/bold] {format_size(file_size)}" if file_size is not None else ""
+    log_panel(
+        (
+            f"[bold]文件:[/bold] {filepath.name}{size_line}\n"
+            f"[bold]总数:[/bold] {total:,} 条\n"
+            f"[bold]字段:[/bold] {len(fields)} 个"
+        ),
+        title="📊 快速统计",
+    )
 
-        if fields:
-            table = Table(title="📋 字段结构", show_header=True, header_style="bold cyan")
-            table.add_column("#", style="dim", justify="right")
-            table.add_column("字段", style="green")
-            table.add_column("类型", style="yellow")
+    if fields:
+        table = Table(title="📋 字段结构", show_header=True, header_style="bold cyan")
+        table.add_column("#", style="dim", justify="right")
+        table.add_column("字段", style="green")
+        table.add_column("类型", style="yellow")
 
-            for i, f in enumerate(fields, 1):
-                table.add_row(str(i), f["field"], f["type"])
+        for i, f in enumerate(fields, 1):
+            table.add_row(str(i), f["field"], f["type"])
 
-            console.print(table)
-
-    except ImportError:
-        # 没有 rich，使用普通打印
-        print(f"\n{'=' * 40}")
-        print("📊 快速统计")
-        print(f"{'=' * 40}")
-        print(f"文件: {filepath.name}")
-        if file_size is not None:
-            print(f"大小: {format_size(file_size)}")
-        print(f"总数: {total:,} 条")
-        print(f"字段: {len(fields)} 个")
-
-        if fields:
-            print("\n📋 字段结构:")
-            for i, f in enumerate(fields, 1):
-                print(f"  {i}. {f['field']} ({f['type']})")
+        log_table(table)
 
 
 def _extract_with_wildcard(item: dict, field_spec: str) -> List[Any]:
@@ -511,126 +502,86 @@ def _count_unique_by_hash(values: List[Any]) -> int:
 
 
 def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -> None:
-    """打印统计信息"""
-    try:
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.table import Table
+    """渲染统计信息为 TTY 表格到 stderr。
 
-        console = Console()
+    注意：此函数只负责 TTY 渲染，不处理 JSON 输出。JSON 路径在 `stats()` 顶层处理。
+    """
+    from rich.table import Table
 
-        # 概览
-        console.print(
-            Panel(
-                f"[bold]文件:[/bold] {filename}\n"
-                f"[bold]总数:[/bold] {total:,} 条\n"
-                f"[bold]字段:[/bold] {len(field_stats)} 个",
-                title="📊 数据概览",
-                expand=False,
-            )
+    log_panel(
+        (
+            f"[bold]文件:[/bold] {filename}\n"
+            f"[bold]总数:[/bold] {total:,} 条\n"
+            f"[bold]字段:[/bold] {len(field_stats)} 个"
+        ),
+        title="📊 数据概览",
+    )
+
+    # 字段统计表
+    table = Table(title="📋 字段统计", show_header=True, header_style="bold cyan")
+    table.add_column("字段", style="green")
+    table.add_column("类型", style="yellow")
+    table.add_column("非空率", justify="right")
+    table.add_column("唯一值", justify="right")
+    table.add_column("统计", style="dim")
+
+    for stat in field_stats:
+        if "null_rate" in stat:
+            non_null_rate = stat["null_rate"]
+        else:
+            non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"
+        unique = str(stat.get("unique", "-"))
+
+        field_name = stat["field"]
+        if stat.get("is_expanded"):
+            field_name += " (展开)"
+
+        extra = []
+        if "len_avg" in stat:
+            extra.append(f"长度: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})")
+        if "avg" in stat:
+            if stat["type"] == "int":
+                extra.append(f"范围: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})")
+            else:
+                extra.append(f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})")
+
+        table.add_row(
+            field_name,
+            stat["type"],
+            non_null_rate,
+            unique,
+            "; ".join(extra) if extra else "-",
         )
 
-        # 字段统计表
-        table = Table(title="📋 字段统计", show_header=True, header_style="bold cyan")
-        table.add_column("字段", style="green")
-        table.add_column("类型", style="yellow")
-        table.add_column("非空率", justify="right")
-        table.add_column("唯一值", justify="right")
-        table.add_column("统计", style="dim")
+    log_table(table)
 
-        for stat in field_stats:
-            # 使用 stat 中的 null_rate（支持展开模式的特殊显示）
-            if "null_rate" in stat:
-                non_null_rate = stat["null_rate"]
-            else:
-                non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"
-            unique = str(stat.get("unique", "-"))
+    # Top 值统计（仅显示有意义的字段）
+    for stat in field_stats:
+        top_values = stat.get("top_values", [])
+        if not top_values:
+            continue
 
-            # 字段名（添加展开标记）
-            field_name = stat["field"]
-            if stat.get("is_expanded"):
-                field_name += " (展开)"
+        if stat["type"] in ("int", "float"):
+            continue
 
-            # 构建统计信息字符串
-            extra = []
-            if "len_avg" in stat:
-                extra.append(
-                    f"长度: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})"
-                )
-            if "avg" in stat:
-                if stat["type"] == "int":
-                    extra.append(
-                        f"范围: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})"
-                    )
-                else:
-                    extra.append(
-                        f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})"
-                    )
+        unique_ratio = stat.get("unique", 0) / total if total > 0 else 0
+        if unique_ratio > 0.9 and stat.get("unique", 0) > 100:
+            continue
 
-            table.add_row(
-                field_name,
-                stat["type"],
-                non_null_rate,
-                unique,
-                "; ".join(extra) if extra else "-",
-            )
+        field_display = stat["field"]
+        if stat.get("is_expanded"):
+            field_display += " (展开)"
 
-        console.print(table)
-
-        # Top 值统计（仅显示有意义的字段）
-        for stat in field_stats:
-            top_values = stat.get("top_values", [])
-            if not top_values:
-                continue
-
-            # 跳过数值类型（min/max/avg 已足够）
-            if stat["type"] in ("int", "float"):
-                continue
-
-            # 跳过唯一值过多的字段（基本都是唯一的）
-            unique_ratio = stat.get("unique", 0) / total if total > 0 else 0
-            if unique_ratio > 0.9 and stat.get("unique", 0) > 100:
-                continue
-
-            # 字段名（添加展开标记）
-            field_display = stat["field"]
-            if stat.get("is_expanded"):
-                field_display += " (展开)"
-
-            console.print(
-                f"\n[bold cyan]{field_display}[/bold cyan] 值分布 (Top {len(top_values)}):"
-            )
-            max_count = max(c for _, c in top_values) if top_values else 1
-            # 展开模式下使用 non_null（元素总数），否则使用 total（数据条数）
-            base_count = stat["non_null"] if stat.get("is_expanded") else total
-            for value, count in top_values:
-                pct = count / base_count * 100 if base_count > 0 else 0
-                bar_len = int(count / max_count * 20)  # 按相对比例，最长 20 字符
-                bar = "█" * bar_len
-                display_value = value if value else "[空]"
-                # 使用显示宽度对齐（处理中文字符）
-                padded_value = _pad_to_width(display_value, 32)
-                console.print(f"  {padded_value} {count:>6} ({pct:>5.1f}%) {bar}")
-
-    except ImportError:
-        # 没有 rich，使用普通打印
-        print(f"\n{'=' * 50}")
-        print("📊 数据概览")
-        print(f"{'=' * 50}")
-        print(f"文件: {filename}")
-        print(f"总数: {total:,} 条")
-        print(f"字段: {len(field_stats)} 个")
-
-        print(f"\n{'=' * 50}")
-        print("📋 字段统计")
-        print(f"{'=' * 50}")
-        print(f"{'字段':<20} {'类型':<8} {'非空率':<8} {'唯一值':<8}")
-        print("-" * 50)
-
-        for stat in field_stats:
-            non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"
-            unique = str(stat.get("unique", "-"))
-            print(f"{stat['field']:<20} {stat['type']:<8} {non_null_rate:<8} {unique:<8}")
+        log(f"\n[bold cyan]{field_display}[/bold cyan] 值分布 (Top {len(top_values)}):")
+        max_count = max(c for _, c in top_values) if top_values else 1
+        base_count = stat["non_null"] if stat.get("is_expanded") else total
+        for value, count in top_values:
+            pct = count / base_count * 100 if base_count > 0 else 0
+            bar_len = int(count / max_count * 20)
+            bar = "█" * bar_len
+            display_value = value if value else "[空]"
+            padded_value = _pad_to_width(display_value, 32)
+            log(f"  {padded_value} {count:>6} ({pct:>5.1f}%) {bar}")
 
 
 def token_stats(
@@ -639,6 +590,7 @@ def token_stats(
     model: str = "cl100k_base",
     detailed: bool = False,
     workers: Optional[int] = None,
+    format: Optional[str] = None,
 ) -> None:
     """
     统计数据集的 Token 信息。
@@ -658,237 +610,188 @@ def token_stats(
         dt token-stats data.jsonl --detailed
         dt token-stats data.jsonl --workers=4   # 使用 4 进程
     """
-    from .common import _file_exists
-
     filepath = Path(filename)
 
-    if not _file_exists(filepath):
-        print(f"错误: 文件不存在 - {filename}")
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
-    if not _check_file_format(filepath):
-        return
+    fmt = resolve_format(format, default_for_tty="table")
 
     # 加载数据
-    print(f"📊 加载数据: {filepath}")
+    log(f"📊 加载数据: {filepath}")
     try:
         data = load_data(str(filepath))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(filepath))
 
     if not data:
-        print("文件为空")
-        return
+        die("empty_file", "文件为空", exit_code=1)
 
     total = len(data)
-    print(f"   共 {total:,} 条数据")
+    log(f"   共 {total:,} 条数据")
 
     # 检查字段类型并选择合适的统计方法（支持嵌套路径）
     sample = data[0]
     field_value = get_field_with_spec(sample, field)
+    is_messages = isinstance(field_value, list) and field_value and isinstance(field_value[0], dict)
 
-    # 尝试使用 rich 进度条
+    # 进度条（TTY + table 模式才显示）
+    use_progress = fmt == "table"
     try:
-        from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
+        if use_progress:
+            from rich.console import Console
+            from rich.progress import (
+                BarColumn,
+                Progress,
+                SpinnerColumn,
+                TaskProgressColumn,
+                TextColumn,
+            )
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]统计 Token"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn(f"(模型: {model})"),
-        ) as progress:
-            task = progress.add_task("", total=total)
+            _progress_console = Console(stderr=True, highlight=False)
 
-            def update_progress(current: int, total_count: int):
-                progress.update(task, completed=current)
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]统计 Token"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn(f"(模型: {model})"),
+                console=_progress_console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("", total=total)
 
-            if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
-                from ..tokenizers import messages_token_stats
+                def update_progress(current: int, total_count: int):
+                    progress.update(task, completed=current)
 
-                stats_result = messages_token_stats(
-                    data,
-                    messages_field=field,
-                    model=model,
-                    progress_callback=update_progress,
-                    workers=workers,
+                stats_result = _compute_token_stats(
+                    data, field, model, workers, is_messages, update_progress
                 )
-                _print_messages_token_stats(stats_result, detailed)
-            else:
-                from ..tokenizers import token_stats as compute_token_stats
+        else:
+            log(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
+            stats_result = _compute_token_stats(data, field, model, workers, is_messages, None)
+    except ImportError as e:
+        die("missing_dependency", str(e), suggestion="安装相关依赖或使用 cl100k_base 模型")
+    except Exception as e:
+        die("stats_error", f"统计失败: {e}")
 
-                stats_result = compute_token_stats(
-                    data,
-                    fields=field,
-                    model=model,
-                    progress_callback=update_progress,
-                    workers=workers,
-                )
-                _print_text_token_stats(stats_result, detailed)
+    # 输出
+    if fmt == "table":
+        if is_messages:
+            _print_messages_token_stats(stats_result, detailed)
+        else:
+            _print_text_token_stats(stats_result, detailed)
+    else:
+        payload = dict(stats_result)
+        payload["file"] = filepath.name
+        payload["field"] = field
+        payload["model"] = model
+        emit_json(payload)
 
-    except ImportError:
-        # 没有 rich，显示简单进度
-        print(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
-        try:
-            if isinstance(field_value, list) and field_value and isinstance(field_value[0], dict):
-                from ..tokenizers import messages_token_stats
 
-                stats_result = messages_token_stats(
-                    data, messages_field=field, model=model, workers=workers
-                )
-                _print_messages_token_stats(stats_result, detailed)
-            else:
-                from ..tokenizers import token_stats as compute_token_stats
+def _compute_token_stats(data, field, model, workers, is_messages, progress_cb):
+    """内部辅助：按字段类型选择合适的 token_stats 计算函数。"""
+    if is_messages:
+        from ..tokenizers import messages_token_stats
 
-                stats_result = compute_token_stats(data, fields=field, model=model, workers=workers)
-                _print_text_token_stats(stats_result, detailed)
-        except ImportError as e:
-            print(f"错误: {e}")
-            return
-        except Exception as e:
-            print(f"错误: 统计失败 - {e}")
-            import traceback
+        return messages_token_stats(
+            data,
+            messages_field=field,
+            model=model,
+            progress_callback=progress_cb,
+            workers=workers,
+        )
+    from ..tokenizers import token_stats as compute_token_stats
 
-            traceback.print_exc()
+    return compute_token_stats(
+        data,
+        fields=field,
+        model=model,
+        progress_callback=progress_cb,
+        workers=workers,
+    )
 
 
 def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
-    """打印 messages 格式的 token 统计"""
-    try:
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.table import Table
+    """渲染 messages 格式 token 统计到 stderr（TTY table 模式）。"""
+    from rich.table import Table
 
-        console = Console()
-
-        # 概览
-        std = stats.get("std_tokens", 0)
-        overview = (
+    std = stats.get("std_tokens", 0)
+    log_panel(
+        (
             f"[bold]总样本数:[/bold] {stats['count']:,}\n"
             f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
             f"[bold]平均 Token:[/bold] {stats['avg_tokens']:,} (std: {std:.1f})\n"
             f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
-        )
-        console.print(Panel(overview, title="📊 Token 统计概览", expand=False))
+        ),
+        title="📊 Token 统计概览",
+    )
 
-        # 百分位数表格
-        table = Table(title="📈 分布统计")
-        table.add_column("百分位", style="cyan", justify="center")
-        table.add_column("Token 数", justify="right")
-        percentiles = [
-            ("Min", stats["min_tokens"]),
-            ("P25", stats.get("p25", "-")),
-            ("P50 (中位数)", stats.get("median_tokens", "-")),
-            ("P75", stats.get("p75", "-")),
-            ("P90", stats.get("p90", "-")),
-            ("P95", stats.get("p95", "-")),
-            ("P99", stats.get("p99", "-")),
-            ("Max", stats["max_tokens"]),
-        ]
-        for name, val in percentiles:
-            table.add_row(name, f"{val:,}" if isinstance(val, int) else str(val))
-        console.print(table)
+    table = Table(title="📈 分布统计")
+    table.add_column("百分位", style="cyan", justify="center")
+    table.add_column("Token 数", justify="right")
+    percentiles = [
+        ("Min", stats["min_tokens"]),
+        ("P25", stats.get("p25", "-")),
+        ("P50 (中位数)", stats.get("median_tokens", "-")),
+        ("P75", stats.get("p75", "-")),
+        ("P90", stats.get("p90", "-")),
+        ("P95", stats.get("p95", "-")),
+        ("P99", stats.get("p99", "-")),
+        ("Max", stats["max_tokens"]),
+    ]
+    for name, val in percentiles:
+        table.add_row(name, f"{val:,}" if isinstance(val, int) else str(val))
+    log_table(table)
 
-        if detailed:
-            # 分角色统计
-            role_table = Table(title="📋 分角色统计")
-            role_table.add_column("角色", style="cyan")
-            role_table.add_column("Token 数", justify="right")
-            role_table.add_column("占比", justify="right")
+    if detailed:
+        role_table = Table(title="📋 分角色统计")
+        role_table.add_column("角色", style="cyan")
+        role_table.add_column("Token 数", justify="right")
+        role_table.add_column("占比", justify="right")
 
-            total = stats["total_tokens"]
-            for role, key in [
-                ("User", "user_tokens"),
-                ("Assistant", "assistant_tokens"),
-                ("System", "system_tokens"),
-            ]:
-                tokens = stats.get(key, 0)
-                pct = tokens / total * 100 if total > 0 else 0
-                role_table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
+        total = stats["total_tokens"]
+        for role, key in [
+            ("User", "user_tokens"),
+            ("Assistant", "assistant_tokens"),
+            ("System", "system_tokens"),
+        ]:
+            tokens = stats.get(key, 0)
+            pct = tokens / total * 100 if total > 0 else 0
+            role_table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
 
-            console.print(role_table)
-            console.print(f"\n平均对话轮数: {stats.get('avg_turns', 0)}")
-
-    except ImportError:
-        # 没有 rich，使用普通打印
-        std = stats.get("std_tokens", 0)
-        print(f"\n{'=' * 40}")
-        print("📊 Token 统计概览")
-        print(f"{'=' * 40}")
-        print(f"总样本数: {stats['count']:,}")
-        print(f"总 Token: {stats['total_tokens']:,}")
-        print(f"平均 Token: {stats['avg_tokens']:,} (std: {std:.1f})")
-        print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
-
-        print("\n📈 百分位分布:")
-        print(f"  P25: {stats.get('p25', '-'):,}  P50: {stats.get('median_tokens', '-'):,}")
-        print(f"  P75: {stats.get('p75', '-'):,}  P90: {stats.get('p90', '-'):,}")
-        print(f"  P95: {stats.get('p95', '-'):,}  P99: {stats.get('p99', '-'):,}")
-
-        if detailed:
-            print(f"\n{'=' * 40}")
-            print("📋 分角色统计")
-            print(f"{'=' * 40}")
-            total = stats["total_tokens"]
-            for role, key in [
-                ("User", "user_tokens"),
-                ("Assistant", "assistant_tokens"),
-                ("System", "system_tokens"),
-            ]:
-                tokens = stats.get(key, 0)
-                pct = tokens / total * 100 if total > 0 else 0
-                print(f"{role}: {tokens:,} ({pct:.1f}%)")
-            print(f"\n平均对话轮数: {stats.get('avg_turns', 0)}")
+        log_table(role_table)
+        log(f"平均对话轮数: {stats.get('avg_turns', 0)}")
 
 
 def _print_text_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
-    """打印普通文本的 token 统计"""
-    try:
-        from rich.console import Console
-        from rich.panel import Panel
-        from rich.table import Table
+    """渲染普通文本 token 统计到 stderr（TTY table 模式）。"""
+    from rich.table import Table
 
-        console = Console()
-
-        std = stats.get("std_tokens", 0)
-        overview = (
+    std = stats.get("std_tokens", 0)
+    log_panel(
+        (
             f"[bold]总样本数:[/bold] {stats['count']:,}\n"
             f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
             f"[bold]平均 Token:[/bold] {stats['avg_tokens']:.1f} (std: {std:.1f})\n"
             f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
-        )
-        console.print(Panel(overview, title="📊 Token 统计", expand=False))
+        ),
+        title="📊 Token 统计",
+    )
 
-        # 百分位数表格
-        table = Table(title="📈 分布统计")
-        table.add_column("百分位", style="cyan", justify="center")
-        table.add_column("Token 数", justify="right")
-        percentiles = [
-            ("Min", stats["min_tokens"]),
-            ("P25", stats.get("p25", "-")),
-            ("P50 (中位数)", stats.get("median_tokens", "-")),
-            ("P75", stats.get("p75", "-")),
-            ("P90", stats.get("p90", "-")),
-            ("P95", stats.get("p95", "-")),
-            ("P99", stats.get("p99", "-")),
-            ("Max", stats["max_tokens"]),
-        ]
-        for name, val in percentiles:
-            table.add_row(name, f"{val:,}" if isinstance(val, int) else str(val))
-        console.print(table)
-
-    except ImportError:
-        std = stats.get("std_tokens", 0)
-        print(f"\n{'=' * 40}")
-        print("📊 Token 统计")
-        print(f"{'=' * 40}")
-        print(f"总样本数: {stats['count']:,}")
-        print(f"总 Token: {stats['total_tokens']:,}")
-        print(f"平均 Token: {stats['avg_tokens']:.1f} (std: {std:.1f})")
-        print(f"范围: {stats['min_tokens']:,} - {stats['max_tokens']:,}")
-
-        print("\n📈 百分位分布:")
-        print(f"  P25: {stats.get('p25', '-'):,}  P50: {stats.get('median_tokens', '-'):,}")
-        print(f"  P75: {stats.get('p75', '-'):,}  P90: {stats.get('p90', '-'):,}")
-        print(f"  P95: {stats.get('p95', '-'):,}  P99: {stats.get('p99', '-'):,}")
+    table = Table(title="📈 分布统计")
+    table.add_column("百分位", style="cyan", justify="center")
+    table.add_column("Token 数", justify="right")
+    percentiles = [
+        ("Min", stats["min_tokens"]),
+        ("P25", stats.get("p25", "-")),
+        ("P50 (中位数)", stats.get("median_tokens", "-")),
+        ("P75", stats.get("p75", "-")),
+        ("P90", stats.get("p90", "-")),
+        ("P95", stats.get("p95", "-")),
+        ("P99", stats.get("p99", "-")),
+        ("Max", stats["max_tokens"]),
+    ]
+    for name, val in percentiles:
+        table.add_row(name, f"{val:,}" if isinstance(val, int) else str(val))
+    log_table(table)

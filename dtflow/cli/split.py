@@ -7,7 +7,8 @@ from typing import List, Optional
 
 from ..core import DataTransformer
 from ..storage.io import save_data
-from .common import _check_file_format
+from .common import _check_file_format, _require_file_exists
+from .output import die_io_error, die_usage, emit_action, log
 
 
 def _parse_ratio(ratio_str: str) -> List[float]:
@@ -57,6 +58,7 @@ def split(
     ratio: str = "0.8",
     seed: Optional[int] = None,
     output: Optional[str] = None,
+    dry_run: bool = False,
 ) -> None:
     """
     分割数据集为 train/test (或 train/val/test)。
@@ -66,40 +68,43 @@ def split(
         ratio: 分割比例，如 "0.8" 或 "0.7,0.15,0.15"
         seed: 随机种子
         output: 输出目录（默认同目录）
+        dry_run: 预演模式，仅计算各切分行数但不写入文件
+
+    Examples:
+        dt split data.jsonl --ratio=0.8
+        dt split data.jsonl --ratio=0.7,0.15,0.15 --seed=42
+        dt split data.jsonl --ratio=0.8 --dry-run
     """
     filepath = Path(filename)
 
-    if not filepath.exists():
-        print(f"错误: 文件不存在 - {filename}")
-        return
-
-    if not _check_file_format(filepath):
-        return
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
     # 解析比例
     try:
         ratios = _parse_ratio(ratio)
     except ValueError as e:
-        print(f"错误: {e}")
-        return
+        die_usage(
+            str(e),
+            suggestion="示例: --ratio=0.8 (二分) 或 --ratio=0.7,0.15,0.15 (三分)",
+        )
 
     split_names = _get_split_names(len(ratios))
 
     # 加载数据
-    print(f"📊 加载数据: {filepath}")
+    log(f"[bold]📊 加载数据:[/bold] {filepath}")
     try:
         dt = DataTransformer.load(str(filepath))
     except Exception as e:
-        print(f"错误: 无法读取文件 - {e}")
-        return
+        die_io_error(e, operation="读取", path=str(filepath))
 
     total = len(dt)
-    print(f"   共 {total} 条数据")
+    log(f"   共 {total} 条数据")
 
     # 打乱
     shuffled = dt.shuffle(seed)
     if seed is not None:
-        print(f"🎲 随机种子: {seed}")
+        log(f"🎲 随机种子: {seed}")
 
     # 计算切分点
     data = shuffled.data
@@ -120,19 +125,59 @@ def split(
     # 确定输出目录
     if output:
         output_dir = Path(output)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if not dry_run:
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                die_io_error(e, operation="创建输出目录", path=str(output_dir))
     else:
         output_dir = filepath.parent
 
-    # 保存各部分
+    # 收集 split 信息
     stem = filepath.stem
     ext = filepath.suffix
 
-    print(f"\n🔀 切分比例: {' / '.join(f'{r:.0%}' for r in ratios)}")
+    log(f"[bold]🔀 切分比例:[/bold] {' / '.join(f'{r:.0%}' for r in ratios)}")
+    split_info = []
     for i, (name, part) in enumerate(zip(split_names, parts)):
         output_path = output_dir / f"{stem}_{name}{ext}"
-        save_data(part, str(output_path))
-        pct = ratios[i] * 100
-        print(f"   {name}: {len(part)} 条 ({pct:.1f}%) -> {output_path}")
+        split_info.append(
+            {
+                "name": name,
+                "rows": len(part),
+                "ratio": ratios[i],
+                "path": str(output_path),
+            }
+        )
 
-    print(f"\n✅ 完成! 共切分为 {len(ratios)} 个部分")
+    stats = {
+        "input_rows": total,
+        "ratios": ratios,
+        "splits": split_info,
+        "seed": seed,
+    }
+
+    if dry_run:
+        emit_action(
+            "split",
+            input_files=[str(filepath)],
+            output=str(output_dir),
+            stats=stats,
+            dry_run=True,
+        )
+        return
+
+    # 保存各部分
+    for info, part in zip(split_info, parts):
+        try:
+            save_data(part, info["path"])
+        except Exception as e:
+            die_io_error(e, operation="保存", path=str(info["path"]))
+        log(f"   {info['name']}: {info['rows']} 条 ({info['ratio'] * 100:.1f}%) -> {info['path']}")
+
+    emit_action(
+        "split",
+        input_files=[str(filepath)],
+        output=str(output_dir),
+        stats=stats,
+    )
