@@ -55,6 +55,7 @@ dependencies = [
 
 [project.scripts]
 dt = "dtflow.__main__:main"
+dtflow = "dtflow.__main__:main"
 
 [project.optional-dependencies]
 full = [
