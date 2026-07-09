@@ -18,7 +18,10 @@ Agent 探索入口:
             4=权限拒绝, 5=冲突, 10=dry-run 预演成功
 
 全局选项:
-    --format json|ndjson|csv|table     指定输出格式（非 TTY 默认 ndjson, TTY 默认 table）
+    --format json|ndjson|csv|table     指定输出格式
+        预览类命令 (head/sample/tail/slice): 非 TTY 默认 ndjson;
+        TTY 默认逐条 pretty JSON, 加 --pretty 或 --format=table 走格式感知渲染
+        (对话气泡/dpo对比/alpaca分段/通用表格)
     --no-color                          禁用彩色（同样响应 NO_COLOR 环境变量）
     --yes                               跳过所有确认
     --verbose / --quiet                 日志等级
@@ -31,6 +34,7 @@ Commands:
     head          显示文件的前 N 条数据
     tail          显示文件的后 N 条数据
     slice         按行号范围查看数据
+    view          交互式浏览数据（表格+详情 TUI）
     transform     转换数据格式（核心命令）
     stats         显示数据文件的统计信息
     token-stats   Token 统计
@@ -76,6 +80,7 @@ from .cli.commands import transform as _transform
 from .cli.commands import uninstall_skill as _uninstall_skill
 from .cli.commands import validate as _validate
 from .cli.output import CLIState, set_state
+from .cli.view import view as _view
 
 # ============ 受约束参数枚举 ============
 # 这些枚举让 click 在解析层就拒绝非法值，并把 choices 暴露给 `dt schema`。
@@ -138,7 +143,7 @@ def _global_options(
     fmt: Optional[str] = typer.Option(
         None,
         "--format",
-        help="输出格式: json|ndjson|csv|table (非 TTY 默认 ndjson, TTY 默认 table)",
+        help="输出格式: json|ndjson|csv|table (非 TTY 默认 ndjson; 预览命令 TTY 默认逐条 JSON, table=格式渲染)",
     ),
     no_color: bool = typer.Option(
         False, "--no-color", help="禁用彩色输出 (同样响应 NO_COLOR / TERM=dumb)"
@@ -189,7 +194,12 @@ def sample(
         None, "--dist", help='自定义分布 (JSON), 如 \'{"A":0.5,"B":0.3,"C":0.2}\''
     ),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段（逗号分隔）"),
-    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
+    pretty: bool = typer.Option(
+        False,
+        "--pretty",
+        "-R",
+        help="格式感知渲染: 对话气泡/dpo对比/alpaca分段/通用表格 (默认逐条 JSON)",
+    ),
     where: Optional[List[str]] = typer.Option(None, "--where", "-w", help="筛选条件 (可多次使用)"),
 ):
     """从数据文件中采样指定数量的数据
@@ -227,7 +237,12 @@ def head(
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
-    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
+    pretty: bool = typer.Option(
+        False,
+        "--pretty",
+        "-R",
+        help="格式感知渲染: 对话气泡/dpo对比/alpaca分段/通用表格 (默认逐条 JSON)",
+    ),
 ):
     """显示文件的前 N 条数据
 
@@ -248,7 +263,12 @@ def tail(
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
-    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
+    pretty: bool = typer.Option(
+        False,
+        "--pretty",
+        "-R",
+        help="格式感知渲染: 对话气泡/dpo对比/alpaca分段/通用表格 (默认逐条 JSON)",
+    ),
 ):
     """显示文件的后 N 条数据
 
@@ -261,13 +281,39 @@ def tail(
     _tail(filename, actual_num, output, fields, not pretty)
 
 
+@app.command()
+def view(
+    filename: str = typer.Argument(..., help="输入文件路径"),
+    cap: int = typer.Option(20000, "--cap", help="最多加载行数（大文件窗口化，防 OOM）"),
+    format: Optional[str] = typer.Option(
+        None, "--format", help="强制格式: openai_chat|sharegpt|dpo|alpaca|generic"
+    ),
+):
+    """交互式浏览数据（表格 + 详情联动，Textual TUI）
+
+    表格扫视 + 详情按格式渲染（对话气泡/dpo对比/alpaca分段），无需逐层展开。
+    需要交互式终端（TTY）。按 ? 查看快捷键。
+
+    示例:
+        dt view data.jsonl                       # 打开浏览器
+        dt view data.jsonl --format=dpo          # 强制按 dpo 渲染
+        dt view big.jsonl --cap=50000            # 提高加载上限
+    """
+    _view(filename, cap=cap, format_hint=format)
+
+
 @app.command("slice")
 def slice_cmd(
     filename: str = typer.Argument(..., help="输入文件路径"),
     range_str: str = typer.Argument(..., help="行号范围 (start:end)，如 10:20、:100、100:、-10:"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
-    pretty: bool = typer.Option(False, "--pretty", "-R", help="使用表格预览（默认原始 JSON）"),
+    pretty: bool = typer.Option(
+        False,
+        "--pretty",
+        "-R",
+        help="格式感知渲染: 对话气泡/dpo对比/alpaca分段/通用表格 (默认逐条 JSON)",
+    ),
 ):
     """按行号范围查看数据（Python 切片语法）
 

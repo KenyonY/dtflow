@@ -22,6 +22,7 @@ from .output import (
     die_usage,
     emit_data,
     emit_json,
+    get_state,
     is_stdout_tty,
     log,
     resolve_format,
@@ -312,13 +313,15 @@ def sample(
         emit_data(sampled, format="ndjson")
         return
 
-    if raw:
-        # TTY raw 模式: 逐条多行 pretty JSON, 和历史行为一致
+    # 显式 --format=table 视同 --pretty, 强制 rich 渲染 (否则 raw 会短路忽略它)
+    explicit_table = format == "table" or get_state().fmt == "table"
+    if raw and not explicit_table:
+        # TTY 默认: 逐条多行 pretty JSON, 和历史行为一致
         for item in sampled:
             emit_json(item, indent=True)
         return
 
-    # TTY --pretty: 走 rich 表格展示
+    # TTY --pretty 或 --format=table: 走 rich 格式感知渲染
     if _is_flaxkv_path(filepath):
         total_count = _get_file_row_count(filepath)
         file_size = None
@@ -618,7 +621,8 @@ def slice_data(
         emit_data(sliced, format="ndjson")
         return
 
-    if raw:
+    explicit_table = format == "table" or get_state().fmt == "table"
+    if raw and not explicit_table:
         for item in sliced:
             emit_json(item, indent=True)
         return

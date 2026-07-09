@@ -55,7 +55,7 @@ from .tokenizers import (
     token_stats,
 )
 
-__version__ = "0.5.14"
+__version__ = "0.6.0"
 
 __all__ = [
     # core

@@ -276,8 +276,13 @@ def _print_samples(
             )
             console.print()
 
-        # 简单数据用表格展示
-        if _is_simple_data(samples):
+        # 复用 dt view 的格式感知渲染 (对话气泡/dpo对比/alpaca分段/通用树)
+        from .view.render import detect_format, render_detail
+
+        fmt = detect_format(samples)
+
+        # 通用扁平数据用表格展示 (CSV/短标量), 已知训练格式则走下方格式渲染
+        if fmt == "generic" and _is_simple_data(samples):
             keys = list(samples[0].keys())
             table = Table(show_header=True, header_style="bold cyan")
             for key in keys:
@@ -287,12 +292,10 @@ def _print_samples(
             console.print(table)
             return
 
-        # 嵌套数据用树形结构展示
         for i, item in enumerate(samples, 1):
             console.print(f"[bold cyan]--- 第 {i} 条 ---[/bold cyan]")
             if isinstance(item, dict):
-                for line in _format_nested(item):
-                    console.print(line)
+                console.print(render_detail(item, fmt))
             else:
                 console.print(_format_value(item))
             console.print()
