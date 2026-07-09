@@ -561,11 +561,15 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
         if not top_values:
             continue
 
-        if stat["type"] in ("int", "float"):
+        unique_count = stat.get("unique", 0)
+
+        # 数值类型：仅当为低基数（枚举/类别，如 0/1 标签）时才显示值分布，
+        # 连续型数值（大量不同取值）看分布无意义，跳过。
+        if stat["type"] in ("int", "float") and unique_count > 20:
             continue
 
-        unique_ratio = stat.get("unique", 0) / total if total > 0 else 0
-        if unique_ratio > 0.9 and stat.get("unique", 0) > 100:
+        unique_ratio = unique_count / total if total > 0 else 0
+        if unique_ratio > 0.9 and unique_count > 100:
             continue
 
         field_display = stat["field"]
