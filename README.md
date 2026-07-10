@@ -351,6 +351,16 @@ dt sample data.jsonl 1000 --by=messages.#         # 按消息数量分层采样
 dt sample data.jsonl --where="category=tech"      # 筛选后采样
 dt sample data.jsonl --where="messages.#>=2"      # 多条件筛选
 
+# 交互式浏览（表格 + 详情联动 TUI，需交互式终端）
+dt view data.jsonl                                # 打开浏览器，按 ? 看快捷键
+dt view data.csv                                  # CSV/Parquet 等表格数据
+dt view data.jsonl --format=dpo                   # 强制按指定格式渲染详情
+dt view big.jsonl --cap=50000                     # 提高大文件加载上限（默认 2 万行）
+
+# 静态预览（--pretty 走格式感知渲染：对话气泡/dpo对比/alpaca分段/表格）
+dt head data.jsonl --pretty                       # 前 N 条，格式化渲染
+dt sample data.jsonl --pretty                     # 采样 + 格式化渲染
+
 # 按行范围查看（Python 切片语法）
 dt slice data.jsonl 10:20                          # 第 10-19 行（0-based，左闭右开）
 dt slice data.jsonl :100                           # 前 100 行
@@ -435,6 +445,26 @@ dt validate data.jsonl --preset=sharegpt --filter-invalid -o valid.jsonl  # 过�
 dt validate data.jsonl --preset=dpo --max-errors=100  # 限制错误输出数量
 dt validate data.jsonl --preset=openai_chat --workers=4  # 多进程加速
 ```
+
+### 交互式数据浏览 (dt view)
+
+`dt view <file>` 打开一个 master-detail 终端浏览器，专为查看训练数据设计：**上方表格**扫视样本（派生列 turns/roles/first_user/chars + 元数据），**下方详情**按格式渲染当前行（对话气泡按 role 上色、代码块高亮；dpo 对比；alpaca 分段；通用数据全展开）——无需逐层展开。大文件走窗口化加载（`--cap`，默认 2 万行）。
+
+| 按键 | 功能 |
+|------|------|
+| `↑/↓` `j/k` | 选行（详情联动） |
+| `PgUp/PgDn` | 整页 · `d/u`(或 `Ctrl+d/u`) 半屏 |
+| `g/G` | 首/末行 · `Tab` 切焦点滚动长对话 |
+| `←/→` `h/l` | 水平滚动表格 |
+| `s` | 排序（输入列名，加 `-` 反向，如 `-chars`） |
+| `/` | 搜索 · `f` where 筛选（如 `messages.#>=2`）· `r` 重置 |
+| `c` | 选列（勾选面板，同时作用于表格列与详情字段） |
+| `Enter` | 放大当前样本（`Esc` 返回）· `z` 上下/左右布局 · `+/-` 调整分区 |
+| `?` | 帮助 · `q` 退出 |
+
+格式自动检测：`openai_chat` / `sharegpt` / `dpo` / `alpaca` / `generic`（CSV 等表格数据全部列展示）。`--format` 可强制指定。
+
+`dt head/sample/tail/slice` 的 `--pretty` 复用同一套渲染，做静态一次性预览（可管道时自动降级为 ndjson，agent 友好）。
 
 ### 字段路径语法
 

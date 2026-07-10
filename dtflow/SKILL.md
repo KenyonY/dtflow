@@ -3,7 +3,7 @@ name: dtflow
 description: >
   处理结构化数据文件 (JSONL/JSON/CSV/Parquet/Arrow/TSV) 时使用此 skill。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
-  典型场景：数据预览/统计/清洗/去重/Schema 验证、格式转换
+  典型场景：数据预览/交互式浏览 (dt view)/统计/清洗/去重/Schema 验证、格式转换
   (openai_chat/alpaca/sharegpt/dpo)、数据集切分、导出到训练框架
   (llama-factory/swift/axolotl)、Token 统计、大文件流式处理。
   不涉及 LLM 调用（LLM 调用用 flexllm）。
@@ -51,8 +51,8 @@ dt <cmd> --help          # 具体命令的参数/示例/退出码
 
 ## 输出格式
 
-- **TTY** → 默认 `table`（彩色表格 + panel 到 stderr）
-- **非 TTY**（管道/重定向） → 默认 `ndjson`（记录类） 或 `json`（报告类）
+- **非 TTY**（管道/重定向） → 默认 `ndjson`（记录类） 或 `json`（报告类）—— agent 场景取此
+- **TTY** → 预览命令（head/sample/tail/slice）默认逐条 pretty JSON；加 `--pretty` 或 `--format=table` 走格式感知渲染
 - 任意时候可用 `dt --format=json <cmd>` 强制指定
 
 ## 副作用命令都有 --dry-run
@@ -93,6 +93,14 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 | `a[*].b` | 展开所有元素 | `messages[*].role` |
 
 用于：`--key`、`--by`、`--field`、`--drop-empty`、`--where` 等等。
+
+## 交互式浏览 (dt view)
+
+`dt view <file>` —— 表格 + 详情联动的 TUI，人工探查训练数据高效（**需交互式终端，管道/agent 场景改用 `dt head --pretty` 或 `dt --format=json head`**）。
+
+- 上方表格扫视（派生列 turns/roles/first_user/chars + 元数据），下方按格式渲染当前行详情（对话气泡/dpo对比/alpaca分段/通用全展开），无需逐层展开
+- CSV/Parquet 等表格数据全部列展示；`--format` 可强制格式；`--cap` 控制大文件加载上限（默认 2 万行，窗口化）
+- 关键键：`j/k` 选行 · `s` 排序(输入列名, `-` 反向) · `/` 搜索 · `f` where筛选 · `c` 选列(表格+详情) · `Enter` 放大 · `?` 帮助 · `q` 退出
 
 ## Python API 何时用
 
