@@ -30,26 +30,18 @@ async def test_vim_navigation():
         await pilot.press("k")
         await pilot.pause()
         assert t.cursor_row == 0
-        c0 = t.cursor_column
-        await pilot.press("l")
-        await pilot.pause()
-        assert t.cursor_column == c0 + 1
 
 
 @pytest.mark.asyncio
-async def test_sort_toggle_on_current_column():
-    app = _chat_app(5)
-    async with app.run_test() as pilot:
-        chars_col = app.columns.index("chars")
-        for _ in range(chars_col):
-            await pilot.press("l")
-        await pilot.pause()
-        await pilot.press("s")
-        await pilot.pause()
-        assert app.view_indices[-1] == 4  # 升序: chars 最大在末
-        await pilot.press("s")
-        await pilot.pause()
-        assert app.view_indices[0] == 4  # 降序
+async def test_sort_by_column_name():
+    app = _chat_app(5)  # chars = i%5 → 0..4
+    async with app.run_test():
+        app._apply_sort("chars")  # 升序
+        assert app.view_indices[-1] == 4
+        app._apply_sort("-chars")  # 反向
+        assert app.view_indices[0] == 4
+        app._apply_sort("nope")  # 无此列, 不改动不崩溃
+        assert app.view_indices[0] == 4
 
 
 @pytest.mark.asyncio
@@ -96,6 +88,47 @@ async def test_search_and_filter_and_reset():
         app._apply_filter("bad@@expr")  # 非法表达式不崩溃
         app.action_reset()
         assert len(app.view_indices) == 4
+
+
+@pytest.mark.asyncio
+async def test_column_picker_hides_table_and_detail():
+    from dtflow.cli.view import render as R
+    from dtflow.cli.view.app import ColumnPicker
+
+    rows = [
+        {"messages": [{"role": "user", "content": "hi"}], "source": "m", "difficulty": 3}
+        for _ in range(3)
+    ]
+    app = ViewApp(rows, "openai_chat", "t.jsonl", False)
+    async with app.run_test() as pilot:
+        table = app.query_one("#table")
+        assert "source" in app._visible_columns()
+        # 折叠 source/difficulty
+        app._hidden = {"source", "difficulty"}
+        app._rebuild_columns()
+        await pilot.pause()
+        vis = app._visible_columns()
+        assert "source" not in vis and "difficulty" not in vis
+        assert len(table.columns) == len(vis)
+        # 详情也不含被折叠字段
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        Console(file=buf, width=60).print(
+            R.render_detail(rows[0], "openai_chat", hidden=app._hidden)
+        )
+        assert "source" not in buf.getvalue() and "difficulty" not in buf.getvalue()
+
+        # picker: 全不选 + 应用 → 至少保留第一列
+        app.action_columns()
+        await pilot.pause()
+        assert isinstance(app.screen, ColumnPicker)
+        await pilot.press("n")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._visible_columns() == ["#"]
 
 
 @pytest.mark.asyncio

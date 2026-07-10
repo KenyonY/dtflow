@@ -34,6 +34,22 @@ def test_columns_and_cells_chat():
     assert cells["source"] == "math"
 
 
+def test_generic_shows_all_columns():
+    # generic/CSV: 不限列数, 十几个字段都要出现 (曾被硬编码截断到 6)
+    row = {f"col{i}": i for i in range(14)}
+    cols = R.build_columns([row], "generic")
+    assert cols[0] == "#"
+    assert len([c for c in cols if c.startswith("col")]) == 14
+
+
+def test_training_format_caps_extra_scalar_columns():
+    # 训练格式: 派生列已含主信息, 额外标量元数据列限量
+    row = {"messages": [{"role": "user", "content": "x"}], **{f"m{i}": i for i in range(20)}}
+    cols = R.build_columns([row], "openai_chat")
+    extra = [c for c in cols if c.startswith("m")]
+    assert len(extra) == 8
+
+
 def test_roles_sig_truncates():
     turns = [("user", "")] * 8
     assert R._roles_sig(turns).endswith("…")

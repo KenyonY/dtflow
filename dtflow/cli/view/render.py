@@ -12,7 +12,7 @@ dt view 的数据模型与渲染层
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from rich.console import Group, RenderableType
 from rich.rule import Rule
@@ -95,8 +95,11 @@ def _roles_sig(turns: List[Tuple[str, str]]) -> str:
 # --------------------------------------------------------------------------- #
 # 派生列: 定义列 + 逐行取值
 # --------------------------------------------------------------------------- #
-def _scalar_fields(rows: List[Dict], skip: set) -> List[str]:
-    """收集顶层标量字段作为额外列 (label/source/id 等元数据)。"""
+def _scalar_fields(rows: List[Dict], skip: set, limit: Optional[int] = None) -> List[str]:
+    """收集顶层标量字段作为额外列 (label/source/id 等元数据)。
+
+    limit=None 表示不限 (generic/CSV: 字段本身就是数据, 全部展示; 列过多可用 c 折叠)。
+    """
     fields: List[str] = []
     for row in rows[:50]:
         if not isinstance(row, dict):
@@ -106,7 +109,7 @@ def _scalar_fields(rows: List[Dict], skip: set) -> List[str]:
                 continue
             if isinstance(v, (str, int, float, bool)) or v is None:
                 fields.append(k)
-    return fields[:6]
+    return fields if limit is None else fields[:limit]
 
 
 def build_columns(rows: List[Dict], fmt: str) -> List[str]:
@@ -114,16 +117,20 @@ def build_columns(rows: List[Dict], fmt: str) -> List[str]:
     if fmt in ("openai_chat", "sharegpt"):
         base = ["#", "turns", "roles", "first_user", "chars"]
         skip = {"messages", "conversations"}
+        limit = 8  # 训练格式: 派生列已含主信息, 元数据列适度限量 (可 c 折叠增删)
     elif fmt == "dpo":
         base = ["#", "prompt", "chosen_chars", "rejected_chars"]
         skip = {"chosen", "rejected", "prompt"}
+        limit = 8
     elif fmt == "alpaca":
         base = ["#", "instruction", "has_input", "out_chars"]
         skip = {"instruction", "input", "output", "response"}
+        limit = 8
     else:
         base = ["#"]
         skip = set()
-    return base + _scalar_fields(rows, skip)
+        limit = None  # generic/CSV: 字段即数据, 全部展示
+    return base + _scalar_fields(rows, skip, limit)
 
 
 def row_cells(idx: int, row: Dict, fmt: str, columns: List[str]) -> List[str]:
@@ -136,18 +143,18 @@ def row_cells(idx: int, row: Dict, fmt: str, columns: List[str]) -> List[str]:
         derived.update(
             turns=str(len(turns)),
             roles=_roles_sig(turns),
-            first_user=_preview(first_user),
+            first_user=_preview(first_user, 80),
             chars=str(sum(len(c) for _, c in turns)),
         )
     elif fmt == "dpo":
         derived.update(
-            prompt=_preview(_as_text(row.get("prompt", ""))),
+            prompt=_preview(_as_text(row.get("prompt", "")), 80),
             chosen_chars=str(len(_as_text(row.get("chosen", "")))),
             rejected_chars=str(len(_as_text(row.get("rejected", "")))),
         )
     elif fmt == "alpaca":
         derived.update(
-            instruction=_preview(_as_text(row.get("instruction", ""))),
+            instruction=_preview(_as_text(row.get("instruction", "")), 80),
             has_input="✓" if row.get("input") else "",
             out_chars=str(len(_as_text(row.get("output") or row.get("response") or ""))),
         )
@@ -158,7 +165,7 @@ def row_cells(idx: int, row: Dict, fmt: str, columns: List[str]) -> List[str]:
             cells.append(derived[col])
         else:
             v = row.get(col) if isinstance(row, dict) else None
-            cells.append("" if v is None else _preview(str(v), 30))
+            cells.append("" if v is None else _preview(str(v), 60))
     return cells
 
 
@@ -194,12 +201,21 @@ def _render_conversation(turns: List[Tuple[str, str]]) -> RenderableType:
     return Group(*parts)
 
 
-def render_detail(row: Dict, fmt: str) -> RenderableType:
-    """把选中样本渲染成 Rich 可绘制对象, 默认全展开, 无需逐层进入。"""
+def render_detail(row: Dict, fmt: str, hidden: Optional[set] = None) -> RenderableType:
+    """把选中样本渲染成 Rich 可绘制对象, 默认全展开, 无需逐层进入。
+
+    hidden: 被折叠的列名集合; 同名字段在详情里也不显示 (派生列名无对应字段, 自然无影响)。
+    """
+    hidden = hidden or set()
+
     if fmt in ("openai_chat", "sharegpt"):
         turns = _normalize_turns(row, fmt)
         parts: List[RenderableType] = [_render_conversation(turns)]
-        extra = {k: v for k, v in row.items() if k not in ("messages", "conversations")}
+        extra = {
+            k: v
+            for k, v in row.items()
+            if k not in ("messages", "conversations") and k not in hidden
+        }
         if extra:
             parts.append(Rule(style="dim"))
             parts.append(_render_generic(extra))
@@ -207,7 +223,7 @@ def render_detail(row: Dict, fmt: str) -> RenderableType:
 
     if fmt == "dpo":
         parts = []
-        if row.get("prompt"):
+        if row.get("prompt") and "prompt" not in hidden:
             parts.append(Text("[prompt]", style="bold cyan"))
             parts.extend(_render_content(_as_text(row["prompt"])))
             parts.append(Rule(style="dim"))
@@ -221,7 +237,7 @@ def render_detail(row: Dict, fmt: str) -> RenderableType:
     if fmt == "alpaca":
         parts = []
         for label, key in (("instruction", "instruction"), ("input", "input")):
-            if row.get(key):
+            if row.get(key) and key not in hidden:
                 parts.append(Text(f"[{label}]", style="bold cyan"))
                 parts.extend(_render_content(_as_text(row[key])))
         out = row.get("output") or row.get("response") or ""
@@ -229,7 +245,7 @@ def render_detail(row: Dict, fmt: str) -> RenderableType:
         parts.extend(_render_content(_as_text(out)))
         return Group(*parts)
 
-    return _render_generic(row)
+    return _render_generic({k: v for k, v in row.items() if k not in hidden})
 
 
 def _render_generic(row: Any) -> RenderableType:

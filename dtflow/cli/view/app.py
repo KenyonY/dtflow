@@ -4,14 +4,15 @@ dt view 的 Textual TUI: 表格 + 详情 master-detail 联动浏览器。
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import DataTable, Input, SelectionList, Static
+from textual.widgets.selection_list import Selection
 
 from . import render
 
@@ -20,13 +21,13 @@ _HELP = """[b]dt view 快捷键[/b]
   ↑/↓  j/k     选行 (详情联动)
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
-  ←/→  h/l     滚动列
-  s            按当前列排序 (再按反向)
+  s            排序 (输入列名, 加 - 反向)
   /            搜索 (子串, 全字段)
   f            筛选 (where 表达式, 如 messages.#>=2)
   Enter        放大当前样本 (Esc 返回)
   z            切换 上下 / 左右 布局
   +/-          调整表格/详情两区大小
+  c            选列 (勾选面板, 同时作用于表格和详情)
   r            清除筛选/排序
   ?            帮助      q  退出
 """
@@ -37,6 +38,46 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         yield Static(Text.from_markup(_HELP), id="help-box")
+
+
+class ColumnPicker(ModalScreen):
+    """列显示勾选面板: 空格切换, Enter/Esc 应用并关闭。返回可见列名集合。"""
+
+    # priority=True: 抢在 SelectionList 之前处理, 否则 enter 会被它消费而无法关闭
+    BINDINGS = [
+        Binding("enter,escape,c", "close", "应用", priority=True),
+        Binding("a", "all", "全选"),
+        Binding("n", "none", "全不选"),
+    ]
+
+    def __init__(self, columns: List[str], hidden: Set[str]):
+        super().__init__()
+        self._columns = columns
+        self._hidden = hidden
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-box"):
+            yield Static("[b]选择要显示的列[/b]", id="picker-title")
+            yield SelectionList(id="cols")
+            yield Static(
+                "[dim]空格 勾选/取消 · a 全选 · n 全不选 · Enter/Esc 应用[/dim]",
+                id="picker-hint",
+            )
+
+    def on_mount(self) -> None:
+        sl = self.query_one(SelectionList)
+        for col in self._columns:
+            sl.add_option(Selection(col, col, col not in self._hidden))
+        sl.focus()
+
+    def action_all(self) -> None:
+        self.query_one(SelectionList).select_all()
+
+    def action_none(self) -> None:
+        self.query_one(SelectionList).deselect_all()
+
+    def action_close(self) -> None:
+        self.dismiss(set(self.query_one(SelectionList).selected))
 
 
 class ViewApp(App):
@@ -54,6 +95,12 @@ class ViewApp(App):
     #prompt.active { display: block; }
     #status { dock: bottom; height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     #help-box { padding: 1 2; border: round $primary; background: $surface; width: auto; }
+    ColumnPicker { align: center middle; }
+    #picker-box { width: 56; height: auto; max-height: 85%; border: round $primary;
+                  background: $surface; padding: 1 2; }
+    #picker-title { text-align: center; width: 1fr; margin-bottom: 1; }
+    #picker-box #cols { width: 1fr; height: auto; max-height: 20; background: $surface; }
+    #picker-hint { text-align: center; width: 1fr; margin-top: 1; }
     """
 
     BINDINGS = [
@@ -71,8 +118,9 @@ class ViewApp(App):
         # DataTable 内置只认箭头键, 这里补 vim 键 (与帮助屏承诺一致)
         Binding("j", "cursor_down", "下移", show=False),
         Binding("k", "cursor_up", "上移", show=False),
-        Binding("h", "cursor_left", "左列", show=False),
-        Binding("l", "cursor_right", "右列", show=False),
+        # h/l 与左右方向键一致: 水平滚动表格 (列超宽时可见右侧列)
+        Binding("h", "scroll_left", "左滚", show=False),
+        Binding("l", "scroll_right", "右滚", show=False),
         # 调整表格/详情两区大小 (竖排调高度, 横排调宽度)
         Binding("plus", "grow_table", "表格+", show=False),
         Binding("equals_sign", "grow_table", "表格+", show=False),
@@ -82,6 +130,8 @@ class ViewApp(App):
         Binding("u", "half_up", "半屏上", show=False),
         Binding("ctrl+d", "half_down", "半屏下", show=False),
         Binding("ctrl+u", "half_up", "半屏上", show=False),
+        # 列显示选择器: c 打开勾选面板 (同时作用于表格列和详情字段)
+        Binding("c", "columns", "选列", show=False),
     ]
 
     def __init__(self, rows: List[Dict], fmt: str, filename: str, truncated: bool):
@@ -91,15 +141,15 @@ class ViewApp(App):
         self.filename = filename
         self.truncated = truncated
         self.columns = render.build_columns(rows, fmt)
+        self._hidden: Set[str] = set()  # 被折叠的列名 (同时作用于表格和详情)
         self.view_indices: List[int] = list(range(len(rows)))
-        self._sort_col: Optional[int] = None
-        self._sort_desc = False
+        self._sort_label: Optional[str] = None  # 状态栏显示的排序说明
         self._prompt_mode: Optional[str] = None
         self._split = 13  # 表格占比 (总 20 份, 每份 5%), 默认表格 65% : 详情 35%
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
-            yield DataTable(id="table", cursor_type="cell", zebra_stripes=True)
+            yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
             with VerticalScroll(id="detail"):
                 yield Static(id="detail-body")
         yield Input(id="prompt")
@@ -107,10 +157,57 @@ class ViewApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one("#table", DataTable)
-        table.add_columns(*self.columns)
+        self._add_columns(table)
         self._populate()
         self._apply_split()
         table.focus()
+
+    def _visible_columns(self) -> List[str]:
+        return [c for c in self.columns if c not in self._hidden]
+
+    def _add_columns(self, table: DataTable) -> None:
+        """显式给每列宽度, 避免 DataTable 对全表自动测量 (大文件会两阶段闪烁 + 卡顿)。"""
+        vis = self._visible_columns()
+        for name, w in zip(vis, self._column_widths(vis)):
+            table.add_column(name, width=w)
+
+    def _column_widths(self, vis: List[str]) -> List[int]:
+        """自适应列宽: 采样估算每列自然宽, 再按可用屏宽做 max-min 公平分配。
+
+        - 自然宽 = max(表头, 采样单元格显示宽), 上限 CAP
+        - 若自然宽总和 <= 预算: 直接用 (无需压缩)
+        - 否则: 窄列拿满自然宽, 宽文本列平分剩余预算 (谁也不独占)
+        性能 O(采样行 x 列数), 采样封顶 200 行。
+        """
+        from rich.cells import cell_len
+
+        CAP = 80
+        sample = [
+            render.row_cells(idx, self.all_rows[idx], self.fmt, vis)
+            for idx in self.view_indices[:200]
+        ]
+        naturals = []
+        for ci, name in enumerate(vis):
+            w = cell_len(name)
+            for cells in sample:
+                w = max(w, cell_len(cells[ci]))
+            naturals.append(min(max(w, 1), CAP))
+
+        # 预算 = 屏宽 - 表格边框(2) - 竖直滚动条(2) - 每列内边距(2×列数)
+        # 漏掉滚动条会让列宽总和正好等于内容区, 竖条再占 2 列 → 触发横向滚动条(溢出一点点)
+        avail = self.size.width or 120
+        budget = avail - 4 - 2 * len(vis)
+        if budget <= 0 or sum(naturals) <= budget:
+            return naturals
+
+        widths = [0] * len(vis)
+        remaining, nrem = budget, len(vis)
+        for i in sorted(range(len(vis)), key=lambda i: naturals[i]):
+            share = remaining // nrem
+            widths[i] = naturals[i] if naturals[i] <= share else max(share, 4)
+            remaining -= widths[i]
+            nrem -= 1
+        return widths
 
     def _apply_split(self) -> None:
         """按 self._split 设置两区大小 (竖排改高度, 横排改宽度)。"""
@@ -139,8 +236,9 @@ class ViewApp(App):
     def _populate(self) -> None:
         table = self.query_one("#table", DataTable)
         table.clear()
+        vis = self._visible_columns()
         for pos, idx in enumerate(self.view_indices):
-            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, self.columns)
+            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, vis)
             table.add_row(*cells, key=str(pos))
         self._update_status()
         if self.view_indices:
@@ -151,7 +249,7 @@ class ViewApp(App):
             return
         idx = self.view_indices[cursor_row]
         body = self.query_one("#detail-body", Static)
-        body.update(render.render_detail(self.all_rows[idx], self.fmt))
+        body.update(render.render_detail(self.all_rows[idx], self.fmt, hidden=self._hidden))
         self.query_one("#detail", VerticalScroll).scroll_home(animate=False)
 
     def _update_status(self) -> None:
@@ -160,14 +258,13 @@ class ViewApp(App):
         parts = [f"[b]{self.filename}[/b]", f"格式:{self.fmt}", f"{shown}/{total} 行"]
         if self.truncated:
             parts.append(f"[yellow]已截断前 {total} 行[/yellow]")
-        if self._sort_col is not None:
-            arrow = "↓" if self._sort_desc else "↑"
-            parts.append(f"排序:{self.columns[self._sort_col]}{arrow}")
+        if self._sort_label:
+            parts.append(f"排序:{self._sort_label}")
         parts.append("[dim]? 帮助[/dim]")
         self.query_one("#status", Static).update(Text.from_markup("  ·  ".join(parts)))
 
-    def on_data_table_cell_highlighted(self, event: DataTable.CellHighlighted) -> None:
-        self._refresh_detail(event.coordinate.row)
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._refresh_detail(event.cursor_row)
 
     # ------------------------------------------------------------------ #
     # 动作
@@ -187,11 +284,11 @@ class ViewApp(App):
     def action_cursor_up(self) -> None:
         self._table_action("cursor_up")
 
-    def action_cursor_left(self) -> None:
-        self._table_action("cursor_left")
+    def action_scroll_left(self) -> None:
+        self._table_action("scroll_left")
 
-    def action_cursor_right(self) -> None:
-        self._table_action("cursor_right")
+    def action_scroll_right(self) -> None:
+        self._table_action("scroll_right")
 
     def _half_scroll(self, direction: int) -> None:
         """半屏滚动: 详情放大时滚详情, 否则按半屏移动表格光标。"""
@@ -218,32 +315,32 @@ class ViewApp(App):
         self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
 
     def action_sort(self) -> None:
-        table = self.query_one("#table", DataTable)
-        col = table.cursor_column
-        if self._sort_col == col:
-            self._sort_desc = not self._sort_desc
-        else:
-            self._sort_col, self._sort_desc = col, False
-        name = self.columns[col]
+        self._open_prompt("sort", "排序列名 (加 - 反向, 如 -chars):")
+
+    def _apply_sort(self, text: str) -> None:
+        desc = text.startswith("-")
+        name = text.lstrip("-").strip()
+        vis = self._visible_columns()
+        if name not in vis:
+            self.notify(f"无此列: {name} (可选: {', '.join(vis)})", severity="error")
+            return
+        col = vis.index(name)
 
         def keyfn(idx: int):
-            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, self.columns)
-            v = cells[col]
+            v = render.row_cells(idx, self.all_rows[idx], self.fmt, vis)[col]
             try:
                 return (0, float(v))
             except (ValueError, TypeError):
                 return (1, str(v))
 
-        self.view_indices.sort(key=keyfn, reverse=self._sort_desc)
-        self.notify(f"按 {name} 排序")
+        self.view_indices.sort(key=keyfn, reverse=desc)
+        self._sort_label = f"{name}{'↓' if desc else '↑'}"
+        self.notify(f"按 {name} 排序{' (反向)' if desc else ''}")
         self._populate()
-        # _populate 重建后光标归零, 移回排序列以便再按 s 切换升降序
-        table.move_cursor(row=0, column=col)
 
     def action_reset(self) -> None:
         self.view_indices = list(range(len(self.all_rows)))
-        self._sort_col = None
-        self._sort_desc = False
+        self._sort_label = None
         self._populate()
         self.notify("已重置")
 
@@ -259,6 +356,27 @@ class ViewApp(App):
     def action_toggle_layout(self) -> None:
         self.query_one("#main", Vertical).toggle_class("horizontal")
         self._apply_split()
+
+    def action_columns(self) -> None:
+        """打开列勾选面板, 应用后同步表格列与详情字段。"""
+
+        def apply(visible: Optional[Set[str]]) -> None:
+            if visible is None:
+                return
+            hidden = set(self.columns) - visible
+            if len(hidden) == len(self.columns):  # 不允许全隐藏, 至少留第一列
+                hidden.discard(self.columns[0])
+            self._hidden = hidden
+            self._rebuild_columns()
+
+        self.push_screen(ColumnPicker(self.columns, self._hidden), apply)
+
+    def _rebuild_columns(self) -> None:
+        """列可见集变化后重建表头并重填。"""
+        table = self.query_one("#table", DataTable)
+        table.clear(columns=True)
+        self._add_columns(table)
+        self._populate()
 
     def action_search(self) -> None:
         self._open_prompt("search", "搜索子串 (全字段):")
@@ -286,12 +404,16 @@ class ViewApp(App):
             self._apply_search(text)
         elif mode == "filter":
             self._apply_filter(text)
+        elif mode == "sort":
+            self._apply_sort(text)
 
     def _apply_search(self, text: str) -> None:
         low = text.lower()
 
+        vis = self._visible_columns()
+
         def match(idx: int) -> bool:
-            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, self.columns)
+            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, vis)
             return any(low in c.lower() for c in cells)
 
         self.view_indices = [i for i in range(len(self.all_rows)) if match(i)]
