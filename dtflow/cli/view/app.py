@@ -21,9 +21,10 @@ _HELP = """[b]dt view 快捷键[/b]
   ↑/↓  j/k     选行 (详情联动)
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
+  ] / [        下/上一窗口 (大文件翻页)   :  跳到行号
   s            排序 (输入列名, 加 - 反向)
-  /            搜索 (子串, 全字段)
-  f            筛选 (where 表达式, 如 messages.#>=2)
+  /            搜索 (子串, 全字段, 仅当前窗口)
+  f            筛选 (where 表达式, 如 messages.#>=2, 仅当前窗口)
   Enter        放大当前样本 (Esc 返回)
   z            切换 上下 / 左右 布局
   +/-          调整表格/详情两区大小
@@ -132,20 +133,34 @@ class ViewApp(App):
         Binding("ctrl+u", "half_up", "半屏上", show=False),
         # 列显示选择器: c 打开勾选面板 (同时作用于表格列和详情字段)
         Binding("c", "columns", "选列", show=False),
+        # 大文件窗口翻页: ] 下一窗口, [ 上一窗口, : 跳到指定行号
+        Binding("right_square_bracket", "next_window", "下一窗口", show=False),
+        Binding("left_square_bracket", "prev_window", "上一窗口", show=False),
+        Binding("colon", "jump", "跳行", show=False),
     ]
 
-    def __init__(self, rows: List[Dict], fmt: str, filename: str, truncated: bool):
+    def __init__(
+        self, source, window: List[Dict], win_offset: int, cap: int, fmt: str, filename: str
+    ):
         super().__init__()
-        self.all_rows = rows
+        self.source = source  # RowSource: 随机窗口访问, 内存 O(窗口)
+        self.cap = cap  # 单窗口行数
+        self.win_offset = win_offset  # 当前窗口在全局的起始行 (0-based)
+        self.all_rows = window  # 当前窗口已 parse 的行
         self.fmt = fmt
         self.filename = filename
-        self.truncated = truncated
-        self.columns = render.build_columns(rows, fmt)
+        self.columns = render.build_columns(window, fmt)  # 列固定自首窗口 (数据集 schema 稳定)
         self._hidden: Set[str] = set()  # 被折叠的列名 (同时作用于表格和详情)
-        self.view_indices: List[int] = list(range(len(rows)))
+        self.view_indices: List[int] = list(range(len(window)))
         self._sort_label: Optional[str] = None  # 状态栏显示的排序说明
         self._prompt_mode: Optional[str] = None
         self._split = 13  # 表格占比 (总 20 份, 每份 5%), 默认表格 65% : 详情 35%
+
+    def _cells(self, idx: int, vis: List[str]) -> List[str]:
+        """取窗口内第 idx 行的单元格, ``#`` 列显示全局行号。"""
+        return render.row_cells(
+            idx, self.all_rows[idx], self.fmt, vis, row_no=self.win_offset + idx
+        )
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -182,12 +197,15 @@ class ViewApp(App):
         from rich.cells import cell_len
 
         CAP = 80
-        sample = [
-            render.row_cells(idx, self.all_rows[idx], self.fmt, vis)
-            for idx in self.view_indices[:200]
-        ]
+        sample = [self._cells(idx, vis) for idx in self.view_indices[:200]]
         naturals = []
         for ci, name in enumerate(vis):
+            if name == "#":
+                # # 列是全局行号, 最大值可预测 (窗口末行), 不靠采样——否则采样只看前 200 行,
+                # 宽度按 3 位数估算, 窗口内上万的行号会显示不下被截断。
+                max_no = self.win_offset + len(self.all_rows)
+                naturals.append(max(cell_len(name), len(str(max_no))))
+                continue
             w = cell_len(name)
             for cells in sample:
                 w = max(w, cell_len(cells[ci]))
@@ -200,11 +218,14 @@ class ViewApp(App):
         if budget <= 0 or sum(naturals) <= budget:
             return naturals
 
+        # 被压的宽列至少留 MIN_COL_W, 否则只剩省略号无信息量; 但天然更窄的列不硬撑 (取其自然宽)。
+        MIN_COL_W = 8
         widths = [0] * len(vis)
         remaining, nrem = budget, len(vis)
         for i in sorted(range(len(vis)), key=lambda i: naturals[i]):
             share = remaining // nrem
-            widths[i] = naturals[i] if naturals[i] <= share else max(share, 4)
+            floor = min(MIN_COL_W, naturals[i])
+            widths[i] = naturals[i] if naturals[i] <= share else max(share, floor)
             remaining -= widths[i]
             nrem -= 1
         return widths
@@ -238,8 +259,7 @@ class ViewApp(App):
         table.clear()
         vis = self._visible_columns()
         for pos, idx in enumerate(self.view_indices):
-            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, vis)
-            table.add_row(*cells, key=str(pos))
+            table.add_row(*self._cells(idx, vis), key=str(pos))
         self._update_status()
         if self.view_indices:
             self._refresh_detail(0)
@@ -253,11 +273,17 @@ class ViewApp(App):
         self.query_one("#detail", VerticalScroll).scroll_home(animate=False)
 
     def _update_status(self) -> None:
-        total = len(self.all_rows)
+        total = self.source.total
+        win = len(self.all_rows)
         shown = len(self.view_indices)
-        parts = [f"[b]{self.filename}[/b]", f"格式:{self.fmt}", f"{shown}/{total} 行"]
-        if self.truncated:
-            parts.append(f"[yellow]已截断前 {total} 行[/yellow]")
+        parts = [f"[b]{self.filename}[/b]", f"格式:{self.fmt}"]
+        if total > win:  # 多窗口: 显示全局窗口范围
+            parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{total}")
+            parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
+        else:
+            parts.append(f"{total} 行")
+        if shown != win:  # 筛选/搜索子集 (窗口内)
+            parts.append(f"[yellow]{shown} 条匹配(仅本窗口)[/yellow]")
         if self._sort_label:
             parts.append(f"排序:{self._sort_label}")
         parts.append("[dim]? 帮助[/dim]")
@@ -327,7 +353,7 @@ class ViewApp(App):
         col = vis.index(name)
 
         def keyfn(idx: int):
-            v = render.row_cells(idx, self.all_rows[idx], self.fmt, vis)[col]
+            v = self._cells(idx, vis)[col]
             try:
                 return (0, float(v))
             except (ValueError, TypeError):
@@ -343,6 +369,54 @@ class ViewApp(App):
         self._sort_label = None
         self._populate()
         self.notify("已重置")
+
+    # ------------------------------------------------------------------ #
+    # 大文件窗口翻页 (偏移索引 → 任意位置秒开, 内存 O(窗口))
+    # ------------------------------------------------------------------ #
+    def _load_window(self, offset: int) -> None:
+        """加载以全局行 offset 为起点的新窗口, 重置筛选/排序并重填表格。"""
+        offset = max(0, min(offset, self.source.total - 1))
+        rows = self.source.window(offset, self.cap)
+        if not rows:
+            return
+        self.win_offset = offset
+        self.all_rows = rows
+        self.view_indices = list(range(len(rows)))
+        self._sort_label = None
+        self._populate()
+        self.query_one("#table", DataTable).move_cursor(row=0)
+
+    def action_next_window(self) -> None:
+        nxt = self.win_offset + len(self.all_rows)
+        if nxt >= self.source.total:
+            self.notify("已是最后一个窗口")
+            return
+        self._load_window(nxt)
+
+    def action_prev_window(self) -> None:
+        if self.win_offset == 0:
+            self.notify("已是第一个窗口")
+            return
+        self._load_window(max(0, self.win_offset - self.cap))
+
+    def action_jump(self) -> None:
+        self._open_prompt("jump", f"跳到行号 (1-{self.source.total}):")
+
+    def _apply_jump(self, text: str) -> None:
+        try:
+            n = int(text)
+        except ValueError:
+            self.notify(f"无效行号: {text}", severity="error")
+            return
+        g = max(1, min(n, self.source.total)) - 1  # 0-based 全局行
+        if self.win_offset <= g < self.win_offset + len(self.all_rows):
+            local = g - self.win_offset  # 已在当前窗口: 仅移动光标
+            if local in self.view_indices:
+                self.query_one("#table", DataTable).move_cursor(row=self.view_indices.index(local))
+            else:
+                self.notify("该行不在当前筛选结果中")
+        else:
+            self._load_window(g)  # 跳出窗口: 以目标行为窗口首行加载
 
     def action_zoom(self) -> None:
         self.query_one("#table", DataTable).add_class("hidden")
@@ -406,6 +480,8 @@ class ViewApp(App):
             self._apply_filter(text)
         elif mode == "sort":
             self._apply_sort(text)
+        elif mode == "jump":
+            self._apply_jump(text)
 
     def _apply_search(self, text: str) -> None:
         low = text.lower()
@@ -413,12 +489,11 @@ class ViewApp(App):
         vis = self._visible_columns()
 
         def match(idx: int) -> bool:
-            cells = render.row_cells(idx, self.all_rows[idx], self.fmt, vis)
-            return any(low in c.lower() for c in cells)
+            return any(low in c.lower() for c in self._cells(idx, vis))
 
         self.view_indices = [i for i in range(len(self.all_rows)) if match(i)]
         self._populate()
-        self.notify(f"搜索 '{text}': {len(self.view_indices)} 条")
+        self.notify(f"搜索 '{text}': {len(self.view_indices)} 条 (仅本窗口)")
 
     def _apply_filter(self, expr: str) -> None:
         from ..sample import _parse_where
@@ -432,4 +507,4 @@ class ViewApp(App):
             i for i, r in enumerate(self.all_rows) if isinstance(r, dict) and fn(r)
         ]
         self._populate()
-        self.notify(f"筛选 '{expr}': {len(self.view_indices)} 条")
+        self.notify(f"筛选 '{expr}': {len(self.view_indices)} 条 (仅本窗口)")

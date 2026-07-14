@@ -3,10 +3,27 @@
 import pytest
 
 from dtflow.cli.view.app import ViewApp
+from dtflow.cli.view.source import RowSource
 
 
-def _chat_app(n=30):
-    rows = [
+class _ListSource(RowSource):
+    """内存列表数据源, 用于测试窗口逻辑 (无需真实文件)。"""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.total = len(rows)
+
+    def window(self, offset, size):
+        return self._rows[max(0, offset) : offset + size]
+
+
+def _make_app(rows, cap=20000, offset=0, fmt="openai_chat"):
+    src = _ListSource(rows)
+    return ViewApp(src, src.window(offset, cap), offset, cap, fmt, "t.jsonl")
+
+
+def _chat_rows(n=30):
+    return [
         {
             "messages": [
                 {"role": "user", "content": f"q{i}"},
@@ -16,7 +33,10 @@ def _chat_app(n=30):
         }
         for i in range(n)
     ]
-    return ViewApp(rows, "openai_chat", "t.jsonl", False)
+
+
+def _chat_app(n=30):
+    return _make_app(_chat_rows(n))
 
 
 @pytest.mark.asyncio
@@ -99,7 +119,7 @@ async def test_column_picker_hides_table_and_detail():
         {"messages": [{"role": "user", "content": "hi"}], "source": "m", "difficulty": 3}
         for _ in range(3)
     ]
-    app = ViewApp(rows, "openai_chat", "t.jsonl", False)
+    app = _make_app(rows)
     async with app.run_test() as pilot:
         table = app.query_one("#table")
         assert "source" in app._visible_columns()
@@ -141,3 +161,86 @@ async def test_zoom_guards_table_navigation():
         await pilot.pause()
         assert t.cursor_row == 0  # 放大态下 j 不移动表格
         app.action_unzoom()
+
+
+@pytest.mark.asyncio
+async def test_window_paging_and_global_row_number():
+    # 50 行, 每窗口 20 行 → 3 个窗口 [0-20)[20-40)[40-50)
+    app = _make_app(_chat_rows(50), cap=20)
+    async with app.run_test() as pilot:
+        t = app.query_one("#table")
+        assert app.win_offset == 0
+        # 首窗口第一行的 # 列 = 全局行号 1
+        assert app._cells(0, app._visible_columns())[0] == "1"
+        # 下一窗口
+        app.action_next_window()
+        await pilot.pause()
+        assert app.win_offset == 20
+        assert len(app.all_rows) == 20
+        assert app._cells(0, app._visible_columns())[0] == "21"  # 全局行号
+        assert t.cursor_row == 0
+        # 最后一个窗口 (不足一窗)
+        app.action_next_window()
+        await pilot.pause()
+        assert app.win_offset == 40
+        assert len(app.all_rows) == 10
+        # 再翻到底: 不动
+        app.action_next_window()
+        assert app.win_offset == 40
+        # 往回翻
+        app.action_prev_window()
+        await pilot.pause()
+        assert app.win_offset == 20
+
+
+@pytest.mark.asyncio
+async def test_hash_column_width_fits_max_global_row_no():
+    # # 列宽须容纳窗口最大行号, 不能靠采样前 200 行 (否则上万行号被截)
+    app = _make_app(_chat_rows(20000), cap=20000)
+    async with app.run_test(size=(120, 30)):
+        vis = app._visible_columns()
+        hash_w = app._column_widths(vis)[vis.index("#")]
+        assert hash_w >= len("20000")  # 末行号 5 位
+    # 大 offset: 全局行号可达 7 位
+    app2 = _make_app(_chat_rows(1000), cap=20000)
+    app2.win_offset = 980000
+    async with app2.run_test(size=(120, 30)):
+        vis = app2._visible_columns()
+        hash_w = app2._column_widths(vis)[vis.index("#")]
+        assert hash_w >= len(str(980000 + 1000))
+
+
+@pytest.mark.asyncio
+async def test_compressed_col_min_width_and_narrow_exempt():
+    # 一个天然仅 2 宽的列 + 一堆宽列 → 触发压缩
+    rows = [{"nw": "ab", **{f"c{i}": "x" * 30 for i in range(20)}} for _ in range(5)]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(120, 30)):
+        vis = app._visible_columns()
+        w = dict(zip(vis, app._column_widths(vis)))
+        # 被压的宽文本列下限 8 (不再是 4)
+        assert min(w[c] for c in vis if c.startswith("c")) >= 8
+        # 天然窄列不被硬撑到 8, 保持自然宽 2
+        assert w["nw"] == 2
+
+
+@pytest.mark.asyncio
+async def test_jump_to_line_loads_right_window():
+    app = _make_app(_chat_rows(50), cap=20)
+    async with app.run_test() as pilot:
+        t = app.query_one("#table")
+        # 跳到全局第 35 行 → 落在窗口 [34, 54) 的首行
+        app._apply_jump("35")
+        await pilot.pause()
+        assert app.win_offset == 34
+        assert app._cells(0, app._visible_columns())[0] == "35"
+        # 窗口内跳转只移动光标, 不换窗口
+        app._apply_jump("40")
+        await pilot.pause()
+        assert app.win_offset == 34
+        assert t.cursor_row == 5  # 40 - 35
+        # 越界与非法输入不崩溃
+        app._apply_jump("9999")
+        await pilot.pause()
+        app._apply_jump("abc")
+        await pilot.pause()

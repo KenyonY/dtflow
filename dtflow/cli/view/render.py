@@ -133,9 +133,14 @@ def build_columns(rows: List[Dict], fmt: str) -> List[str]:
     return base + _scalar_fields(rows, skip, limit)
 
 
-def row_cells(idx: int, row: Dict, fmt: str, columns: List[str]) -> List[str]:
-    """把一行数据转成表格单元格字符串列表 (与 columns 对齐)。"""
-    derived: Dict[str, Any] = {"#": str(idx + 1)}
+def row_cells(
+    idx: int, row: Dict, fmt: str, columns: List[str], row_no: Optional[int] = None
+) -> List[str]:
+    """把一行数据转成表格单元格字符串列表 (与 columns 对齐)。
+
+    row_no: 用于 ``#`` 列显示的行号 (0-based); None 时用 idx (窗口化后应传全局行号)。
+    """
+    derived: Dict[str, Any] = {"#": str((idx if row_no is None else row_no) + 1)}
 
     if fmt in ("openai_chat", "sharegpt"):
         turns = _normalize_turns(row, fmt)

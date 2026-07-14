@@ -284,7 +284,8 @@ def tail(
 @app.command()
 def view(
     filename: str = typer.Argument(..., help="输入文件路径"),
-    cap: int = typer.Option(20000, "--cap", help="最多加载行数（大文件窗口化，防 OOM）"),
+    cap: int = typer.Option(20000, "--cap", help="单窗口加载行数（只 parse 这么多，其余按需翻页）"),
+    offset: int = typer.Option(0, "--offset", help="起始行号（0-based），从文件中间打开"),
     format: Optional[str] = typer.Option(
         None, "--format", help="强制格式: openai_chat|sharegpt|dpo|alpaca|generic"
     ),
@@ -292,14 +293,16 @@ def view(
     """交互式浏览数据（表格 + 详情联动，Textual TUI）
 
     表格扫视 + 详情按格式渲染（对话气泡/dpo对比/alpaca分段），无需逐层展开。
+    大文件靠偏移索引窗口化浏览：只 parse 当前窗口，TUI 内按 ] / [ 翻窗口、: 跳行。
     需要交互式终端（TTY）。按 ? 查看快捷键。
 
     示例:
         dt view data.jsonl                       # 打开浏览器
         dt view data.jsonl --format=dpo          # 强制按 dpo 渲染
-        dt view big.jsonl --cap=50000            # 提高加载上限
+        dt view big.jsonl --offset=20000         # 从第 2 万行开始（即你要的 20000–40000）
+        dt view big.jsonl --cap=50000            # 每窗口加载 5 万行
     """
-    _view(filename, cap=cap, format_hint=format)
+    _view(filename, cap=cap, offset=offset, format_hint=format)
 
 
 @app.command("slice")

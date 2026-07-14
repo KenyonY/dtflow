@@ -2,42 +2,23 @@
 dt view: 交互式表格 + 详情浏览器 (Textual TUI)。
 
 用于高效查看训练数据: 表格扫视 + 详情按格式渲染 (对话气泡/dpo对比/alpaca分段)。
+大文件通过"偏移索引 + 窗口翻页"浏览: 只 parse 当前窗口 (--cap 行), TUI 内 ] / [ 翻窗口、: 跳行。
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
-# 大文件默认只加载前 N 行 (窗口), 避免 OOM; 状态栏会提示已截断。
+# 单个窗口默认加载行数; 只 parse 这么多行, 其余靠偏移索引按需翻页。
 _DEFAULT_CAP = 20000
-
-
-def _load_rows(filepath: Path, cap: int) -> tuple[List[dict], bool]:
-    """加载数据行, 超过 cap 则截断。返回 (rows, truncated)。"""
-    ext = filepath.suffix.lower()
-    if ext in (".jsonl", ".ndjson"):
-        from ...streaming import load_stream
-
-        rows: List[dict] = []
-        for i, row in enumerate(load_stream(str(filepath))):
-            if i >= cap:
-                return rows, True
-            rows.append(row)
-        return rows, False
-
-    from ...storage.io import load_data
-
-    data = load_data(str(filepath))
-    if len(data) > cap:
-        return data[:cap], True
-    return data, False
 
 
 def view(
     filename: str,
     cap: int = _DEFAULT_CAP,
+    offset: int = 0,
     format_hint: Optional[str] = None,
 ) -> None:
     """启动 dt view TUI。"""
@@ -50,15 +31,20 @@ def view(
         print("dt view 需要交互式终端 (TTY)。管道/重定向请用 dt head/sample。", file=sys.stderr)
         raise SystemExit(2)
 
-    rows, truncated = _load_rows(filepath, cap)
-    if not rows:
+    from .source import open_source
+
+    source = open_source(filepath)
+    if source.total == 0:
         print("文件为空。", file=sys.stderr)
         raise SystemExit(1)
 
+    offset = min(max(0, offset), source.total - 1)
+    window = source.window(offset, cap)
+
     from .render import detect_format
 
-    fmt = format_hint or detect_format(rows)
+    fmt = format_hint or detect_format(window)
 
     from .app import ViewApp
 
-    ViewApp(rows, fmt, filepath.name, truncated).run()
+    ViewApp(source, window, offset, cap, fmt, filepath.name).run()
