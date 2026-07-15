@@ -152,6 +152,30 @@ async def test_column_picker_hides_table_and_detail():
 
 
 @pytest.mark.asyncio
+async def test_detail_scroll_keeps_field_across_samples():
+    # 列多时切样本, 详情应停在同一"字段"(绑定字段而非绝对像素Y)
+    rows = [{f"f{i:02d}": f"v{s}-{i}" for i in range(20)} for s in range(3)]
+    rows[1]["f00"] = "\n".join(f"tall{k}" for k in range(10))  # 让 f00 变高, 使绝对Y错位
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(80, 12)) as pilot:
+        detail = app.query_one("#detail")
+        await pilot.pause()
+        # 锚点测量与 Textual 实际渲染高度一致
+        assert app._cur_anchors["f19"] + 1 == detail.virtual_size.height
+        # 滚到字段 f12
+        detail.scroll_to(y=app._cur_anchors["f12"], animate=False)
+        await pilot.pause()
+        assert app._top_field(app._cur_anchors, detail.scroll_offset.y) == "f12"
+        y0 = app._cur_anchors["f12"]
+        # 切下一样本: f00 变高 → 同名字段绝对Y改变, 但应仍停在 f12
+        app.query_one("#table").move_cursor(row=1)
+        await pilot.pause()
+        await pilot.pause()
+        assert app._cur_anchors["f12"] != y0  # 绝对Y确实变了
+        assert app._top_field(app._cur_anchors, detail.scroll_offset.y) == "f12"
+
+
+@pytest.mark.asyncio
 async def test_zoom_guards_table_navigation():
     app = _chat_app(5)
     async with app.run_test() as pilot:

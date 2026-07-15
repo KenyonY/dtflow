@@ -206,51 +206,94 @@ def _render_conversation(turns: List[Tuple[str, str]]) -> RenderableType:
     return Group(*parts)
 
 
-def render_detail(row: Dict, fmt: str, hidden: Optional[set] = None) -> RenderableType:
-    """把选中样本渲染成 Rich 可绘制对象, 默认全展开, 无需逐层进入。
+def render_detail_sections(
+    row: Dict, fmt: str, hidden: Optional[set] = None
+) -> List[Tuple[str, RenderableType]]:
+    """把详情拆成 [(字段名, renderable)] 分段, 供锚点定位 (切样本保持字段位置)。
 
-    hidden: 被折叠的列名集合; 同名字段在详情里也不显示 (派生列名无对应字段, 自然无影响)。
+    分段名即"字段": generic 为每个顶层 key; dpo/alpaca 为段名; 对话为 对话 + 元数据。
+    hidden: 被折叠的字段, 详情里也不显示。
     """
     hidden = hidden or set()
 
     if fmt in ("openai_chat", "sharegpt"):
-        turns = _normalize_turns(row, fmt)
-        parts: List[RenderableType] = [_render_conversation(turns)]
+        secs: List[Tuple[str, RenderableType]] = [
+            ("对话", _render_conversation(_normalize_turns(row, fmt)))
+        ]
         extra = {
             k: v
             for k, v in row.items()
             if k not in ("messages", "conversations") and k not in hidden
         }
         if extra:
-            parts.append(Rule(style="dim"))
-            parts.append(_render_generic(extra))
-        return Group(*parts)
+            secs.append(("元数据", _render_generic(extra)))
+        return secs
 
     if fmt == "dpo":
-        parts = []
+        secs = []
         if row.get("prompt") and "prompt" not in hidden:
-            parts.append(Text("[prompt]", style="bold cyan"))
-            parts.extend(_render_content(_as_text(row["prompt"])))
-            parts.append(Rule(style="dim"))
-        parts.append(Text("[chosen]", style="bold green"))
-        parts.extend(_render_content(_as_text(row.get("chosen", ""))))
-        parts.append(Rule(style="dim"))
-        parts.append(Text("[rejected]", style="bold red"))
-        parts.extend(_render_content(_as_text(row.get("rejected", ""))))
-        return Group(*parts)
+            secs.append(
+                (
+                    "prompt",
+                    Group(
+                        Text("[prompt]", style="bold cyan"),
+                        *_render_content(_as_text(row["prompt"])),
+                    ),
+                )
+            )
+        secs.append(
+            (
+                "chosen",
+                Group(
+                    Text("[chosen]", style="bold green"),
+                    *_render_content(_as_text(row.get("chosen", ""))),
+                ),
+            )
+        )
+        secs.append(
+            (
+                "rejected",
+                Group(
+                    Text("[rejected]", style="bold red"),
+                    *_render_content(_as_text(row.get("rejected", ""))),
+                ),
+            )
+        )
+        return secs
 
     if fmt == "alpaca":
-        parts = []
-        for label, key in (("instruction", "instruction"), ("input", "input")):
+        secs = []
+        for key in ("instruction", "input"):
             if row.get(key) and key not in hidden:
-                parts.append(Text(f"[{label}]", style="bold cyan"))
-                parts.extend(_render_content(_as_text(row[key])))
+                secs.append(
+                    (
+                        key,
+                        Group(
+                            Text(f"[{key}]", style="bold cyan"),
+                            *_render_content(_as_text(row[key])),
+                        ),
+                    )
+                )
         out = row.get("output") or row.get("response") or ""
-        parts.append(Text("[output]", style="bold green"))
-        parts.extend(_render_content(_as_text(out)))
-        return Group(*parts)
+        secs.append(
+            ("output", Group(Text("[output]", style="bold green"), *_render_content(_as_text(out))))
+        )
+        return secs
 
-    return _render_generic({k: v for k, v in row.items() if k not in hidden})
+    return [(k, _render_generic({k: v})) for k, v in row.items() if k not in hidden]
+
+
+def render_detail(row: Dict, fmt: str, hidden: Optional[set] = None) -> RenderableType:
+    """把选中样本渲染成 Rich 可绘制对象, 默认全展开, 无需逐层进入。
+
+    由 render_detail_sections 拼成 (段间插 Rule), 与锚点测量同源, 保证滚动定位精确。
+    """
+    parts: List[RenderableType] = []
+    for i, (_, rend) in enumerate(render_detail_sections(row, fmt, hidden)):
+        if i:
+            parts.append(Rule(style="dim"))
+        parts.append(rend)
+    return Group(*parts)
 
 
 def _render_generic(row: Any) -> RenderableType:

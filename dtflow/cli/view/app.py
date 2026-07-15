@@ -155,6 +155,8 @@ class ViewApp(App):
         self._sort_label: Optional[str] = None  # 状态栏显示的排序说明
         self._prompt_mode: Optional[str] = None
         self._split = 13  # 表格占比 (总 20 份, 每份 5%), 默认表格 65% : 详情 35%
+        # 上一样本详情的字段锚点 {字段名: 起始行}; 切样本时据此把新样本滚到同名字段 (跨样本对比)
+        self._cur_anchors: Dict[str, int] = {}
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示全局行号。"""
@@ -264,13 +266,47 @@ class ViewApp(App):
         if self.view_indices:
             self._refresh_detail(0)
 
+    def _measure_anchors(self, sections, width: int) -> Dict[str, int]:
+        """按详情面板内容宽度测量每段起始行 {字段名: 起始行}, 与 render_detail 拼接规则同源。"""
+        from rich.console import Console
+
+        console = Console(width=max(width, 1))
+        anchors: Dict[str, int] = {}
+        line = 0
+        for i, (name, rend) in enumerate(sections):
+            if i:  # 段间 Rule 占 1 行 (与 render_detail 一致)
+                line += 1
+            anchors[name] = line
+            line += len(console.render_lines(rend, pad=False))
+        return anchors
+
+    def _top_field(self, anchors: Dict[str, int], y: int) -> Optional[str]:
+        """当前滚动位置 y 之上最近的字段名 (顶部可见字段)。"""
+        top = None
+        for name, start in anchors.items():
+            if start <= y:
+                top = name
+            else:
+                break
+        return top
+
     def _refresh_detail(self, cursor_row: int) -> None:
         if not (0 <= cursor_row < len(self.view_indices)):
             return
         idx = self.view_indices[cursor_row]
+        detail = self.query_one("#detail", VerticalScroll)
+        # 切样本前: 由上一样本锚点 + 当前滚动位置求"顶部字段", 用于在新样本对齐同一字段
+        target = self._top_field(self._cur_anchors, detail.scroll_offset.y)
+
+        sections = render.render_detail_sections(self.all_rows[idx], self.fmt, hidden=self._hidden)
         body = self.query_one("#detail-body", Static)
         body.update(render.render_detail(self.all_rows[idx], self.fmt, hidden=self._hidden))
-        self.query_one("#detail", VerticalScroll).scroll_home(animate=False)
+
+        width = detail.content_size.width or self.size.width or 80
+        self._cur_anchors = self._measure_anchors(sections, width)
+        new_y = self._cur_anchors.get(target, 0) if target else 0
+        # 内容重排后高度才确定, 延一帧再定位 (新内容更短会被自动 clamp 到底)
+        self.call_after_refresh(detail.scroll_to, None, new_y, animate=False)
 
     def _update_status(self) -> None:
         total = self.source.total
