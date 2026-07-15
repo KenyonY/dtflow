@@ -98,7 +98,7 @@ async def test_half_scroll_clamps():
 @pytest.mark.asyncio
 async def test_search_and_filter_and_reset():
     app = _chat_app(4)
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app._apply_search("q2")
         assert app.view_indices == [2]
         app.action_reset()
@@ -108,6 +108,7 @@ async def test_search_and_filter_and_reset():
         app._apply_filter("bad@@expr")  # 非法表达式不崩溃
         app.action_reset()
         assert len(app.view_indices) == 4
+        await pilot.pause()  # flush 详情渲染的延迟回调, 避免 teardown 竞态
 
 
 @pytest.mark.asyncio
@@ -173,6 +174,97 @@ async def test_detail_scroll_keeps_field_across_samples():
         await pilot.pause()
         assert app._cur_anchors["f12"] != y0  # 绝对Y确实变了
         assert app._top_field(app._cur_anchors, detail.scroll_offset.y) == "f12"
+
+
+@pytest.mark.asyncio
+async def test_detail_field_stable_at_bottom_across_samples():
+    # 滚到底切样本, 当前字段应保持不变 (字段绑定), 不再因"底部保持"逐样本乱跳
+    rows = [{f"f{i:02d}": f"v{s}-{i}" for i in range(20)} for s in range(3)]
+    rows[1]["f00"] = "\n".join(f"tall{k}" for k in range(15))  # 各样本高度不同
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(80, 12)) as pilot:
+        detail = app.query_one("#detail")
+        await pilot.pause()
+        detail.scroll_end(animate=False)
+        await pilot.pause()
+        field = app._current_field()  # 滚到底时的顶部可见字段
+        assert field is not None
+        for r in (1, 2):
+            app.query_one("#table").move_cursor(row=r)
+            await pilot.pause()
+            await pilot.pause()
+            assert app._current_field() == field  # 绑定同名字段, 稳定
+
+
+@pytest.mark.asyncio
+async def test_status_shows_current_field_on_scroll():
+    import re
+
+    from textual.widgets import Static
+
+    rows = [{f"f{i:02d}": f"v-{i}" for i in range(20)}]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(80, 12)) as pilot:
+        detail = app.query_one("#detail")
+        await pilot.pause()
+
+        def status_field():
+            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).renderable))
+            return m.group(1) if m else None
+
+        assert status_field() == "f00"  # 首屏顶部字段
+        detail.scroll_to(y=app._cur_anchors["f12"], animate=False)
+        await pilot.pause()
+        assert status_field() == "f12"  # 滚动后随之更新
+
+
+@pytest.mark.asyncio
+async def test_field_nav_reaches_scroll_unreachable_bottom_fields():
+    import re
+
+    from textual.widgets import Static
+
+    # 高 viewport + 内容略超 → max_scroll 小, 底部字段挤在末屏, 滚动到不了顶部
+    rows = [{f"f{i:02d}": f"v-{i}" for i in range(20)}]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(80, 30)) as pilot:
+        detail = app.query_one("#detail")
+        await pilot.pause()
+
+        def sf():
+            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).renderable))
+            return m.group(1) if m else None
+
+        # 靠滚动到底也无法让 f19 成为顶部字段
+        detail.scroll_end(animate=False)
+        await pilot.pause()
+        assert app._top_field(app._cur_anchors, detail.scroll_offset.y) != "f19"
+        # n 逐字段能精确到达 f19 (绕过滚动像素限制)
+        app._goto_field(0)
+        await pilot.pause()
+        for _ in range(19):
+            app.action_next_field()
+        await pilot.pause()
+        assert sf() == "f19"
+        # N 回退一个字段
+        app.action_prev_field()
+        await pilot.pause()
+        assert sf() == "f18"
+
+
+@pytest.mark.asyncio
+async def test_click_detail_selects_field():
+    # 真实点击详情字段块 → 该字段块自处理点击并选中 (无坐标换算/测量误差)
+    rows = [{f"f{i:02d}": f"v-{i}" for i in range(20)}]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(80, 30)) as pilot:  # 详情区够大, 前几字段可见
+        await pilot.pause()
+        await pilot.click("#detail-field-1")  # 真实点击第 2 个字段块
+        await pilot.pause()
+        assert app._current_field() == "f01"
+        await pilot.click("#detail-field-2")
+        await pilot.pause()
+        assert app._current_field() == "f02"
 
 
 @pytest.mark.asyncio

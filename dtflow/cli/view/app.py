@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set
 
+from rich.rule import Rule
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
@@ -22,6 +24,7 @@ _HELP = """[b]dt view 快捷键[/b]
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
   ] / [        下/上一窗口 (大文件翻页)   :  跳到行号
+  n / N        详情下/上一字段 (精确定位, 底部字段也可达; 亦可鼠标点击选中)
   s            排序 (输入列名, 加 - 反向)
   /            搜索 (子串, 全字段, 仅当前窗口)
   f            筛选 (where 表达式, 如 messages.#>=2, 仅当前窗口)
@@ -32,6 +35,18 @@ _HELP = """[b]dt view 快捷键[/b]
   r            清除筛选/排序
   ?            帮助      q  退出
 """
+
+
+class _FieldStatic(Static):
+    """详情里的一个字段块。自己处理点击 (self 即被点字段, 无需坐标反查, 同 DataTable 选行)。"""
+
+    def __init__(self, renderable, field_name: str, index: int):
+        super().__init__(renderable, id=f"detail-field-{index}", classes="detail-field")
+        self._field_name = field_name
+
+    def on_click(self, event) -> None:
+        self.app.select_detail_field(self)  # 通知 app 选中本字段
+        event.stop()
 
 
 class HelpScreen(ModalScreen):
@@ -137,6 +152,9 @@ class ViewApp(App):
         Binding("right_square_bracket", "next_window", "下一窗口", show=False),
         Binding("left_square_bracket", "prev_window", "上一窗口", show=False),
         Binding("colon", "jump", "跳行", show=False),
+        # n/N: 详情内下/上一字段精确定位 (绕过滚动条像素限制, 底部字段也可达)
+        Binding("n", "next_field", "下一字段", show=False),
+        Binding("N", "prev_field", "上一字段", show=False),
     ]
 
     def __init__(
@@ -155,8 +173,11 @@ class ViewApp(App):
         self._sort_label: Optional[str] = None  # 状态栏显示的排序说明
         self._prompt_mode: Optional[str] = None
         self._split = 13  # 表格占比 (总 20 份, 每份 5%), 默认表格 65% : 详情 35%
-        # 上一样本详情的字段锚点 {字段名: 起始行}; 切样本时据此把新样本滚到同名字段 (跨样本对比)
+        # 详情每字段一个 Static widget (真实布局, 无测量误差); 锚点 {字段名: 起始行} 由布局算出
+        self._field_widgets: List[Static] = []
         self._cur_anchors: Dict[str, int] = {}
+        self._field_i = 0  # 当前字段索引 (滚动时同步顶部字段, n/N/点击 精确接管)
+        self._nav_lock = False  # 导航/定位期间抑制 scroll_y watch 回退当前字段
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示全局行号。"""
@@ -167,8 +188,7 @@ class ViewApp(App):
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
             yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
-            with VerticalScroll(id="detail"):
-                yield Static(id="detail-body")
+            yield VerticalScroll(id="detail")  # 每字段一个 Static, 动态挂载 (真实布局定位)
         yield Input(id="prompt")
         yield Static(id="status")
 
@@ -177,6 +197,8 @@ class ViewApp(App):
         self._add_columns(table)
         self._populate()
         self._apply_split()
+        # 详情滚动时同步当前字段并刷新状态栏 (拖动/翻页均触发)
+        self.watch(self.query_one("#detail", VerticalScroll), "scroll_y", self._on_detail_scroll)
         table.focus()
 
     def _visible_columns(self) -> List[str]:
@@ -266,22 +288,23 @@ class ViewApp(App):
         if self.view_indices:
             self._refresh_detail(0)
 
-    def _measure_anchors(self, sections, width: int) -> Dict[str, int]:
-        """按详情面板内容宽度测量每段起始行 {字段名: 起始行}, 与 render_detail 拼接规则同源。"""
-        from rich.console import Console
+    def _field_names(self) -> List[str]:
+        return [w._field_name for w in self._field_widgets]
 
-        console = Console(width=max(width, 1))
+    def _recompute_anchors(self) -> None:
+        """从真实布局高度累加每字段起始行 (widget.size.height, 无测量误差)。"""
+        detail = self.query_one("#detail", VerticalScroll)
         anchors: Dict[str, int] = {}
-        line = 0
-        for i, (name, rend) in enumerate(sections):
-            if i:  # 段间 Rule 占 1 行 (与 render_detail 一致)
-                line += 1
-            anchors[name] = line
-            line += len(console.render_lines(rend, pad=False))
-        return anchors
+        y = 0
+        for w in detail.children:
+            name = getattr(w, "_field_name", None)
+            if name is not None:
+                anchors[name] = y
+            y += w.size.height  # 含字段间分隔 widget 的高度
+        self._cur_anchors = anchors
 
     def _top_field(self, anchors: Dict[str, int], y: int) -> Optional[str]:
-        """当前滚动位置 y 之上最近的字段名 (顶部可见字段)。"""
+        """滚动位置 y 之上最近的字段名 (顶部可见字段)。"""
         top = None
         for name, start in anchors.items():
             if start <= y:
@@ -290,25 +313,99 @@ class ViewApp(App):
                 break
         return top
 
+    def _current_field(self) -> Optional[str]:
+        """当前字段名 (由 _field_i 索引; 滚动同步顶部字段, n/N/点击 精确接管)。"""
+        names = self._field_names()
+        return names[self._field_i] if 0 <= self._field_i < len(names) else None
+
+    def _on_detail_scroll(self) -> None:
+        """详情滚动: 非导航态下把当前字段同步为顶部可见字段, 再刷新状态栏。"""
+        if not self._nav_lock:
+            try:
+                detail = self.query_one("#detail", VerticalScroll)
+            except NoMatches:
+                return  # DOM 卸载中 (watch 在 teardown 后触发)
+            top = self._top_field(self._cur_anchors, detail.scroll_offset.y)
+            names = self._field_names()
+            self._field_i = names.index(top) if top in names else 0
+        self._update_status()
+
     def _refresh_detail(self, cursor_row: int) -> None:
         if not (0 <= cursor_row < len(self.view_indices)):
             return
+        try:
+            detail = self.query_one("#detail", VerticalScroll)
+        except NoMatches:
+            return  # DataTable 高亮事件可能在 teardown 后触发
         idx = self.view_indices[cursor_row]
-        detail = self.query_one("#detail", VerticalScroll)
-        # 切样本前: 由上一样本锚点 + 当前滚动位置求"顶部字段", 用于在新样本对齐同一字段
-        target = self._top_field(self._cur_anchors, detail.scroll_offset.y)
-
+        prev_field = self._current_field()  # 切样本前当前字段, 新样本对齐同名字段
+        # 整个切样本+定位期间抑制 scroll 反查, 避免 mount/布局微调把当前字段冲成顶部字段
+        self._nav_lock = True
+        detail.remove_children()
         sections = render.render_detail_sections(self.all_rows[idx], self.fmt, hidden=self._hidden)
-        body = self.query_one("#detail-body", Static)
-        body.update(render.render_detail(self.all_rows[idx], self.fmt, hidden=self._hidden))
+        self._field_widgets = []
+        to_mount: List[Static] = []
+        for i, (name, rend) in enumerate(sections):
+            if i:
+                to_mount.append(Static(Rule(style="dim"), classes="detail-sep"))
+            w = _FieldStatic(rend, name, i)  # 字段块自处理点击 (id=detail-field-i)
+            self._field_widgets.append(w)
+            to_mount.append(w)
+        if to_mount:
+            detail.mount(*to_mount)
+        # 布局完成后 (widget.size 才确定): 算真实锚点 → 定位到绑定字段 → 刷新状态栏
+        self.call_after_refresh(self._after_detail_render, prev_field)
 
-        width = detail.content_size.width or self.size.width or 80
-        self._cur_anchors = self._measure_anchors(sections, width)
-        new_y = self._cur_anchors.get(target, 0) if target else 0
-        # 内容重排后高度才确定, 延一帧再定位 (新内容更短会被自动 clamp 到底)
-        self.call_after_refresh(detail.scroll_to, None, new_y, animate=False)
+    def _after_detail_render(self, prev_field: Optional[str]) -> None:
+        if not self.is_running or not self.screen_stack:
+            self._nav_lock = False  # 确保解锁, 否则后续滚动无响应
+            return  # app/screen 卸载中 (call_after_refresh 在 teardown 后触发)
+        self._recompute_anchors()
+        names = self._field_names()
+        self._field_i = names.index(prev_field) if prev_field in names else 0
+        self._scroll_to_field_i()
+        self._update_status()
+        # 定位稳定后一帧再解锁 (期间的布局微调 scroll 不冲当前字段)
+        self.call_after_refresh(self._unlock_nav)
+
+    def _scroll_to_field_i(self) -> None:
+        """把当前字段 widget 顶部对齐视口顶 (底部字段自动 clamp 可见)。"""
+        if not self._field_widgets:
+            return
+        detail = self.query_one("#detail", VerticalScroll)
+        detail.scroll_to_widget(self._field_widgets[self._field_i], top=True, animate=False)
+
+    def action_next_field(self) -> None:
+        self._goto_field(self._field_i + 1)
+
+    def action_prev_field(self) -> None:
+        self._goto_field(self._field_i - 1)
+
+    def _goto_field(self, i: int) -> None:
+        """精确跳到第 i 个字段 (绕过滚动条像素限制, 底部字段 clamp 但可见)。"""
+        if not self._field_widgets:
+            return
+        self._field_i = max(0, min(i, len(self._field_widgets) - 1))
+        self._nav_lock = True  # 抑制本次滚动触发的反查回退当前字段
+        self._scroll_to_field_i()
+        self._update_status()
+        self.call_after_refresh(self._unlock_nav)
+
+    def _unlock_nav(self) -> None:
+        self._nav_lock = False
+
+    def select_detail_field(self, widget) -> None:
+        """选中被点击的详情字段块 (由 _FieldStatic.on_click 调用)。"""
+        if widget in self._field_widgets:
+            self._field_i = self._field_widgets.index(widget)
+            self._update_status()
 
     def _update_status(self) -> None:
+        # scroll_y watch / call_after_refresh 可能在 DOM 卸载后触发, widget 不存在则跳过
+        try:
+            status = self.query_one("#status", Static)
+        except NoMatches:
+            return
         total = self.source.total
         win = len(self.all_rows)
         shown = len(self.view_indices)
@@ -322,8 +419,12 @@ class ViewApp(App):
             parts.append(f"[yellow]{shown} 条匹配(仅本窗口)[/yellow]")
         if self._sort_label:
             parts.append(f"排序:{self._sort_label}")
+        # 详情当前字段 (滚动同步顶部字段, n/N 精确接管)
+        cur_field = self._current_field()
+        if cur_field:
+            parts.append(f"[cyan]字段:{cur_field}[/cyan]")
         parts.append("[dim]? 帮助[/dim]")
-        self.query_one("#status", Static).update(Text.from_markup("  ·  ".join(parts)))
+        status.update(Text.from_markup("  ·  ".join(parts)))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._refresh_detail(event.cursor_row)
