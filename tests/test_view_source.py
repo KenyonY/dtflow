@@ -1,8 +1,9 @@
-"""dt view 数据源: JSONL 偏移索引 + 随机窗口访问。"""
+"""dt view 数据源: JSONL 偏移索引 + 随机窗口访问 + stdin 管道。"""
 
+import io
 from pathlib import Path
 
-from dtflow.cli.view.source import open_source
+from dtflow.cli.view.source import open_source, read_stdin_source
 
 
 def _write(tmp_path, name, lines):
@@ -35,3 +36,17 @@ def test_jsonl_index_skips_blank_lines(tmp_path):
     assert src.total == 3
     assert src.window(0, 3) == [{"i": 0}, {"i": 1}, {"i": 2}]
     assert src.window(1, 2) == [{"i": 1}, {"i": 2}]
+
+
+def test_stdin_source_reads_ndjson_skipping_blanks(monkeypatch):
+    # 管道: 逐行 NDJSON, 跳空行/纯空白行, 全量入内存后窗口即切片
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"i":0}\n\n{"i":1}\n  \n{"i":2}\n'))
+    src = read_stdin_source()
+    assert src.total == 3
+    assert src.window(0, 10) == [{"i": 0}, {"i": 1}, {"i": 2}]
+    assert src.window(1, 1) == [{"i": 1}]
+
+
+def test_stdin_source_empty(monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert read_stdin_source().total == 0

@@ -283,9 +283,14 @@ def tail(
 
 @app.command()
 def view(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径；- 表示从 stdin 读（管道模式）"),
+    num_arg: Optional[int] = typer.Argument(
+        None, metavar="NUM", help="窗口大小简写（等价 --cap，首屏 N 行，仍可 ]/[ 翻页）"
+    ),
     cap: int = typer.Option(20000, "--cap", help="单窗口加载行数（只 parse 这么多，其余按需翻页）"),
-    offset: int = typer.Option(0, "--offset", help="起始行号（0-based），从文件中间打开"),
+    offset: int = typer.Option(
+        0, "--offset", help="起始行号（0-based），从文件中间打开（stdin 模式无效）"
+    ),
     format: Optional[str] = typer.Option(
         None, "--format", help="强制格式: openai_chat|sharegpt|dpo|alpaca|generic"
     ),
@@ -294,15 +299,19 @@ def view(
 
     表格扫视 + 详情按格式渲染（对话气泡/dpo对比/alpaca分段），无需逐层展开。
     大文件靠偏移索引窗口化浏览：只 parse 当前窗口，TUI 内按 ] / [ 翻窗口、: 跳行。
+    管道模式 dt view - 从 stdin 读 NDJSON 全量入内存（适合看处理结果的一小撮）。
     需要交互式终端（TTY）。按 ? 查看快捷键。
 
     示例:
-        dt view data.jsonl                       # 打开浏览器
+        dt view data.jsonl                       # 打开浏览器（顺序从第 1 行）
+        dt view data.jsonl 100                   # 首屏 100 行（NUM = --cap 简写）
         dt view data.jsonl --format=dpo          # 强制按 dpo 渲染
         dt view big.jsonl --offset=20000         # 从第 2 万行开始（即你要的 20000–40000）
         dt view big.jsonl --cap=50000            # 每窗口加载 5 万行
+        dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果
     """
-    _view(filename, cap=cap, offset=offset, format_hint=format)
+    # 位置参数 NUM 优先于 --cap（与 sample/head 的 num_arg 惯例一致）
+    _view(filename, cap=num_arg if num_arg is not None else cap, offset=offset, format_hint=format)
 
 
 @app.command("slice")

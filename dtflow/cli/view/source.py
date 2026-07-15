@@ -70,20 +70,36 @@ class _JsonlSource(RowSource):
 
 
 class _MemorySource(RowSource):
-    """非 JSONL 格式: 全量载入内存, 窗口即切片 (无随机行访问的底层支持)。"""
+    """全量载入内存, 窗口即切片。用于非 JSONL 文件 (无逐行随机访问) 与 stdin (流不可 seek)。"""
 
-    def __init__(self, path: Path):
-        from ...storage.io import load_data
-
-        self._data = load_data(str(path))
-        self.total = len(self._data)
+    def __init__(self, rows: List[Dict]):
+        self._data = rows
+        self.total = len(rows)
 
     def window(self, offset: int, size: int) -> List[Dict]:
         return self._data[max(0, offset) : offset + size]
+
+
+def read_stdin_source() -> RowSource:
+    """从 stdin 逐行读 NDJSON (dt 管道默认格式, 跳过空行) → 全量内存源。
+
+    管道是流, 无法 seek, 必须全量入内存; 适合看处理结果的一小撮
+    (如 dt sample ... | dt view -)。
+    """
+    import sys
+
+    rows: List[Dict] = []
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            rows.append(_loads(line.encode()))
+    return _MemorySource(rows)
 
 
 def open_source(filepath: Path) -> RowSource:
     """按扩展名选择数据源实现。"""
     if filepath.suffix.lower() in (".jsonl", ".ndjson"):
         return _JsonlSource(filepath)
-    return _MemorySource(filepath)
+    from ...storage.io import load_data
+
+    return _MemorySource(load_data(str(filepath)))

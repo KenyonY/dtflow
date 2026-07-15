@@ -96,11 +96,12 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 
 ## 交互式浏览 (dt view)
 
-`dt view <file>` —— 表格 + 详情联动的 TUI，人工探查训练数据高效（**需交互式终端，管道/agent 场景改用 `dt head --pretty` 或 `dt --format=json head`**）。
+`dt view <file> [NUM]` —— 表格 + 详情联动的 TUI，人工探查训练数据高效（**需交互式终端，agent 场景改用 `dt head --pretty` 或 `dt --format=json head`**）。打开即从第 1 行顺序浏览；位置参数 `NUM` 是 `--cap` 简写（首屏 N 行，仍可翻页），如 `dt view data.jsonl 100`。
 
 - 上方表格扫视（派生列 turns/roles/first_user/chars + 元数据），下方按格式渲染当前行详情（对话气泡/dpo对比/alpaca分段/通用全展开），无需逐层展开
 - CSV/Parquet 等表格数据全部列展示；`--format` 可强制格式
 - **大文件窗口化浏览**：JSONL 靠字节偏移索引（不 parse 全文件，100 万行建索引 <0.1s），只加载当前窗口（`--cap`，默认 2 万行）；`--offset=N` 从第 N 行打开；TUI 内 `]`/`[` 翻下/上一窗口、`:` 跳到任意行号（seek 秒开，与位置无关）。`#` 列显示全局行号
+- **管道模式** `... | dt view -`：从 stdin 读 NDJSON 全量入内存（流不可 seek），适合看处理结果的一小撮，如 `dt sample data.jsonl 500 | dt view -`（大文件仍用 `dt view file` 走窗口化）
 - 关键键：`j/k` 选行 · `]`/`[` 翻窗口 · `:` 跳行 · `s` 排序(输入列名, `-` 反向) · `/` 搜索 · `f` where筛选(均仅当前窗口) · `c` 选列(表格+详情) · `Enter` 放大 · `?` 帮助 · `q` 退出
 
 ## Python API 何时用
