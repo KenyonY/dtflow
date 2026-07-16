@@ -275,8 +275,8 @@ async def test_yank_and_visual_copy(monkeypatch):
     from dtflow.cli.view.app import ViewApp
 
     captured = []
-    # 捕获复制内容 (验证我们传的文本); 真实 OSC52 传输由 Textual 负责, 已在开发时真实调用确认不抛
-    monkeypatch.setattr(ViewApp, "copy_to_clipboard", lambda self, text: captured.append(text))
+    # 捕获复制内容 (验证我们传的文本); OSC52 序列格式另由 test_clipboard_osc52_wrapping 覆盖
+    monkeypatch.setattr(ViewApp, "_copy_clipboard", lambda self, text: captured.append(text))
 
     rows = [{"id": i, "text": f"样本{i}"} for i in range(6)]
     app = _make_app(rows, fmt="generic")
@@ -306,6 +306,22 @@ async def test_yank_and_visual_copy(monkeypatch):
         await pilot.press("v")
         await pilot.pause()
         assert app._visual_anchor is None
+
+
+def test_clipboard_osc52_wrapping(monkeypatch):
+    # OSC52 序列: 裸 / tmux passthrough / screen passthrough (tmux 下须穿透, 否则被拦)
+    import base64
+
+    app = _make_app([{"a": 1}], fmt="generic")
+    b64 = base64.b64encode("hi".encode()).decode()
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("STY", raising=False)
+    assert app._clipboard_osc52("hi") == f"\x1b]52;c;{b64}\a"
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+    assert app._clipboard_osc52("hi") == f"\x1bPtmux;\x1b\x1b]52;c;{b64}\a\x1b\\"
+    monkeypatch.delenv("TMUX")
+    monkeypatch.setenv("STY", "12345.pts-0")
+    assert app._clipboard_osc52("hi") == f"\x1bP\x1b]52;c;{b64}\a\x1b\\"
 
 
 @pytest.mark.asyncio

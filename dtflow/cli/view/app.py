@@ -4,6 +4,7 @@ dt view 的 Textual TUI: 表格 + 详情 master-detail 联动浏览器。
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional, Set
 
 import orjson
@@ -529,6 +530,28 @@ class ViewApp(App):
     # ------------------------------------------------------------------ #
     # 复制到剪贴板 (y 当前样本; v 多选后 y 复制多条; 走 OSC52, 支持 SSH)
     # ------------------------------------------------------------------ #
+    def _clipboard_osc52(self, text: str) -> str:
+        """构造 OSC52 序列; 在 tmux/screen 内包 DCS passthrough 直穿到外层终端。
+
+        Textual 只发裸 OSC52, 会被 tmux 拦截; 这里检测复用环境做穿透包装
+        (需 tmux ``set -g allow-passthrough on``), 让 Ghostty 等支持 OSC52 的终端收到。
+        """
+        import base64
+
+        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        seq = f"\x1b]52;c;{b64}\a"
+        if os.environ.get("TMUX"):  # tmux: \ePtmux;<每个 ESC 翻倍的原序列>\e\\
+            return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+        if os.environ.get("STY"):  # GNU screen: \eP<原序列>\e\\
+            return "\x1bP" + seq + "\x1b\\"
+        return seq
+
+    def _copy_clipboard(self, text: str) -> None:
+        """写系统剪贴板 (OSC52, 支持 SSH); tmux/screen 下自动 passthrough。"""
+        driver = getattr(self, "_driver", None)
+        if driver is not None:
+            driver.write(self._clipboard_osc52(text))
+
     def _copy_samples(self, positions) -> None:
         """把 view_indices 中若干位置的样本按 NDJSON (每行一条) 复制到剪贴板。"""
         lines = [
@@ -538,7 +561,7 @@ class ViewApp(App):
         ]
         if not lines:
             return
-        self.copy_to_clipboard("\n".join(lines))
+        self._copy_clipboard("\n".join(lines))
         self.notify(f"已复制 {len(lines)} 条样本到剪贴板")
 
     def action_yank(self) -> None:
