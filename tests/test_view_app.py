@@ -396,6 +396,16 @@ async def test_jump_to_line_loads_right_window():
         await pilot.pause()
         assert app.win_offset == 34
         assert t.cursor_row == 5  # 40 - 35
+        # 负数从末尾数: -1 = 最后一行 (第 50 行, 在当前窗口 [34,50) 内 → 仅移光标)
+        app._apply_jump("-1")
+        await pilot.pause()
+        assert app.win_offset == 34
+        assert t.cursor_row == 15  # 50 - 35
+        # -50 = 倒数第 50 行 = 第 1 行 → 换窗口
+        app._apply_jump("-50")
+        await pilot.pause()
+        assert app.win_offset == 0
+        assert app._cells(0, app._visible_columns())[0] == "1"
         # 越界与非法输入不崩溃
         app._apply_jump("9999")
         await pilot.pause()

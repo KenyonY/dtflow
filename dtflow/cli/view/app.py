@@ -25,7 +25,7 @@ _HELP = """[b]dt view 快捷键[/b]
   ↑/↓  j/k     选行 (详情联动)
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
-  ] / [        下/上一窗口 (大文件翻页)   :  跳到行号
+  ] / [        下/上一窗口 (大文件翻页)   :  跳到行号 (-1 为末行)
   n / N        详情下/上一字段 (精确定位, 底部字段也可达; 亦可鼠标点击选中)
   y            复制当前样本 JSON 到剪贴板
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
@@ -589,7 +589,7 @@ class ViewApp(App):
         self._load_window(max(0, self.win_offset - self.cap))
 
     def action_jump(self) -> None:
-        self._open_prompt("jump", f"跳到行号 (1-{self.source.total}):")
+        self._open_prompt("jump", f"跳到行号 (1-{self.source.total}, 负数从末尾数):")
 
     def _apply_jump(self, text: str) -> None:
         try:
@@ -597,6 +597,8 @@ class ViewApp(App):
         except ValueError:
             self.notify(escape(f"无效行号: {text}"), severity="error")
             return
+        if n < 0:  # 负数从末尾数: -1 = 最后一行
+            n = self.source.total + n + 1
         g = max(1, min(n, self.source.total)) - 1  # 0-based 全局行
         if self.win_offset <= g < self.win_offset + len(self.all_rows):
             local = g - self.win_offset  # 已在当前窗口: 仅移动光标
