@@ -5,6 +5,8 @@ CLI Schema 验证命令
 from pathlib import Path
 from typing import Optional
 
+from rich.markup import escape
+
 from ..schema import alpaca_schema, dpo_schema, openai_chat_schema, sharegpt_schema
 from ..storage.io import load_data, save_data
 from .common import _check_file_format, _require_file_exists
@@ -224,6 +226,7 @@ def _render_validate_report(report: dict, max_errors: int) -> None:
             log(f"[dim]第 {entry['index']} 行:[/dim]")
             errs = entry["errors"]
             for err in errs[:3]:
-                log(f"  - {err}")
+                # 错误消息内嵌用户数据值 (got: ...), 转义避免被当 markup 解析
+                log(f"  - {escape(str(err))}")
             if len(errs) > 3:
                 log(f"  ... 还有 {len(errs) - 3} 个错误")

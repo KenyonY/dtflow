@@ -545,3 +545,37 @@ class TestFlaxKVFormatConversion:
         result = load_data(str(output))
         assert len(result) == 10  # id 20-29
         assert all(item["id"] >= 20 for item in result)
+
+
+class TestMarkupLikeContent:
+    """回归: 用户数据含 [/quote] 等伪 Rich markup 时输出不崩溃且原文显示。"""
+
+    def test_print_samples_generic_table(self, capsys):
+        from dtflow.cli.common import _print_samples
+
+        rows = [{"id": 1, "note": "contains [/quote] and [b]bold[/b]", "tag[/dim]": "x[/url]y"}]
+        _print_samples(rows)  # generic 表格分支, 之前会抛 MarkupError
+        out = capsys.readouterr().out
+        assert "[/quote]" in out
+
+    def test_print_samples_chat_detail(self, capsys):
+        from dtflow.cli.common import _print_samples
+
+        rows = [
+            {
+                "messages": [{"role": "user", "content": "[url=/a/][/quote][/url] 引用"}],
+                "src": "s[/dim]",
+            }
+        ]
+        _print_samples(rows)
+        out = capsys.readouterr().out
+        assert "[/quote]" in out
+
+    def test_sample_stratify_markup_like_group_values(self, tmp_path, capsys):
+        """回归: 分层采样组值含伪 markup 时分组打印不崩溃。"""
+        data = [{"label": "[/quote]bad" if i % 2 else "ok", "x": i} for i in range(10)]
+        f = tmp_path / "strat.jsonl"
+        save_data(data, str(f))
+        out = tmp_path / "out.jsonl"
+        sample(str(f), num=4, by="label", output=str(out))
+        assert len(load_data(str(out))) == 4

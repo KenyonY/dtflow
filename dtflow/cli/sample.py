@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
+from rich.markup import escape
+
 from ..storage.io import load_data, sample_file, save_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
@@ -392,11 +394,11 @@ def _stratified_sample(
     num_groups = len(group_keys)
 
     # 打印分组信息（写 stderr，不污染 stdout）
-    log(f"📊 分层采样: 字段={stratify_field}, 共 {num_groups} 组")
+    log(f"📊 分层采样: 字段={escape(stratify_field)}, 共 {num_groups} 组")
     for key in sorted(group_keys, key=lambda x: -len(groups[x])):
         count = len(groups[key])
         pct = count / total * 100
-        display_key = key if key != "__null__" else "[空值]"
+        display_key = escape(str(key)) if key != "__null__" else "[空值]"  # 组值来自数据, 转义
         log(f"   {display_key}: {count} 条 ({pct:.1f}%)")
 
     # 计算各组采样数量
@@ -409,7 +411,7 @@ def _stratified_sample(
         dist_keys = [k for k in dist.keys() if k in str_to_group_key]
         for k in dist:
             if k not in str_to_group_key:
-                log(f"  ⚠️  分布中的 '{k}' 在数据中不存在，跳过")
+                log(f"  ⚠️  分布中的 '{escape(str(k))}' 在数据中不存在，跳过")
         for i, dk in enumerate(dist_keys):
             gk = str_to_group_key[dk]
             if i == len(dist_keys) - 1:
@@ -479,7 +481,7 @@ def _stratified_sample(
     for key in sorted(group_keys, key=lambda x: -len(groups[x])):
         orig = len(groups[key])
         sampled_count = result_groups.get(key, 0)
-        display_key = key if key != "__null__" else "[空值]"
+        display_key = escape(str(key)) if key != "__null__" else "[空值]"  # 组值来自数据, 转义
         log(f"   {display_key}: {orig} → {sampled_count}")
 
     log(f"✅ 总计: {total} → {len(result)} 条")

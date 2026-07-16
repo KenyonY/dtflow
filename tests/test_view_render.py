@@ -79,3 +79,21 @@ def test_render_detail_smoke():
     c.print(R.render_detail({"prompt": "p", "chosen": "a", "rejected": "b"}, "dpo"))
     c.print(R.render_detail({"instruction": "i", "input": "x", "output": "o"}, "alpaca"))
     c.print(R.render_detail({"a": 1, "b": {"x": 2}}, "generic"))
+
+
+def test_markup_like_content_escaped():
+    # 数据含 [/quote] 等伪 markup 不应抛 MarkupError, 且原文保留 (回归: dt view 崩溃)
+    from rich.console import Console
+    from rich.text import Text
+
+    from dtflow.cli.common import _format_nested, _format_value
+
+    payload = "=/article/ [url=/article/][/quote][/url] 文本 [b]x[/b]"
+    lines = _format_nested({"k[/dim]": payload, "msgs": [{"role": "user", "content": payload}]})
+    plain = "\n".join(Text.from_markup(ln).plain for ln in lines)  # 不抛 MarkupError
+    assert "[/quote]" in plain and "k[/dim]" in plain
+
+    assert "[/quote]" in Text.from_markup(_format_value(payload)).plain
+
+    c = Console(width=60, file=open("/dev/null", "w"))
+    c.print(R.render_detail({"field": payload}, "generic"))

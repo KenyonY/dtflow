@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set
 
+import orjson
+from rich.markup import escape
 from rich.rule import Rule
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -25,6 +27,8 @@ _HELP = """[b]dt view 快捷键[/b]
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
   ] / [        下/上一窗口 (大文件翻页)   :  跳到行号
   n / N        详情下/上一字段 (精确定位, 底部字段也可达; 亦可鼠标点击选中)
+  y            复制当前样本 JSON 到剪贴板
+  v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
   s            排序 (输入列名, 加 - 反向)
   /            搜索 (子串, 全字段, 仅当前窗口)
   f            筛选 (where 表达式, 如 messages.#>=2, 仅当前窗口)
@@ -83,7 +87,7 @@ class ColumnPicker(ModalScreen):
     def on_mount(self) -> None:
         sl = self.query_one(SelectionList)
         for col in self._columns:
-            sl.add_option(Selection(col, col, col not in self._hidden))
+            sl.add_option(Selection(Text(col), col, col not in self._hidden))
         sl.focus()
 
     def action_all(self) -> None:
@@ -155,6 +159,9 @@ class ViewApp(App):
         # n/N: 详情内下/上一字段精确定位 (绕过滚动条像素限制, 底部字段也可达)
         Binding("n", "next_field", "下一字段", show=False),
         Binding("N", "prev_field", "上一字段", show=False),
+        # 复制到剪贴板: y 复制当前样本 JSON; v 多选样本后 y 复制
+        Binding("y", "yank", "复制", show=False),
+        Binding("v", "visual", "多选", show=False),
     ]
 
     def __init__(
@@ -178,6 +185,9 @@ class ViewApp(App):
         self._cur_anchors: Dict[str, int] = {}
         self._field_i = 0  # 当前字段索引 (滚动时同步顶部字段, n/N/点击 精确接管)
         self._nav_lock = False  # 导航/定位期间抑制 scroll_y watch 回退当前字段
+        self._visual_anchor: Optional[int] = (
+            None  # visual 多选起点 (view_indices 位置); None=非选择态
+        )
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示全局行号。"""
@@ -208,7 +218,7 @@ class ViewApp(App):
         """显式给每列宽度, 避免 DataTable 对全表自动测量 (大文件会两阶段闪烁 + 卡顿)。"""
         vis = self._visible_columns()
         for name, w in zip(vis, self._column_widths(vis)):
-            table.add_column(name, width=w)
+            table.add_column(Text(name), width=w)
 
     def _column_widths(self, vis: List[str]) -> List[int]:
         """自适应列宽: 采样估算每列自然宽, 再按可用屏宽做 max-min 公平分配。
@@ -283,7 +293,8 @@ class ViewApp(App):
         table.clear()
         vis = self._visible_columns()
         for pos, idx in enumerate(self.view_indices):
-            table.add_row(*self._cells(idx, vis), key=str(pos))
+            # 包成 Text 绕过 DataTable 的 markup 解析 (数据含 [/xxx] 会 MarkupError)
+            table.add_row(*(Text(c) for c in self._cells(idx, vis)), key=str(pos))
         self._update_status()
         if self.view_indices:
             self._refresh_detail(0)
@@ -409,7 +420,13 @@ class ViewApp(App):
         total = self.source.total
         win = len(self.all_rows)
         shown = len(self.view_indices)
-        parts = [f"[b]{self.filename}[/b]", f"格式:{self.fmt}"]
+        parts = [f"[b]{escape(self.filename)}[/b]", f"格式:{self.fmt}"]
+        if self._visual_anchor is not None:  # 多选态: 醒目显示选区范围
+            cur = self.query_one("#table", DataTable).cursor_row
+            lo, hi = sorted((self._visual_anchor, cur))
+            parts.append(
+                f"[reverse] VISUAL {lo + 1}–{hi + 1} ({hi - lo + 1}条) y复制 Esc取消 [/reverse]"
+            )
         if total > win:  # 多窗口: 显示全局窗口范围
             parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{total}")
             parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
@@ -418,16 +435,18 @@ class ViewApp(App):
         if shown != win:  # 筛选/搜索子集 (窗口内)
             parts.append(f"[yellow]{shown} 条匹配(仅本窗口)[/yellow]")
         if self._sort_label:
-            parts.append(f"排序:{self._sort_label}")
+            parts.append(f"排序:{escape(self._sort_label)}")
         # 详情当前字段 (滚动同步顶部字段, n/N 精确接管)
         cur_field = self._current_field()
         if cur_field:
-            parts.append(f"[cyan]字段:{cur_field}[/cyan]")
+            parts.append(f"[cyan]字段:{escape(cur_field)}[/cyan]")
         parts.append("[dim]? 帮助[/dim]")
         status.update(Text.from_markup("  ·  ".join(parts)))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._refresh_detail(event.cursor_row)
+        if self._visual_anchor is not None:  # 多选态下移动光标, 实时更新选区范围
+            self._update_status()
 
     # ------------------------------------------------------------------ #
     # 动作
@@ -485,7 +504,7 @@ class ViewApp(App):
         name = text.lstrip("-").strip()
         vis = self._visible_columns()
         if name not in vis:
-            self.notify(f"无此列: {name} (可选: {', '.join(vis)})", severity="error")
+            self.notify(escape(f"无此列: {name} (可选: {', '.join(vis)})"), severity="error")
             return
         col = vis.index(name)
 
@@ -498,7 +517,7 @@ class ViewApp(App):
 
         self.view_indices.sort(key=keyfn, reverse=desc)
         self._sort_label = f"{name}{'↓' if desc else '↑'}"
-        self.notify(f"按 {name} 排序{' (反向)' if desc else ''}")
+        self.notify(escape(f"按 {name} 排序{' (反向)' if desc else ''}"))
         self._populate()
 
     def action_reset(self) -> None:
@@ -506,6 +525,39 @@ class ViewApp(App):
         self._sort_label = None
         self._populate()
         self.notify("已重置")
+
+    # ------------------------------------------------------------------ #
+    # 复制到剪贴板 (y 当前样本; v 多选后 y 复制多条; 走 OSC52, 支持 SSH)
+    # ------------------------------------------------------------------ #
+    def _copy_samples(self, positions) -> None:
+        """把 view_indices 中若干位置的样本按 NDJSON (每行一条) 复制到剪贴板。"""
+        lines = [
+            orjson.dumps(self.all_rows[self.view_indices[p]]).decode("utf-8")
+            for p in positions
+            if 0 <= p < len(self.view_indices)
+        ]
+        if not lines:
+            return
+        self.copy_to_clipboard("\n".join(lines))
+        self.notify(f"已复制 {len(lines)} 条样本到剪贴板")
+
+    def action_yank(self) -> None:
+        table = self.query_one("#table", DataTable)
+        if self._visual_anchor is not None:  # visual: 复制选区
+            lo, hi = sorted((self._visual_anchor, table.cursor_row))
+            self._copy_samples(range(lo, hi + 1))
+            self._visual_anchor = None
+        else:  # 普通: 复制当前样本
+            self._copy_samples([table.cursor_row])
+        self._update_status()
+
+    def action_visual(self) -> None:
+        table = self.query_one("#table", DataTable)
+        if table.has_class("hidden"):  # 详情放大态不进多选
+            return
+        # 再按 v 取消; 否则以当前行为锚点进入多选
+        self._visual_anchor = None if self._visual_anchor is not None else table.cursor_row
+        self._update_status()
 
     # ------------------------------------------------------------------ #
     # 大文件窗口翻页 (偏移索引 → 任意位置秒开, 内存 O(窗口))
@@ -543,7 +595,7 @@ class ViewApp(App):
         try:
             n = int(text)
         except ValueError:
-            self.notify(f"无效行号: {text}", severity="error")
+            self.notify(escape(f"无效行号: {text}"), severity="error")
             return
         g = max(1, min(n, self.source.total)) - 1  # 0-based 全局行
         if self.win_offset <= g < self.win_offset + len(self.all_rows):
@@ -560,6 +612,10 @@ class ViewApp(App):
         self.query_one("#detail", VerticalScroll).add_class("zoomed").focus()
 
     def action_unzoom(self) -> None:
+        if self._visual_anchor is not None:  # Esc 先取消多选
+            self._visual_anchor = None
+            self._update_status()
+            return
         self.query_one("#table", DataTable).remove_class("hidden")
         self.query_one("#detail", VerticalScroll).remove_class("zoomed")
         self.query_one("#table", DataTable).focus()
@@ -630,7 +686,7 @@ class ViewApp(App):
 
         self.view_indices = [i for i in range(len(self.all_rows)) if match(i)]
         self._populate()
-        self.notify(f"搜索 '{text}': {len(self.view_indices)} 条 (仅本窗口)")
+        self.notify(escape(f"搜索 '{text}': {len(self.view_indices)} 条 (仅本窗口)"))
 
     def _apply_filter(self, expr: str) -> None:
         from ..sample import _parse_where
@@ -638,10 +694,10 @@ class ViewApp(App):
         try:
             fn = _parse_where(expr)
         except ValueError as e:
-            self.notify(str(e), severity="error")
+            self.notify(escape(str(e)), severity="error")
             return
         self.view_indices = [
             i for i, r in enumerate(self.all_rows) if isinstance(r, dict) and fn(r)
         ]
         self._populate()
-        self.notify(f"筛选 '{expr}': {len(self.view_indices)} 条 (仅本窗口)")
+        self.notify(escape(f"筛选 '{expr}': {len(self.view_indices)} 条 (仅本窗口)"))

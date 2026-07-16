@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from rich.markup import escape
+
 from ..core import DataTransformer
 from ..storage.io import save_data
 from ..streaming import load_stream
@@ -86,7 +88,7 @@ def dedupe(
 
     # 执行去重
     if similar is not None:
-        log(f"🔑 相似度去重: 字段={key}, 阈值={similar}")
+        log(f"🔑 相似度去重: 字段={escape(key)}, 阈值={similar}")
         log("🔄 执行去重（MinHash+LSH）...")
         try:
             result = dt.dedupe_similar(key, threshold=similar)
@@ -103,10 +105,10 @@ def dedupe(
             keys = [k.strip() for k in key.split(",")]
             if len(keys) == 1:
                 dedupe_key = keys[0]
-                log(f"🔑 按字段精确去重: {dedupe_key}")
+                log(f"🔑 按字段精确去重: {escape(dedupe_key)}")
             else:
                 dedupe_key = keys
-                log(f"🔑 按多字段组合精确去重: {', '.join(dedupe_key)}")
+                log(f"🔑 按多字段组合精确去重: {escape(', '.join(dedupe_key))}")
         else:
             log("🔑 全量精确去重")
 
@@ -242,39 +244,39 @@ def clean(
             empty_fields = []
         else:
             empty_fields = _parse_field_list(drop_empty)
-            log(f"🔄 删除字段为空的记录: {', '.join(empty_fields)}")
+            log(f"🔄 删除字段为空的记录: {escape(', '.join(empty_fields))}")
 
     if strip:
         log("🔄 去除字符串首尾空白...")
     if min_len_field:
-        log(f"🔄 过滤 {min_len_field} 长度 < {min_len_value} 的记录...")
+        log(f"🔄 过滤 {escape(min_len_field)} 长度 < {min_len_value} 的记录...")
     if max_len_field:
-        log(f"🔄 过滤 {max_len_field} 长度 > {max_len_value} 的记录...")
+        log(f"🔄 过滤 {escape(max_len_field)} 长度 > {max_len_value} 的记录...")
     if keep_fields:
-        log(f"🔄 只保留字段: {', '.join(keep_fields)}")
+        log(f"🔄 只保留字段: {escape(', '.join(keep_fields))}")
     if drop_fields_set:
-        log(f"🔄 删除字段: {', '.join(drop_fields_set)}")
+        log(f"🔄 删除字段: {escape(', '.join(drop_fields_set))}")
     if rename_map:
         rename_desc = ", ".join(f"{k} → {v}" for k, v in rename_map.items())
-        log(f"🔄 重命名字段: {rename_desc}")
+        log(f"🔄 重命名字段: {escape(rename_desc)}")
     if promote_list:
         promote_desc = ", ".join(f"{src} → {dst}" for src, dst in promote_list)
-        log(f"🔄 提升字段: {promote_desc}")
+        log(f"🔄 提升字段: {escape(promote_desc)}")
     if add_field_map:
         add_desc = ", ".join(f"{k}={v}" for k, v in add_field_map.items())
-        log(f"🔄 添加字段: {add_desc}")
+        log(f"🔄 添加字段: {escape(add_desc)}")
     if fill_map:
         fill_desc = ", ".join(f"{k}={v}" for k, v in fill_map.items())
-        log(f"🔄 填充空值: {fill_desc}")
+        log(f"🔄 填充空值: {escape(fill_desc)}")
     if reorder_fields:
-        log(f"🔄 字段排序: {', '.join(reorder_fields)}")
+        log(f"🔄 字段排序: {escape(', '.join(reorder_fields))}")
     if min_tokens_field:
         log(
-            f"🔄 过滤 {min_tokens_field} tokens < {min_tokens_value} 的记录 (model={token_model})..."
+            f"🔄 过滤 {escape(min_tokens_field)} tokens < {min_tokens_value} 的记录 (model={token_model})..."
         )
     if max_tokens_field:
         log(
-            f"🔄 过滤 {max_tokens_field} tokens > {max_tokens_value} 的记录 (model={token_model})..."
+            f"🔄 过滤 {escape(max_tokens_field)} tokens > {max_tokens_value} 的记录 (model={token_model})..."
         )
 
     output_path = output or str(filepath)

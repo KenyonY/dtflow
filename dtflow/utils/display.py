@@ -43,7 +43,6 @@ def _display_with_rich(
     from rich.console import Console
     from rich.json import JSON
     from rich.panel import Panel
-    from rich.table import Table
 
     console = Console()
 
@@ -154,11 +153,12 @@ def print_stats(stats: Dict[str, Any]) -> None:
         from rich import box
         from rich.console import Console
         from rich.table import Table
+        from rich.text import Text
 
         console = Console()
 
         # Overall stats
-        console.print(f"\n[bold cyan]Dataset Statistics[/bold cyan]")
+        console.print("\n[bold cyan]Dataset Statistics[/bold cyan]")
         console.print(f"Total items: [green]{stats['total']}[/green]")
         console.print(f"Total fields: [green]{len(stats['fields'])}[/green]\n")
 
@@ -171,8 +171,12 @@ def print_stats(stats: Dict[str, Any]) -> None:
             table.add_column("Type", style="magenta")
 
             for field, field_stat in stats["field_stats"].items():
+                # 字段名来自用户数据, 包 Text 避免被当 markup 解析
                 table.add_row(
-                    field, str(field_stat["count"]), str(field_stat["missing"]), field_stat["type"]
+                    Text(field),
+                    str(field_stat["count"]),
+                    str(field_stat["missing"]),
+                    field_stat["type"],
                 )
 
             console.print(table)

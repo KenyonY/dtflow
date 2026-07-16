@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from rich.markup import escape
+
 from ..storage.io import load_data
 from ..utils.field_path import get_field
 from ..utils.text_parser import extract_code_snippets, parse_generic_tags, strip_think_tags
@@ -299,7 +301,7 @@ def _apply_op(text: str, op: str, sep: Optional[str] = None) -> str:
             return m.group(1) if m.lastindex else m.group(0)
         return text
     else:
-        log(f"[yellow]未知算子: {op}，跳过[/yellow]")
+        log(f"[yellow]未知算子: {escape(str(op))}，跳过[/yellow]")
         return text
 
 

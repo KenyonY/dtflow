@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import orjson
+from rich.markup import escape
 
 from ..storage.io import load_data, save_data
 from ..streaming import load_stream
@@ -97,7 +98,7 @@ def concat(
 
         file_fields.append((filepath, fields))
         fields_str = ", ".join(sorted(fields)) if fields else "(空)"
-        log(f"   {filepath.name}: {fields_str}")
+        log(f"   {filepath.name}: {escape(fields_str)}")  # 字段名来自用户数据
 
     # 分析字段差异
     all_fields: set = set()
@@ -125,7 +126,9 @@ def concat(
                 },
             )
         else:
-            log(f"[yellow]⚠ 字段差异: {', '.join(sorted(diff_fields))} 仅在部分文件中存在[/yellow]")
+            log(
+                f"[yellow]⚠ 字段差异: {escape(', '.join(sorted(diff_fields)))} 仅在部分文件中存在[/yellow]"
+            )
 
     # 计算总行数（供 dry-run / 摘要使用）
     total_count = 0
@@ -424,6 +427,6 @@ def _print_diff_report(diff_result: Dict[str, Any], name1: str, name2: str) -> N
     if field_changes["added_fields"] or field_changes["removed_fields"]:
         log("[bold]📋 字段变化:[/bold]")
         if field_changes["added_fields"]:
-            log(f"  [green]+ 新增字段:[/green] {', '.join(field_changes['added_fields'])}")
+            log(f"  [green]+ 新增字段:[/green] {escape(', '.join(field_changes['added_fields']))}")
         if field_changes["removed_fields"]:
-            log(f"  [red]- 删除字段:[/red] {', '.join(field_changes['removed_fields'])}")
+            log(f"  [red]- 删除字段:[/red] {escape(', '.join(field_changes['removed_fields']))}")

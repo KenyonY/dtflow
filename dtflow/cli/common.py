@@ -99,8 +99,15 @@ def _get_file_row_count(filepath: Path) -> Optional[int]:
     return None
 
 
+def _escape_markup(text: str) -> str:
+    """转义用户数据中的 [xxx]，避免被 rich 当作 markup 解析 (含 [/quote] 等会 MarkupError)。"""
+    from rich.markup import escape
+
+    return escape(text)
+
+
 def _format_value(value: Any, max_len: int = 120) -> str:
-    """格式化单个值，长文本截断。"""
+    """格式化单个值，长文本截断。返回的是 rich markup 字符串，用户内容已转义。"""
     if value is None:
         return "[dim]null[/dim]"
     if isinstance(value, bool):
@@ -115,16 +122,16 @@ def _format_value(value: Any, max_len: int = 120) -> str:
             preview = value.replace("\n", "\\n")
             if len(preview) > max_len:
                 # 前半 + 省略标记 + 后半
-                head = preview[:half_len]
-                tail = preview[-half_len:]
+                head = _escape_markup(preview[:half_len])
+                tail = _escape_markup(preview[-half_len:])
                 return f'"{head} [yellow]<<<{len(lines)}行>>>[/yellow] {tail}"'
-            return f'"{preview}"'
+            return f'"{_escape_markup(preview)}"'
         if len(value) > max_len:
             # 前半 + 省略标记 + 后半
-            head = value[:half_len]
-            tail = value[-half_len:]
+            head = _escape_markup(value[:half_len])
+            tail = _escape_markup(value[-half_len:])
             return f'"{head} [yellow]<<<{len(value)}字符>>>[/yellow] {tail}"'
-        return f'"{value}"'
+        return f'"{_escape_markup(value)}"'
     return str(value)
 
 
@@ -149,6 +156,7 @@ def _format_nested(
             is_last_item = i == len(items) - 1
             b = "└─ " if is_last_item else "├─ "
             c = "   " if is_last_item else "│  "
+            k = _escape_markup(str(k))
 
             if isinstance(v, (dict, list)) and v:
                 # 嵌套结构
@@ -186,8 +194,11 @@ def _format_nested(
                         content = content[:max_len].replace("\n", "\\n") + "..."
                     else:
                         content = content.replace("\n", "\\n")
-                    # 使用 \[ 转义避免被 rich 解析为样式
-                    lines.append(f"{indent}{b}[yellow]\\[{role}]:[/yellow] {content}")
+                    # 用户内容整体转义，避免被 rich 解析为样式
+                    lines.append(
+                        f"{indent}{b}[yellow]{_escape_markup(f'[{role}]')}:[/yellow] "
+                        f"{_escape_markup(content)}"
+                    )
                 else:
                     # 普通字典
                     lines.append(f"{indent}{b}[dim]{{...}}[/dim]")
@@ -268,8 +279,8 @@ def _print_samples(
 
             console.print(
                 Panel(
-                    f"[dim]{info}[/dim]\n[dim]字段: {field_names}[/dim]",
-                    title=f"[bold]📊 {filename}[/bold]",
+                    f"[dim]{info}[/dim]\n[dim]字段: {_escape_markup(field_names)}[/dim]",
+                    title=f"[bold]📊 {_escape_markup(filename)}[/bold]",
                     expand=False,
                     border_style="dim",
                 )
@@ -283,12 +294,15 @@ def _print_samples(
 
         # 通用扁平数据用表格展示 (CSV/短标量), 已知训练格式则走下方格式渲染
         if fmt == "generic" and _is_simple_data(samples):
+            from rich.text import Text
+
             keys = list(samples[0].keys())
             table = Table(show_header=True, header_style="bold cyan")
+            # 包成 Text 绕过 markup 解析 (用户数据含 [/xxx] 会 MarkupError)
             for key in keys:
-                table.add_column(key, overflow="fold")
+                table.add_column(Text(str(key)), overflow="fold")
             for item in samples:
-                table.add_row(*[str(item.get(k, "")) for k in keys])
+                table.add_row(*[Text(str(item.get(k, ""))) for k in keys])
             console.print(table)
             return
 

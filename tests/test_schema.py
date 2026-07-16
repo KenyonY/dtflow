@@ -517,3 +517,21 @@ class TestEdgeCases:
         )
         assert "valid=False" in str(result)
         assert "field" in str(result)
+
+
+def test_validate_report_markup_like_values():
+    """回归: 错误消息含用户数据值 (got: '[/quote]...') 时报告渲染不崩溃。"""
+    from dtflow.cli.validate import _render_validate_report
+
+    report = {
+        "file": "t.jsonl",
+        "preset": "openai_chat",
+        "total": 1,
+        "valid": 0,
+        "invalid": 1,
+        "valid_ratio": 0.0,
+        "errors": [
+            {"index": 0, "errors": ["messages[0].role: 值不在允许范围 (got: '[/quote]bad')"]}
+        ],
+    }
+    _render_validate_report(report, max_errors=20)

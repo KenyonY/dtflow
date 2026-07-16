@@ -557,3 +557,26 @@ class TestCleanErrors:
         assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
         assert "0-1 之间" in captured.err
+
+
+def test_markup_like_user_inputs_do_not_crash(tmp_path):
+    """回归: --key/字段名含伪 markup 时 dedupe 日志与 emit_action 摘要面板不崩溃。"""
+    from dtflow.cli.output import _render_action_panel
+
+    f = tmp_path / "a.jsonl"
+    save_data([{"note[/quote]": "x"}, {"note[/quote]": "x"}], str(f))
+    out = tmp_path / "d.jsonl"
+    dedupe(str(f), key="note[/quote]", output=str(out))  # 之前 log 拼 key 会 MarkupError
+    assert out.exists()
+    dedupe(str(f), key="note[/quote],id[/b]", output=str(out))  # 多字段分支
+
+    # emit_action 的 TTY 摘要面板是公共出口 (concat 的 diff_fields 等用户字段名从这里输出)
+    _render_action_panel(
+        {
+            "action": "concat",
+            "status": "ok",
+            "input": "a[/dim].jsonl",
+            "stats": {"diff_fields": "note[/quote], y[/dim]"},
+            "key[/b]": "v[/quote]",
+        }
+    )

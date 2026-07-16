@@ -431,21 +431,24 @@ def emit_action(
 
 
 def _render_action_panel(payload: dict) -> None:
+    from rich.markup import escape
+
     status = payload.get("status", "ok")
     action = payload.get("action", "action")
     title = f"[bold]{action}[/bold] · {status}"
     lines: List[str] = []
+    # payload 值可能含用户数据 (字段名/路径), 统一转义避免被当 markup 解析
     if "input" in payload:
-        lines.append(f"[dim]input:[/dim] {payload['input']}")
+        lines.append(f"[dim]input:[/dim] {escape(str(payload['input']))}")
     if "output" in payload:
-        lines.append(f"[dim]output:[/dim] {payload['output']}")
+        lines.append(f"[dim]output:[/dim] {escape(str(payload['output']))}")
     stats = payload.get("stats") or {}
     for k, v in stats.items():
-        lines.append(f"[dim]{k}:[/dim] {v}")
+        lines.append(f"[dim]{escape(str(k))}:[/dim] {escape(str(v))}")
     for k, v in payload.items():
         if k in {"action", "status", "dry_run", "input", "output", "stats"}:
             continue
-        lines.append(f"[dim]{k}:[/dim] {v}")
+        lines.append(f"[dim]{escape(str(k))}:[/dim] {escape(str(v))}")
     body = "\n".join(lines) if lines else "(no details)"
     border = "yellow" if payload.get("dry_run") else "green"
     log_panel(body, title=title, style=border)
@@ -529,10 +532,13 @@ def die(
             # 兜底
             sys.stderr.write(f"{err.error}: {err.message}\n")
     else:
+        from rich.markup import escape
+
+        # 错误消息/建议常嵌用户输入 (路径/表达式/字段名), 转义避免被当 markup 解析
         console = _make_stderr_console()
-        console.print(f"[red bold]✗ {error}[/red bold]: {message}")
+        console.print(f"[red bold]✗ {error}[/red bold]: {escape(str(message))}")
         if suggestion:
-            console.print(f"[yellow]提示:[/yellow] {suggestion}")
+            console.print(f"[yellow]提示:[/yellow] {escape(str(suggestion))}")
         if retryable:
             console.print("[dim](此错误可重试)[/dim]")
 

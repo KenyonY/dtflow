@@ -365,3 +365,31 @@ class TestStatsExpansion:
                 assert stat["is_expanded"] is True
             else:
                 assert stat.get("is_expanded", False) is False
+
+
+def test_stats_markup_like_field_names(capsys, tmp_path):
+    """回归: 字段名/内容含伪 markup 时 stats 表格与值分布均不崩溃。"""
+    from dtflow.cli.stats import _print_stats
+    from dtflow.utils.display import print_stats
+
+    # top_values 触发值分布分支 (字段名与值都含伪 markup)
+    _print_stats(
+        "t.jsonl",
+        2,
+        [
+            {
+                "field": "note[/quote]",
+                "type": "str",
+                "non_null": 2,
+                "unique": 2,
+                "top_values": [("[/quote]bad", 1), ("", 1)],
+            }
+        ],
+    )
+    print_stats(
+        {
+            "total": 1,
+            "fields": ["note[/quote]"],
+            "field_stats": {"note[/quote]": {"count": 1, "missing": 0, "type": "str"}},
+        }
+    )

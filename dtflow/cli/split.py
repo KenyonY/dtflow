@@ -5,6 +5,8 @@ CLI 数据集切分命令
 from pathlib import Path
 from typing import List, Optional
 
+from rich.markup import escape
+
 from ..core import DataTransformer
 from ..storage.io import save_data
 from .common import _check_file_format, _require_file_exists
@@ -173,7 +175,9 @@ def split(
             save_data(part, info["path"])
         except Exception as e:
             die_io_error(e, operation="保存", path=str(info["path"]))
-        log(f"   {info['name']}: {info['rows']} 条 ({info['ratio'] * 100:.1f}%) -> {info['path']}")
+        log(
+            f"   {escape(info['name'])}: {info['rows']} 条 ({info['ratio'] * 100:.1f}%) -> {info['path']}"
+        )
 
     emit_action(
         "split",

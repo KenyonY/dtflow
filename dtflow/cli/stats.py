@@ -217,8 +217,11 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
         table.add_column("字段", style="green")
         table.add_column("类型", style="yellow")
 
+        from rich.text import Text
+
         for i, f in enumerate(fields, 1):
-            table.add_row(str(i), f["field"], f["type"])
+            # 字段名来自用户数据, 包 Text 避免被当 markup 解析
+            table.add_row(str(i), Text(f["field"]), f["type"])
 
         log_table(table)
 
@@ -506,7 +509,9 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
 
     注意：此函数只负责 TTY 渲染，不处理 JSON 输出。JSON 路径在 `stats()` 顶层处理。
     """
+    from rich.markup import escape
     from rich.table import Table
+    from rich.text import Text
 
     log_panel(
         (
@@ -546,7 +551,7 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
                 extra.append(f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})")
 
         table.add_row(
-            field_name,
+            Text(field_name),  # 字段名来自用户数据, 避免被当 markup 解析
             stat["type"],
             non_null_rate,
             unique,
@@ -576,15 +581,18 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
         if stat.get("is_expanded"):
             field_display += " (展开)"
 
-        log(f"\n[bold cyan]{field_display}[/bold cyan] 值分布 (Top {len(top_values)}):")
+        # 字段名/值来自用户数据, 转义避免被当 markup 解析; "[空]" 是有意的字面标记不转义
+        log(f"\n[bold cyan]{escape(field_display)}[/bold cyan] 值分布 (Top {len(top_values)}):")
         max_count = max(c for _, c in top_values) if top_values else 1
         base_count = stat["non_null"] if stat.get("is_expanded") else total
         for value, count in top_values:
             pct = count / base_count * 100 if base_count > 0 else 0
             bar_len = int(count / max_count * 20)
             bar = "█" * bar_len
-            display_value = value if value else "[空]"
-            padded_value = _pad_to_width(display_value, 32)
+            # 先补齐再转义: escape 不改变渲染宽度, 对齐按原文算
+            padded_value = (
+                escape(_pad_to_width(str(value), 32)) if value else _pad_to_width("[空]", 32)
+            )
             log(f"  {padded_value} {count:>6} ({pct:>5.1f}%) {bar}")
 
 

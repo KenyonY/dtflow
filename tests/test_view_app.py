@@ -268,6 +268,47 @@ async def test_click_detail_selects_field():
 
 
 @pytest.mark.asyncio
+async def test_yank_and_visual_copy(monkeypatch):
+    # y 复制当前样本 JSON; v 多选后 y 复制多条 NDJSON (剪贴板内容正确性)
+    import orjson
+
+    from dtflow.cli.view.app import ViewApp
+
+    captured = []
+    # 捕获复制内容 (验证我们传的文本); 真实 OSC52 传输由 Textual 负责, 已在开发时真实调用确认不抛
+    monkeypatch.setattr(ViewApp, "copy_to_clipboard", lambda self, text: captured.append(text))
+
+    rows = [{"id": i, "text": f"样本{i}"} for i in range(6)]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#table")
+        # y 复制当前样本 (第 0 行), 中文不转义
+        await pilot.press("y")
+        await pilot.pause()
+        assert orjson.loads(captured[-1]) == rows[0]
+        # v 多选 row2..row4, y 复制多条
+        t.move_cursor(row=2)
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+        assert app._visual_anchor == 2
+        t.move_cursor(row=4)
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert [orjson.loads(x) for x in captured[-1].split("\n")] == rows[2:5]
+        assert app._visual_anchor is None  # 复制后退出多选
+        # v 再按 v 取消
+        await pilot.press("v")
+        await pilot.pause()
+        assert app._visual_anchor is not None
+        await pilot.press("v")
+        await pilot.pause()
+        assert app._visual_anchor is None
+
+
+@pytest.mark.asyncio
 async def test_zoom_guards_table_navigation():
     app = _chat_app(5)
     async with app.run_test() as pilot:
@@ -360,3 +401,29 @@ async def test_jump_to_line_loads_right_window():
         await pilot.pause()
         app._apply_jump("abc")
         await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_markup_like_content_does_not_crash():
+    # 回归: 单元格/列名含 [/quote] 等伪 markup 时, DataTable 默认 formatter 会
+    # Text.from_markup 抛 MarkupError; 现在统一包 Text 直传
+    payload = "[url=/article/][/quote][/url] 引用文本 [b]x[/b]"
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": payload},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "source[/dim]": payload,
+        }
+        for _ in range(3)
+    ]
+    app = _make_app(rows)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        t = app.query_one("#table")
+        assert t.row_count == 3
+        # 搜索伪 markup 子串也不崩
+        app._apply_search("[/quote]")
+        await pilot.pause()
+        assert t.row_count == 3
