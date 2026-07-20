@@ -45,8 +45,9 @@ _HELP = """[b]dt view 快捷键[/b]
 class _FieldStatic(Static):
     """详情里的一个字段块。自己处理点击 (self 即被点字段, 无需坐标反查, 同 DataTable 选行)。"""
 
-    def __init__(self, renderable, field_name: str, index: int):
-        super().__init__(renderable, id=f"detail-field-{index}", classes="detail-field")
+    def __init__(self, renderable, field_name: str):
+        # 不设 id: remove_children 是异步卸载, 固定 id 会与新 mount 的 widget 撞 DuplicateIds
+        super().__init__(renderable, classes="detail-field")
         self._field_name = field_name
 
     def on_click(self, event) -> None:
@@ -303,8 +304,8 @@ class ViewApp(App):
     def _field_names(self) -> List[str]:
         return [w._field_name for w in self._field_widgets]
 
-    def _recompute_anchors(self) -> None:
-        """从真实布局高度累加每字段起始行 (widget.size.height, 无测量误差)。"""
+    def _recompute_anchors(self) -> int:
+        """从真实布局高度累加每字段起始行 (widget.size.height, 无测量误差)。返回总高度。"""
         detail = self.query_one("#detail", VerticalScroll)
         anchors: Dict[str, int] = {}
         y = 0
@@ -314,6 +315,7 @@ class ViewApp(App):
                 anchors[name] = y
             y += w.size.height  # 含字段间分隔 widget 的高度
         self._cur_anchors = anchors
+        return y
 
     def _top_field(self, anchors: Dict[str, int], y: int) -> Optional[str]:
         """滚动位置 y 之上最近的字段名 (顶部可见字段)。"""
@@ -360,7 +362,7 @@ class ViewApp(App):
         for i, (name, rend) in enumerate(sections):
             if i:
                 to_mount.append(Static(Rule(style="dim"), classes="detail-sep"))
-            w = _FieldStatic(rend, name, i)  # 字段块自处理点击 (id=detail-field-i)
+            w = _FieldStatic(rend, name)  # 字段块自处理点击
             self._field_widgets.append(w)
             to_mount.append(w)
         if to_mount:
@@ -372,7 +374,11 @@ class ViewApp(App):
         if not self.is_running or not self.screen_stack:
             self._nav_lock = False  # 确保解锁, 否则后续滚动无响应
             return  # app/screen 卸载中 (call_after_refresh 在 teardown 后触发)
-        self._recompute_anchors()
+        total = self._recompute_anchors()
+        if self._field_widgets and total == 0:
+            # 新版 textual 中 mount 后一帧布局可能尚未完成 (size 全 0), 再等一帧重算
+            self.call_after_refresh(self._after_detail_render, prev_field)
+            return
         names = self._field_names()
         self._field_i = names.index(prev_field) if prev_field in names else 0
         self._scroll_to_field_i()

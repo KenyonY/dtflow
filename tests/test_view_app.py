@@ -209,7 +209,7 @@ async def test_status_shows_current_field_on_scroll():
         await pilot.pause()
 
         def status_field():
-            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).renderable))
+            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).render()))
             return m.group(1) if m else None
 
         assert status_field() == "f00"  # 首屏顶部字段
@@ -232,7 +232,7 @@ async def test_field_nav_reaches_scroll_unreachable_bottom_fields():
         await pilot.pause()
 
         def sf():
-            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).renderable))
+            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).render()))
             return m.group(1) if m else None
 
         # 靠滚动到底也无法让 f19 成为顶部字段
@@ -259,10 +259,16 @@ async def test_click_detail_selects_field():
     app = _make_app(rows, fmt="generic")
     async with app.run_test(size=(80, 30)) as pilot:  # 详情区够大, 前几字段可见
         await pilot.pause()
-        await pilot.click("#detail-field-1")  # 真实点击第 2 个字段块
+
+        # 字段块无 id (见 _FieldStatic), 按 widget 屏幕区域坐标真实点击
+        def _click_field(i):
+            w = app._field_widgets[i]
+            return pilot.click(offset=(w.region.x + 1, w.region.y))
+
+        await _click_field(1)  # 真实点击第 2 个字段块
         await pilot.pause()
         assert app._current_field() == "f01"
-        await pilot.click("#detail-field-2")
+        await _click_field(2)
         await pilot.pause()
         assert app._current_field() == "f02"
 
@@ -453,3 +459,20 @@ async def test_markup_like_content_does_not_crash():
         app._apply_search("[/quote]")
         await pilot.pause()
         assert t.row_count == 3
+
+
+@pytest.mark.asyncio
+async def test_rapid_refresh_no_duplicate_ids():
+    """同一帧内连续刷新详情不崩 DuplicateIds (issue #1).
+
+    remove_children 是异步卸载, 新旧字段 widget 会短暂共存;
+    字段块若带固定 id 会在 mount 时撞 DuplicateIds。
+    """
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # 不 await 布局, 模拟启动时 on_mount 刷新与首个 RowHighlighted 事件背靠背触发
+        app._refresh_detail(1)
+        app._refresh_detail(2)
+        await pilot.pause()
+        assert app._field_names()  # 详情正常渲染
