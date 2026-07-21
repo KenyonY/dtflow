@@ -16,6 +16,14 @@ class _ListSource(RowSource):
     def window(self, offset, size):
         return self._rows[max(0, offset) : offset + size]
 
+    def iter_all(self, progress_cb=None):
+        yield from self._rows
+        if progress_cb is not None:
+            progress_cb(self.total)
+
+    def rows_at(self, indices):
+        return [self._rows[i] for i in indices if 0 <= i < self.total]
+
 
 def _make_app(rows, cap=20000, offset=0, fmt="openai_chat"):
     src = _ListSource(rows)
@@ -97,18 +105,27 @@ async def test_half_scroll_clamps():
 
 @pytest.mark.asyncio
 async def test_search_and_filter_and_reset():
+    # 全量搜索/筛选: 扫全文件 (worker 线程) → 命中全局行号聚成 _subset, r 清除回到全量
     app = _chat_app(4)
     async with app.run_test() as pilot:
         app._apply_search("q2")
-        assert app.view_indices == [2]
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == [2]  # 全局命中子集
         app.action_reset()
-        assert app.view_indices == [0, 1, 2, 3]
+        await pilot.pause()
+        assert app._subset is None  # 退出子集, 回到全量
         app._apply_filter("source=a")
-        assert app.view_indices == [1, 3]  # 奇数 idx source=a
-        app._apply_filter("bad@@expr")  # 非法表达式不崩溃
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == [1, 3]  # 奇数 idx source=a
+        app._apply_filter("bad@@expr")  # 非法表达式不崩溃, 不启动扫描
+        await pilot.pause()
+        assert app._subset == [1, 3]  # 保持上次子集
         app.action_reset()
-        assert len(app.view_indices) == 4
-        await pilot.pause()  # flush 详情渲染的延迟回调, 避免 teardown 竞态
+        await pilot.pause()
+        assert app._subset is None
+        assert len(app.all_rows) == 4
 
 
 @pytest.mark.asyncio
@@ -380,9 +397,9 @@ async def test_hash_column_width_fits_max_global_row_no():
         vis = app._visible_columns()
         hash_w = app._column_widths(vis)[vis.index("#")]
         assert hash_w >= len("20000")  # 末行号 5 位
-    # 大 offset: 全局行号可达 7 位
+    # 大 offset: 全局行号可达 7 位 (# 列宽取 _global_nos 最大值)
     app2 = _make_app(_chat_rows(1000), cap=20000)
-    app2.win_offset = 980000
+    app2._global_nos = list(range(980000, 980000 + 1000))
     async with app2.run_test(size=(120, 30)):
         vis = app2._visible_columns()
         hash_w = app2._column_widths(vis)[vis.index("#")]
@@ -455,10 +472,152 @@ async def test_markup_like_content_does_not_crash():
         await pilot.pause()
         t = app.query_one("#table")
         assert t.row_count == 3
-        # 搜索伪 markup 子串也不崩
+        # 全量搜索伪 markup 子串也不崩 (3 行都含 payload → 命中 3)
         app._apply_search("[/quote]")
+        await app.workers.wait_for_complete()
         await pilot.pause()
         assert t.row_count == 3
+
+
+def test_compile_where_derived_vs_field_path():
+    # 派生列名 (chars/turns) → 按表格显示值比较; 其余名字 → 真实字段路径, 无需任何包裹符
+    from dtflow.cli.view.app import _compile_where
+
+    row = {
+        "messages": [
+            {"role": "user", "content": "x" * 3000},
+            {"role": "assistant", "content": "y"},
+        ],
+        "source": "alpaca",
+    }
+    # 派生列直接用列名
+    assert _compile_where("chars>2000", "openai_chat")(row) is True  # chars=3001
+    assert _compile_where("chars<2000", "openai_chat")(row) is False
+    assert _compile_where("turns>=2", "openai_chat")(row) is True
+    # 标量列名 → 当字段路径解析 (完整值)
+    assert _compile_where("source==alpaca", "openai_chat")(row) is True
+    assert _compile_where("source==other", "openai_chat")(row) is False
+    # 深层字段路径仍可用
+    assert _compile_where("messages.#>=2", "openai_chat")(row) is True
+    assert _compile_where("messages.#>5", "openai_chat")(row) is False
+
+
+def test_compile_where_and_or_multi_column():
+    # 多列组合: and 全满足 / or 任一满足; and 优先级高于 or; 值内 "and" 子串不误分
+    from dtflow.cli.view.app import _compile_where
+
+    def mk(nchars, src):
+        return {
+            "messages": [
+                {"role": "user", "content": "x" * nchars},
+                {"role": "assistant", "content": ""},
+            ],
+            "source": src,
+        }
+
+    long_a = mk(3000, "alpaca")  # chars 大, source=alpaca
+    short_a = mk(10, "alpaca")  # chars 小, source=alpaca
+    long_b = mk(3000, "android")  # chars 大, source=android (值内含 "and")
+
+    # and: 两条件都要满足
+    p_and = _compile_where("chars>2000 and source==alpaca", "openai_chat")
+    assert p_and(long_a) is True
+    assert p_and(short_a) is False  # chars 不够
+    assert p_and(long_b) is False  # source 不符
+
+    # or: 任一满足
+    p_or = _compile_where("chars>2000 or source==alpaca", "openai_chat")
+    assert p_or(short_a) is True  # source 命中
+    assert p_or(long_b) is True  # chars 命中
+
+    # and 优先级高于 or: "chars<100 or chars>2000 and source==alpaca"
+    p_mix = _compile_where("chars<100 or chars>2000 and source==alpaca", "openai_chat")
+    assert p_mix(short_a) is True  # 左侧 chars<100 命中
+    assert p_mix(long_a) is True  # 右侧 and 组命中
+    assert p_mix(long_b) is False  # chars>2000 但 source 不符, 且 chars 不 <100
+
+    # 值内含 "and" 不被误分 (source==android 是单条件)
+    assert _compile_where("source==android", "openai_chat")(long_b) is True
+
+
+@pytest.mark.asyncio
+async def test_global_filter_by_derived_column():
+    # 全量按派生列 chars 筛选 (直接用列名): content 长度递增, 只留长样本
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "x" * (i * 100)},
+                {"role": "assistant", "content": "a"},
+            ]
+        }
+        for i in range(20)
+    ]
+    app = _make_app(rows, cap=50)
+    async with app.run_test() as pilot:
+        app._apply_filter("chars>1000")  # chars = i*100 + 1, 见下方 expected
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        expected = [i for i in range(20) if i * 100 + 1 > 1000]
+        assert app._subset == expected
+
+
+@pytest.mark.asyncio
+async def test_global_filter_builds_subset_across_windows():
+    # 50 行 cap=20: 全量筛选 source=a (奇数 idx, 25 命中) → 子集跨多窗口, 可分页
+    app = _make_app(_chat_rows(50), cap=20)
+    async with app.run_test() as pilot:
+        app._apply_filter("source=a")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(1, 50, 2))  # [1,3,...,49] 共 25
+        assert app._seq_total() == 25
+        assert app.win_offset == 0
+        assert len(app.all_rows) == 20  # 子集首窗口 20 条
+        # 首行是全局第 2 行 (idx=1 → 显示行号 2)
+        assert app._cells(0, app._visible_columns())[0] == "2"
+        # 翻子集下一窗口: 剩 5 条
+        app.action_next_window()
+        await pilot.pause()
+        assert app.win_offset == 20
+        assert len(app.all_rows) == 5
+        assert app._cells(0, app._visible_columns())[0] == "42"  # subset[20]=41 → 行号 42
+        # r 清除子集回到全量
+        app.action_reset()
+        await pilot.pause()
+        assert app._subset is None
+        assert app._cells(0, app._visible_columns())[0] == "1"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_numeric_full_and_subset(monkeypatch):
+    # 列快照: 全量态 scope=全量; 筛选后 scope=子集, 仅统计命中行。预期从数据实算, 不硬编码。
+    from dtflow.cli.view import render as R
+
+    rows = _chat_rows(30)
+    chars = [int(R.row_cells(0, r, "openai_chat", ["chars"])[0]) for r in rows]
+    app = _make_app(rows)
+    msgs = []
+    monkeypatch.setattr(type(app), "notify", lambda self, m, **k: msgs.append(str(m)))
+    async with app.run_test() as pilot:
+        app._apply_snapshot("chars")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert f"全量 n={len(chars)}" in msgs[-1]
+        assert f"min={min(chars)}" in msgs[-1] and f"max={max(chars)}" in msgs[-1]
+        # 非数值列: 给非空率 + 引导 dt stats
+        app._apply_snapshot("roles")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "非数值列" in msgs[-1] and "dt stats" in msgs[-1]
+        # 先全量筛选出子集 (source=a → 奇数 idx), 再快照 chars → scope=子集, 仅统计命中行
+        app._apply_filter("source=a")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        sub = [c for i, c in enumerate(chars) if i % 2]  # 奇数 idx 的 chars
+        app._apply_snapshot("chars")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert f"子集 n={len(sub)}" in msgs[-1] and f"min={min(sub)}" in msgs[-1]
 
 
 @pytest.mark.asyncio

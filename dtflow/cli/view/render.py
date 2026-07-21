@@ -112,22 +112,35 @@ def _scalar_fields(rows: List[Dict], skip: set, limit: Optional[int] = None) -> 
     return fields if limit is None else fields[:limit]
 
 
+# 各格式的"派生列"名 (计算列, 无对应字段路径; 与标量元数据列区分)。
+# 筛选时: 派生列按表格显示值比较, 其余名字当真实字段路径解析。
+_DERIVED_COLUMNS = {
+    "openai_chat": ["turns", "roles", "first_user", "chars"],
+    "sharegpt": ["turns", "roles", "first_user", "chars"],
+    "dpo": ["prompt", "chosen_chars", "rejected_chars"],
+    "alpaca": ["instruction", "has_input", "out_chars"],
+}
+
+
+def derived_columns(fmt: str) -> set:
+    """该格式的派生列名集合 (计算列, 无字段路径)。供筛选区分列名 vs 字段路径。"""
+    return set(_DERIVED_COLUMNS.get(fmt, ()))
+
+
 def build_columns(rows: List[Dict], fmt: str) -> List[str]:
     """根据格式返回表格列名 (含派生列 + 标量元数据列)。"""
+    # base = "#" + 派生列 (单一来源 _DERIVED_COLUMNS, 与筛选的 derived_columns 一致, 不漂移)
+    base = ["#"] + _DERIVED_COLUMNS.get(fmt, [])
     if fmt in ("openai_chat", "sharegpt"):
-        base = ["#", "turns", "roles", "first_user", "chars"]
         skip = {"messages", "conversations"}
         limit = 8  # 训练格式: 派生列已含主信息, 元数据列适度限量 (可 c 折叠增删)
     elif fmt == "dpo":
-        base = ["#", "prompt", "chosen_chars", "rejected_chars"]
         skip = {"chosen", "rejected", "prompt"}
         limit = 8
     elif fmt == "alpaca":
-        base = ["#", "instruction", "has_input", "out_chars"]
         skip = {"instruction", "input", "output", "response"}
         limit = 8
     else:
-        base = ["#"]
         skip = set()
         limit = None  # generic/CSV: 字段即数据, 全部展示
     return base + _scalar_fields(rows, skip, limit)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, Iterator, List, Optional, Sequence
 
 import orjson
 
@@ -29,6 +29,17 @@ class RowSource:
     total: int = 0
 
     def window(self, offset: int, size: int) -> List[Dict]:
+        raise NotImplementedError
+
+    def iter_all(self, progress_cb: Optional[Callable[[int], None]] = None) -> Iterator[Dict]:
+        """流式产出全部行 (供全量统计/筛选)。O(1) 内存, 不物化整表。
+
+        progress_cb(已产出行数): 每 N 行回调一次, 供 TUI 刷新扫描进度。
+        """
+        raise NotImplementedError
+
+    def rows_at(self, indices: Sequence[int]) -> List[Dict]:
+        """按全局行号 (0-based) 取任意若干行, 顺序与 indices 一致。供筛选子集分页。"""
         raise NotImplementedError
 
 
@@ -68,6 +79,33 @@ class _JsonlSource(RowSource):
                 rows.append(_loads(line))
         return rows
 
+    def iter_all(self, progress_cb: Optional[Callable[[int], None]] = None) -> Iterator[Dict]:
+        # 顺序读整个文件 (比逐 offset seek 快), 跳过空行; 每 5000 行回调一次进度。
+        n = 0
+        with open(self._path, "rb") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                yield _loads(line)
+                n += 1
+                if progress_cb is not None and n % 5000 == 0:
+                    progress_cb(n)
+        if progress_cb is not None:
+            progress_cb(n)
+
+    def rows_at(self, indices: Sequence[int]) -> List[Dict]:
+        rows: List[Dict] = []
+        with open(self._path, "rb") as f:
+            for i in indices:
+                if not (0 <= i < self.total):
+                    continue
+                f.seek(self._offsets[i])
+                line = f.readline().strip()
+                if line:
+                    rows.append(_loads(line))
+        return rows
+
 
 class _MemorySource(RowSource):
     """全量载入内存, 窗口即切片。用于非 JSONL 文件 (无逐行随机访问) 与 stdin (流不可 seek)。"""
@@ -78,6 +116,14 @@ class _MemorySource(RowSource):
 
     def window(self, offset: int, size: int) -> List[Dict]:
         return self._data[max(0, offset) : offset + size]
+
+    def iter_all(self, progress_cb: Optional[Callable[[int], None]] = None) -> Iterator[Dict]:
+        yield from self._data
+        if progress_cb is not None:
+            progress_cb(self.total)
+
+    def rows_at(self, indices: Sequence[int]) -> List[Dict]:
+        return [self._data[i] for i in indices if 0 <= i < self.total]
 
 
 def read_stdin_source() -> RowSource:

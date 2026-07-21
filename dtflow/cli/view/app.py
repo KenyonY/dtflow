@@ -23,6 +23,91 @@ from textual.widgets.selection_list import Selection
 from . import render
 
 
+def _fmt_num(x: float) -> str:
+    """整数去掉小数点, 其余保留 2 位, 让快照数字紧凑。"""
+    if x == int(x):
+        return str(int(x))
+    return f"{x:.2f}"
+
+
+def _compile_atom(expr: str, fmt: str):
+    """编译单个条件 ``字段 运算符 值`` → predicate(row)->bool。
+
+    字段直接用表格里看到的列名 (turns/roles/chars/source 等):
+    - 若是**派生列** (计算列, 无字段路径, 如 chars/turns) → 按该列表格显示值比较;
+    - 否则当**真实字段路径**交给 _parse_where (标量列名 source, 或深层 messages.#>=2)。
+    """
+    import operator
+
+    from ..sample import _parse_where
+
+    ops = [
+        (">=", operator.ge),
+        ("<=", operator.le),
+        ("!=", operator.ne),
+        ("==", operator.eq),
+        (">", operator.gt),
+        ("<", operator.lt),
+        ("=", operator.eq),
+    ]
+    field = op = value = None
+    for token, _op in ops:
+        if token in expr:
+            field, _, value = expr.partition(token)
+            op = _op
+            break
+    field_s = (field or "").strip()
+    if field_s not in render.derived_columns(fmt):
+        return _parse_where(expr)  # 标量列名 / 深层字段路径, 走原生解析
+
+    col = field_s
+    value = (value or "").strip()
+    try:
+        cmp_value = float(value)
+        numeric = True
+    except ValueError:
+        cmp_value = value
+        numeric = False
+
+    def predicate(row) -> bool:
+        if not isinstance(row, dict):
+            return False
+        cell = render.row_cells(0, row, fmt, [col])[0]
+        if cell == "":
+            return False
+        if numeric:
+            try:
+                return op(float(cell), cmp_value)
+            except (ValueError, TypeError):
+                return False
+        return op(str(cell), str(cmp_value))
+
+    return predicate
+
+
+def _compile_where(expr: str, fmt: str):
+    """把筛选表达式编译成 predicate(row)->bool, 支持 ``and``/``or`` 多条件组合。
+
+    用带空格的 `` and `` / `` or `` 分隔 (避免误伤值内子串如 source==android);
+    ``and`` 优先级高于 ``or`` (标准语义, 不支持括号)。每个子条件形如 ``列名 运算符 值``,
+    列名取表头所见 —— 这样 ``turns>=6 and chars<2000`` 这类多列筛选直接可写。
+    """
+    import re
+
+    or_groups = []
+    for or_part in re.split(r"\s+or\s+", expr, flags=re.IGNORECASE):
+        ands = [
+            _compile_atom(a.strip(), fmt)
+            for a in re.split(r"\s+and\s+", or_part, flags=re.IGNORECASE)
+        ]
+        or_groups.append(ands)
+
+    def predicate(row) -> bool:
+        return any(all(p(row) for p in ands) for ands in or_groups)
+
+    return predicate
+
+
 class FastDataTable(DataTable):
     """定宽列 + 定高行专用: 跳过 textual 对每个 cell 的 measure。
 
@@ -59,14 +144,19 @@ _HELP = """[b]dt view 快捷键[/b]
   n / N        详情下/上一字段 (精确定位, 底部字段也可达; 亦可鼠标点击选中)
   y            复制当前样本 JSON 到剪贴板
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
-  s            排序 (输入列名, 加 - 反向)
-  /            搜索 (子串, 全字段, 仅当前窗口)
-  f            筛选 (where 表达式, 如 messages.#>=2, 仅当前窗口)
+  s            排序 (输入列名, 加 - 反向, 仅当前窗口内)
+  S            列快照 (某列的 n·min·max·mean·非空率, 当前浏览序列; 完整分布用 dt stats)
+  /            全量搜索 (子串, 全字段, 扫描整个文件 → 命中子集)
+  f            全量筛选 (扫全文件 → 命中子集): 列名取表头所见
+                 单条件  列名 运算符 值   运算符: > >= < <= == != =
+                 例: chars>2000 · turns>=6 · source==alpaca · messages.#>=2(深层字段)
+                 多条件  and / or 组合   例: turns>=6 and chars<2000
+  Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
   z            切换 上下 / 左右 布局
   +/-          调整表格/详情两区大小
   c            选列 (勾选面板, 同时作用于表格和详情)
-  r            清除筛选/排序
+  r            清除筛选子集/排序, 回到全量浏览
   ?            帮助      q  退出
 """
 
@@ -160,6 +250,7 @@ class ViewApp(App):
         Binding("slash", "search", "搜索"),
         Binding("f", "filter", "筛选"),
         Binding("s", "sort", "排序"),
+        Binding("S", "snapshot", "列快照"),
         Binding("z", "toggle_layout", "布局"),
         Binding("r", "reset", "重置"),
         Binding("enter", "zoom", "放大"),
@@ -201,8 +292,15 @@ class ViewApp(App):
         super().__init__()
         self.source = source  # RowSource: 随机窗口访问, 内存 O(窗口)
         self.cap = cap  # 单窗口行数
-        self.win_offset = win_offset  # 当前窗口在全局的起始行 (0-based)
+        self.win_offset = win_offset  # 当前窗口在"当前浏览序列"中的起始位置 (0-based)
         self.all_rows = window  # 当前窗口已 parse 的行
+        # 当前浏览序列: subset=None 时为原始文件连续窗口; 否则为全量筛选命中的全局行号子集。
+        # _global_nos 与 all_rows 对齐, 记每行真实全局行号 (供 # 列/跳行两模式统一显示)。
+        self._subset: Optional[List[int]] = None
+        self._global_nos: List[int] = list(range(win_offset, win_offset + len(window)))
+        self._filter_label: Optional[str] = None  # 状态栏显示的全量筛选说明
+        self._scan_cancel: Optional[object] = None  # 扫描中的取消 Event (threading.Event)
+        self._scan_msg: str = ""  # 扫描进度文案 (worker 线程回填, 状态栏展示)
         self.fmt = fmt
         self.filename = filename
         self.columns = render.build_columns(window, fmt)  # 列固定自首窗口 (数据集 schema 稳定)
@@ -221,10 +319,14 @@ class ViewApp(App):
         )
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
-        """取窗口内第 idx 行的单元格, ``#`` 列显示全局行号。"""
+        """取窗口内第 idx 行的单元格, ``#`` 列显示真实全局行号 (两种浏览模式统一)。"""
         return render.row_cells(
-            idx, self.all_rows[idx], self.fmt, vis, row_no=self.win_offset + idx
+            idx, self.all_rows[idx], self.fmt, vis, row_no=self._global_nos[idx]
         )
+
+    def _seq_total(self) -> int:
+        """当前浏览序列总长: 子集态为命中数, 否则为文件总行数。"""
+        return len(self._subset) if self._subset is not None else self.source.total
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -266,9 +368,9 @@ class ViewApp(App):
         naturals = []
         for ci, name in enumerate(vis):
             if name == "#":
-                # # 列是全局行号, 最大值可预测 (窗口末行), 不靠采样——否则采样只看前 200 行,
-                # 宽度按 3 位数估算, 窗口内上万的行号会显示不下被截断。
-                max_no = self.win_offset + len(self.all_rows)
+                # # 列是全局行号, 最大值取当前窗口的真实全局行号 (子集态可能很大), 不靠采样——
+                # 否则采样只看前 200 行, 宽度按 3 位数估算, 上万的行号会显示不下被截断。
+                max_no = (max(self._global_nos) + 1) if self._global_nos else 1
                 naturals.append(max(cell_len(name), len(str(max_no))))
                 continue
             w = cell_len(name)
@@ -455,21 +557,29 @@ class ViewApp(App):
             return
         total = self.source.total
         win = len(self.all_rows)
-        shown = len(self.view_indices)
+        seq_total = self._seq_total()
         parts = [f"[b]{escape(self.filename)}[/b]", f"格式:{self.fmt}"]
+        if self._scan_msg:  # 扫描进行中: 只显文件名 + 进度, 醒目
+            parts.append(f"[reverse] {escape(self._scan_msg)} [/reverse]")
+            status.update(Text.from_markup("  ·  ".join(parts)))
+            return
         if self._visual_anchor is not None:  # 多选态: 醒目显示选区范围
             cur = self.query_one("#table", DataTable).cursor_row
             lo, hi = sorted((self._visual_anchor, cur))
             parts.append(
                 f"[reverse] VISUAL {lo + 1}–{hi + 1} ({hi - lo + 1}条) y复制 Esc取消 [/reverse]"
             )
-        if total > win:  # 多窗口: 显示全局窗口范围
-            parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{total}")
+        if self._subset is not None:  # 全量筛选子集态: 命中数 + 占比
+            pct = 100 * len(self._subset) / total if total else 0
+            parts.append(
+                f"[green]{escape(self._filter_label or '筛选')}: "
+                f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]"
+            )
+        if seq_total > win:  # 多窗口: 显示当前序列内的窗口范围
+            parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}")
             parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
-        else:
+        elif self._subset is None:
             parts.append(f"{total} 行")
-        if shown != win:  # 筛选/搜索子集 (窗口内)
-            parts.append(f"[yellow]{shown} 条匹配(仅本窗口)[/yellow]")
         if self._sort_label:
             parts.append(f"排序:{escape(self._sort_label)}")
         # 详情当前字段 (滚动同步顶部字段, n/N 精确接管)
@@ -557,10 +667,13 @@ class ViewApp(App):
         self._populate()
 
     def action_reset(self) -> None:
-        self.view_indices = list(range(len(self.all_rows)))
+        """清除全量筛选子集与排序, 回到文件开头的原始浏览。"""
+        was_filtered = self._subset is not None
+        self._subset = None
+        self._filter_label = None
         self._sort_label = None
-        self._populate()
-        self.notify("已重置")
+        self._load_window(0)
+        self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
 
     # ------------------------------------------------------------------ #
     # 复制到剪贴板 (y 当前样本; v 多选后 y 复制多条; 走 OSC52, 支持 SSH)
@@ -621,13 +734,25 @@ class ViewApp(App):
     # 大文件窗口翻页 (偏移索引 → 任意位置秒开, 内存 O(窗口))
     # ------------------------------------------------------------------ #
     def _load_window(self, offset: int) -> None:
-        """加载以全局行 offset 为起点的新窗口, 重置筛选/排序并重填表格。"""
-        offset = max(0, min(offset, self.source.total - 1))
-        rows = self.source.window(offset, self.cap)
+        """加载"当前浏览序列"中以位置 offset 为起点的窗口, 重置排序并重填表格。
+
+        原始态: 位置即文件行号, 走 source.window 顺序读。
+        子集态: 位置为子集内序号, 取 subset[offset:] 的全局行号经 rows_at 拉取。
+        """
+        seq_total = self._seq_total()
+        offset = max(0, min(offset, seq_total - 1)) if seq_total else 0
+        if self._subset is None:
+            rows = self.source.window(offset, self.cap)
+            nos = list(range(offset, offset + len(rows)))
+        else:
+            picked = self._subset[offset : offset + self.cap]
+            rows = self.source.rows_at(picked)
+            nos = picked
         if not rows:
             return
         self.win_offset = offset
         self.all_rows = rows
+        self._global_nos = nos
         self.view_indices = list(range(len(rows)))
         self._sort_label = None
         self._populate()
@@ -635,7 +760,7 @@ class ViewApp(App):
 
     def action_next_window(self) -> None:
         nxt = self.win_offset + len(self.all_rows)
-        if nxt >= self.source.total:
+        if nxt >= self._seq_total():
             self.notify("已是最后一个窗口")
             return
         self._load_window(nxt)
@@ -647,17 +772,21 @@ class ViewApp(App):
         self._load_window(max(0, self.win_offset - self.cap))
 
     def action_jump(self) -> None:
-        self._open_prompt("jump", f"跳到行号 (1-{self.source.total}, 负数从末尾数):")
+        seq_total = self._seq_total()
+        where = "子集内序号" if self._subset is not None else "行号"
+        self._open_prompt("jump", f"跳到{where} (1-{seq_total}, 负数从末尾数):")
 
     def _apply_jump(self, text: str) -> None:
+        """跳到当前浏览序列的第 n 个位置 (原始态=文件行号, 子集态=子集内序号)。"""
         try:
             n = int(text)
         except ValueError:
             self.notify(escape(f"无效行号: {text}"), severity="error")
             return
-        if n < 0:  # 负数从末尾数: -1 = 最后一行
-            n = self.source.total + n + 1
-        g = max(1, min(n, self.source.total)) - 1  # 0-based 全局行
+        seq_total = self._seq_total()
+        if n < 0:  # 负数从末尾数: -1 = 最后一个
+            n = seq_total + n + 1
+        g = max(1, min(n, seq_total)) - 1  # 0-based 序列位置
         if self.win_offset <= g < self.win_offset + len(self.all_rows):
             local = g - self.win_offset  # 已在当前窗口: 仅移动光标
             if local in self.view_indices:
@@ -665,14 +794,17 @@ class ViewApp(App):
             else:
                 self.notify("该行不在当前筛选结果中")
         else:
-            self._load_window(g)  # 跳出窗口: 以目标行为窗口首行加载
+            self._load_window(g)  # 跳出窗口: 以目标位置为窗口首行加载
 
     def action_zoom(self) -> None:
         self.query_one("#table", DataTable).add_class("hidden")
         self.query_one("#detail", VerticalScroll).add_class("zoomed").focus()
 
     def action_unzoom(self) -> None:
-        if self._visual_anchor is not None:  # Esc 先取消多选
+        if self._scan_cancel is not None:  # Esc 优先取消进行中的全量扫描
+            self._scan_cancel.set()
+            return
+        if self._visual_anchor is not None:  # Esc 再取消多选
             self._visual_anchor = None
             self._update_status()
             return
@@ -706,10 +838,13 @@ class ViewApp(App):
         self._populate()
 
     def action_search(self) -> None:
-        self._open_prompt("search", "搜索子串 (全字段):")
+        self._open_prompt("search", "全量搜索子串 (全字段, 扫描整个文件):")
 
     def action_filter(self) -> None:
-        self._open_prompt("filter", "where 表达式 (如 messages.#>=2):")
+        self._open_prompt(
+            "filter",
+            "全量筛选 列名(表头所见) 运算符 值; and/or 组合 (如 turns>=6 and chars<2000):",
+        )
 
     def _open_prompt(self, mode: str, placeholder: str) -> None:
         self._prompt_mode = mode
@@ -725,6 +860,9 @@ class ViewApp(App):
         prompt.remove_class("active")
         self._prompt_mode = None
         self.query_one("#table", DataTable).focus()
+        if mode == "snapshot":  # 空回车用默认列, 故先于空值守卫分发
+            self._apply_snapshot(text)
+            return
         if not text:
             return
         if mode == "search":
@@ -733,31 +871,169 @@ class ViewApp(App):
             self._apply_filter(text)
         elif mode == "sort":
             self._apply_sort(text)
+        elif mode == "snapshot":
+            self._apply_snapshot(text)
         elif mode == "jump":
             self._apply_jump(text)
 
     def _apply_search(self, text: str) -> None:
         low = text.lower()
-
         vis = self._visible_columns()
+        fmt = self.fmt
 
-        def match(idx: int) -> bool:
-            return any(low in c.lower() for c in self._cells(idx, vis))
+        def predicate(row: Dict) -> bool:
+            return any(low in c.lower() for c in render.row_cells(0, row, fmt, vis))
 
-        self.view_indices = [i for i in range(len(self.all_rows)) if match(i)]
-        self._populate()
-        self.notify(escape(f"搜索 '{text}': {len(self.view_indices)} 条 (仅本窗口)"))
+        self._start_scan(predicate, f"搜索 '{text}'")
 
     def _apply_filter(self, expr: str) -> None:
-        from ..sample import _parse_where
-
         try:
-            fn = _parse_where(expr)
+            fn = _compile_where(expr, self.fmt)
         except ValueError as e:
             self.notify(escape(str(e)), severity="error")
             return
-        self.view_indices = [
-            i for i, r in enumerate(self.all_rows) if isinstance(r, dict) and fn(r)
-        ]
-        self._populate()
-        self.notify(escape(f"筛选 '{expr}': {len(self.view_indices)} 条 (仅本窗口)"))
+        self._start_scan(fn, f"筛选 '{expr}'")
+
+    # ------------------------------------------------------------------ #
+    # 全量筛选/搜索: worker 线程扫全文件, 命中的全局行号聚成可分页子集
+    # ------------------------------------------------------------------ #
+    def _start_scan(self, predicate, label: str) -> None:
+        """启动全量扫描: 逐行 (iter_all 枚举号即全局行号) 应用 predicate, 收集命中行号。
+
+        跑在 worker 线程避免阻塞 UI; 进度经 call_from_thread 回填状态栏; Esc 可取消。
+        """
+        import threading
+
+        if self._scan_cancel is not None:  # 已有扫描在跑, 忽略
+            return
+        cancel = threading.Event()
+        self._scan_cancel = cancel
+        total = self.source.total
+        self._set_scan_msg(f"扫描中 0/{total} (Esc 取消)")
+
+        def worker() -> None:
+            matches: List[int] = []
+            for i, row in enumerate(self.source.iter_all()):
+                if cancel.is_set():
+                    self.call_from_thread(self._on_scan_done, None, label, True)
+                    return
+                try:
+                    if predicate(row):
+                        matches.append(i)
+                except Exception:  # noqa: BLE001  单行畸形不该中断整轮扫描
+                    pass
+                if i % 5000 == 0:
+                    self.call_from_thread(
+                        self._set_scan_msg,
+                        f"扫描中 {i + 1}/{total} · 命中 {len(matches)} (Esc 取消)",
+                    )
+            self.call_from_thread(self._on_scan_done, matches, label, False)
+
+        self.run_worker(worker, thread=True, exclusive=True, group="scan")
+
+    def _set_scan_msg(self, msg: str) -> None:
+        self._scan_msg = msg
+        self._update_status()
+
+    def _on_scan_done(self, matches: Optional[List[int]], label: str, cancelled: bool) -> None:
+        self._scan_cancel = None
+        self._scan_msg = ""
+        if cancelled:
+            self.notify("已取消扫描")
+            self._update_status()
+            return
+        if not matches:
+            self.notify(escape(f"{label}: 无匹配, 保持原视图"))
+            self._update_status()
+            return
+        self._subset = matches
+        self._filter_label = label
+        self._load_window(0)
+        self.notify(escape(f"{label}: {len(matches)} 条命中 (全量)"))
+
+    # ------------------------------------------------------------------ #
+    # 列快照: 对当前浏览序列的某列给一行 n·min·max·mean·非空率 (即时决策用)
+    # 完整分布 (直方图/分位数/value_counts) 归 dt stats, 此处刻意不做。
+    # ------------------------------------------------------------------ #
+    def _iter_sequence(self, cancel):
+        """产出当前浏览序列的行: 子集态按 subset 分块 rows_at 拉取, 否则 iter_all 全量。"""
+        if self._subset is None:
+            yield from self.source.iter_all()
+        else:
+            for start in range(0, len(self._subset), 1000):
+                if cancel.is_set():
+                    return
+                yield from self.source.rows_at(self._subset[start : start + 1000])
+
+    def action_snapshot(self) -> None:
+        default = next((c for c in self._visible_columns() if c not in ("#",)), "chars")
+        self._open_prompt("snapshot", f"列快照 (列名, 默认 {default}; 完整分布用 dt stats):")
+
+    def _apply_snapshot(self, col: str) -> None:
+        import threading
+
+        col = col.strip() or next((c for c in self._visible_columns() if c != "#"), "")
+        if col not in self.columns:
+            self.notify(
+                escape(f"无此列: {col} (可选: {', '.join(self.columns)})"), severity="error"
+            )
+            return
+        if self._scan_cancel is not None:
+            return
+        ci = self.columns.index(col)
+        cols = self.columns
+        fmt = self.fmt
+        cancel = threading.Event()
+        self._scan_cancel = cancel
+        seq_total = self._seq_total()
+        self._set_scan_msg(f"快照扫描中 0/{seq_total} (Esc 取消)")
+
+        def worker() -> None:
+            n = nonempty = nnum = 0
+            vmin = vmax = vsum = None
+            for row in self._iter_sequence(cancel):
+                if cancel.is_set():
+                    self.call_from_thread(self._on_snapshot_done, col, None, True)
+                    return
+                n += 1
+                cell = render.row_cells(0, row, fmt, cols)[ci] if isinstance(row, dict) else ""
+                if cell != "":
+                    nonempty += 1
+                try:
+                    x = float(cell)
+                except (ValueError, TypeError):
+                    pass
+                else:
+                    nnum += 1
+                    vsum = x if vsum is None else vsum + x
+                    vmin = x if vmin is None else min(vmin, x)
+                    vmax = x if vmax is None else max(vmax, x)
+                if n % 5000 == 0:
+                    self.call_from_thread(
+                        self._set_scan_msg, f"快照扫描中 {n}/{seq_total} (Esc 取消)"
+                    )
+            stats = (n, nonempty, nnum, vmin, vmax, vsum)
+            self.call_from_thread(self._on_snapshot_done, col, stats, False)
+
+        self.run_worker(worker, thread=True, exclusive=True, group="scan")
+
+    def _on_snapshot_done(self, col: str, stats, cancelled: bool) -> None:
+        self._scan_cancel = None
+        self._scan_msg = ""
+        if cancelled:
+            self.notify("已取消快照")
+            self._update_status()
+            return
+        n, nonempty, nnum, vmin, vmax, vsum = stats
+        scope = "子集" if self._subset is not None else "全量"
+        rate = f"{100 * nonempty / n:.1f}%" if n else "-"
+        if nnum:
+            mean = vsum / nnum
+            body = (
+                f"{col} [{scope} n={n}]  min={_fmt_num(vmin)}  max={_fmt_num(vmax)}  "
+                f"mean={_fmt_num(mean)}  非空 {rate}"
+            )
+        else:  # 非数值列: 无 min/max/mean, 引导去 dt stats 看分布
+            body = f"{col} [{scope} n={n}]  非数值列, 非空 {rate} · 完整分布用 dt stats"
+        self.notify(escape(body), timeout=8)
+        self._update_status()
