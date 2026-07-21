@@ -245,7 +245,7 @@ class ValueFilterScreen(ModalScreen):
     - Enter 应用返回勾选集合, Esc 返回 None (取消)。
     """
 
-    _BOX_W = 50
+    _BOX_W = 56
 
     BINDINGS = [
         Binding("enter", "close", "应用", priority=True),
@@ -332,13 +332,13 @@ class ViewApp(App):
     #picker-box #cols { width: 1fr; height: auto; max-height: 20; background: $surface; }
     #picker-hint { text-align: center; width: 1fr; margin-top: 1; }
     ValueFilterScreen { align: center middle; }
-    #vf-box { width: 46; height: auto; max-height: 85%; border: round $primary;
+    #vf-box { width: 56; height: auto; max-height: 85%; border: round $primary;
               background: $surface; padding: 1 2; }
     #vf-box #cols { width: 1fr; height: auto; max-height: 16; background: $surface; }
     /* 紧凑单行按钮 (去掉 Button 默认的边框/height:3/min-width:16, 不再又大又丑) */
     .panel-btns { width: 1fr; height: auto; align: center middle; margin-top: 1; }
     .panel-btns Button {
-        height: 1; min-width: 0; border: none; padding: 0 2; margin: 0 1; color: $text;
+        height: 1; min-width: 0; border: none; padding: 0 1; margin: 0 1; color: $text;
     }
     .panel-btns Button.-primary { background: $primary; }
     """

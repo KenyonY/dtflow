@@ -146,6 +146,12 @@ async def test_value_filter_mouse_buttons():
         app._start_value_scan("source")
         await app.workers.wait_for_complete()
         await pilot.pause()
+        from textual.widgets import Button
+
+        # 四个按钮必须都落在面板框内 (否则被裁看不见, 回归 0.6.10 取消按钮消失的 bug)
+        box = app.screen.query_one("#vf-box").region
+        for b in app.screen.query(Button):
+            assert b.region.x >= box.x and b.region.right <= box.right, f"{b.label} 被裁"
         sl = app.screen.query_one("SelectionList")
         # 点"全不选"按钮 → 清空勾选
         await pilot.click("#vf-none")
