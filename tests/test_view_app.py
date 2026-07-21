@@ -60,6 +60,175 @@ async def test_index_column_frozen():
 
 
 @pytest.mark.asyncio
+async def test_value_filter_select_subset():
+    # Excel 式列值勾选: 扫 source 列唯一值 → 只留勾选的值 → 子集 (全局行号)
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(30)  # source = "a"(奇数idx) / "b"(偶数idx)
+    async with app.run_test() as pilot:
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        # 面板列出两个唯一值 a/b
+        sl = app.screen.query_one("SelectionList")
+        assert len(sl.options) == 2
+        # 只保留 "a" (取消勾选 b): 应用后异步重算子集
+        app.screen.dismiss({"a"})
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(1, 30, 2))  # 奇数 idx = source a
+        assert app._col_value_filters == {"source": {"a"}}
+        assert "source" in (app._filter_label or "")
+
+
+@pytest.mark.asyncio
+async def test_value_filter_opens_on_header_click():
+    # 点列头 → 弹出该列的值勾选面板 (Excel AutoFilter 触发, cursor_type=row 下也生效)
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        t = app.query_one("#table")
+        vis = app._visible_columns()
+        widths = app._column_widths(vis)
+        ci = vis.index("source")
+        x = sum(widths[j] + 2 * t.cell_padding for j in range(ci)) + t.cell_padding
+        await pilot.click("#table", offset=(x + 1, 1))  # +1/+1 越过表格边框, y=1 表头行
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        assert app.screen._col == "source"
+
+
+@pytest.mark.asyncio
+async def test_value_filter_high_cardinality_aborts():
+    # 唯一值过多的列 (每行不同) → 不弹面板, 提示改用 f
+    rows = [{"messages": [{"role": "user", "content": f"u{i}"}], "id": i} for i in range(50)]
+    app = _make_app(rows)
+    app._VALUE_FILTER_MAX_UNIQUE = 10  # 压低阈值触发
+    async with app.run_test() as pilot:
+        app._start_value_scan("id")  # 50 个唯一值 > 10
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset is None  # 未建子集
+        from dtflow.cli.view.app import ValueFilterScreen
+
+        assert not isinstance(app.screen, ValueFilterScreen)  # 未弹面板
+
+
+@pytest.mark.asyncio
+async def test_value_filter_stacks_with_expr():
+    # 表达式约束 + 列值约束叠加: 先 f 筛, 再值筛选, 子集为二者交集
+    app = _chat_app(30)
+    async with app.run_test() as pilot:
+        app._apply_filter("turns>=2")  # 全部 30 条 (每条 2 turns)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(app._subset) == 30
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.screen.dismiss({"b"})  # 偶数 idx
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(0, 30, 2))
+        assert app._expr_pred is not None and app._col_value_filters == {"source": {"b"}}
+
+
+@pytest.mark.asyncio
+async def test_value_filter_mouse_buttons():
+    # 全鼠标流程: 点列头呼出 → 点"全不选" → 勾一个 → 点"应用" 按钮 (无需回键盘)
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(30)  # source a(奇)/b(偶)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        sl = app.screen.query_one("SelectionList")
+        # 点"全不选"按钮 → 清空勾选
+        await pilot.click("#vf-none")
+        await pilot.pause()
+        assert set(sl.selected) == set()
+        # 只勾 a, 点"应用"按钮
+        sl.select("a")
+        await pilot.pause()
+        await pilot.click("#vf-apply")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert not isinstance(app.screen, ValueFilterScreen)  # 面板已关
+        assert app._subset == list(range(1, 30, 2))  # 仅 source a
+        assert app._col_value_filters == {"source": {"a"}}
+
+
+@pytest.mark.asyncio
+async def test_value_filter_cancel_button():
+    # 点"取消"按钮 → 关闭且不筛选
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.click("#vf-cancel")
+        await pilot.pause()
+        assert not isinstance(app.screen, ValueFilterScreen)
+        assert app._subset is None and app._col_value_filters == {}
+
+
+@pytest.mark.asyncio
+async def test_value_filter_readd_excluded_value():
+    # 关键: 筛掉一个值后再次打开该列, 面板列出全量唯一值(含被去掉的), 可重新勾回
+    app = _chat_app(30)
+    async with app.run_test() as pilot:
+        # 第一次: 只留 a
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.screen.dismiss({"a"})
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(1, 30, 2))
+        # 列头带 ▾ 标记
+        t = app.query_one("#table")
+        src_i = app._visible_columns().index("source")
+        assert "▾" in str(list(t.columns.values())[src_i].label)
+        # 再次打开: 面板仍列出 a、b 两个值 (b 虽被筛掉也在), 回显勾选=仅 a
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        sl = app.screen.query_one("SelectionList")
+        assert len(sl.options) == 2  # a、b 都在, b 可加回
+        assert set(sl.selected) == {"a"}  # 回显上次保留集
+        # 把 a、b 都勾上 (加回 b) → 全选 = 清除该列筛选 → 回全量
+        app.screen.dismiss({"a", "b"})
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset is None
+        assert app._col_value_filters == {}
+        # ▾ 标记消失
+        assert "▾" not in str(list(t.columns.values())[src_i].label)
+
+
+@pytest.mark.asyncio
+async def test_filter_zero_hits_clears_view():
+    # 0 命中: 子集空, 视图清空且不崩; reset 恢复全量
+    app = _chat_app(20)
+    async with app.run_test() as pilot:
+        app._apply_filter("source==zzz")  # 无匹配
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == []
+        assert len(app.all_rows) == 0
+        assert app.query_one("#table").row_count == 0
+        app.action_reset()
+        await pilot.pause()
+        assert app._subset is None and len(app.all_rows) == 20
+
+
+@pytest.mark.asyncio
 async def test_vim_navigation():
     app = _chat_app(5)
     async with app.run_test() as pilot:
@@ -179,6 +348,22 @@ async def test_column_picker_hides_table_and_detail():
         await pilot.press("enter")
         await pilot.pause()
         assert app._visible_columns() == ["#"]
+
+        # 鼠标按钮: 全选按钮 + 应用按钮 → 恢复全部列
+        app.action_columns()
+        await pilot.pause()
+        await pilot.click("#cp-all")
+        await pilot.pause()
+        await pilot.click("#cp-apply")
+        await pilot.pause()
+        assert set(app._visible_columns()) == set(app.columns)
+        # 取消按钮不改变现状
+        app.action_columns()
+        await pilot.pause()
+        await pilot.press("n")  # 试图全不选
+        await pilot.click("#cp-cancel")  # 但取消
+        await pilot.pause()
+        assert set(app._visible_columns()) == set(app.columns)  # 未变
 
 
 @pytest.mark.asyncio

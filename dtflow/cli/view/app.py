@@ -13,11 +13,11 @@ from rich.rule import Rule
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.geometry import Size
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, SelectionList, Static
+from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from . import render
@@ -151,6 +151,8 @@ _HELP = """[b]dt view 快捷键[/b]
                  单条件  列名 运算符 值   运算符: > >= < <= == != =
                  例: chars>2000 · turns>=6 · source==alpaca · messages.#>=2(深层字段)
                  多条件  and / or 组合   例: turns>=6 and chars<2000
+  F / 点列头   列值勾选筛选 (Excel 式): 列出该列唯一值+频次, 勾选保留哪些 → 子集
+                 被筛的列头带 ▾ 标记; 再次打开可加回之前去掉的值 (全选=清除该列筛选)
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
   z            切换 上下 / 左右 布局
@@ -186,7 +188,8 @@ class ColumnPicker(ModalScreen):
 
     # priority=True: 抢在 SelectionList 之前处理, 否则 enter 会被它消费而无法关闭
     BINDINGS = [
-        Binding("enter,escape,c", "close", "应用", priority=True),
+        Binding("enter,c", "close", "应用", priority=True),
+        Binding("escape", "cancel", "取消", priority=True),
         Binding("a", "all", "全选"),
         Binding("n", "none", "全不选"),
     ]
@@ -200,10 +203,20 @@ class ColumnPicker(ModalScreen):
         with Vertical(id="picker-box"):
             yield Static("[b]选择要显示的列[/b]", id="picker-title")
             yield SelectionList(id="cols")
-            yield Static(
-                "[dim]空格 勾选/取消 · a 全选 · n 全不选 · Enter/Esc 应用[/dim]",
-                id="picker-hint",
-            )
+            yield Static("[dim]空格 勾选/取消 · 亦可点下方按钮[/dim]", id="picker-hint")
+            with Horizontal(classes="panel-btns"):
+                yield Button("全选", id="cp-all")
+                yield Button("全不选", id="cp-none")
+                yield Button("应用", id="cp-apply", variant="primary")
+                yield Button("取消", id="cp-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        {
+            "cp-all": self.action_all,
+            "cp-none": self.action_none,
+            "cp-apply": self.action_close,
+            "cp-cancel": self.action_cancel,
+        }[event.button.id]()
 
     def on_mount(self) -> None:
         sl = self.query_one(SelectionList)
@@ -219,6 +232,82 @@ class ColumnPicker(ModalScreen):
 
     def action_close(self) -> None:
         self.dismiss(set(self.query_one(SelectionList).selected))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ValueFilterScreen(ModalScreen):
+    """Excel 式列值勾选筛选: 列出某列唯一值(带频次), 勾选要保留的值。
+
+    - prior 非 None 时回显上次保留集 (故可把去掉的值重新勾回); 否则默认全选。
+    - anchor 非 None 时面板贴着被点列头下方弹出 (右溢出自动左移), 否则居中。
+    - Enter 应用返回勾选集合, Esc 返回 None (取消)。
+    """
+
+    _BOX_W = 50
+
+    BINDINGS = [
+        Binding("enter", "close", "应用", priority=True),
+        Binding("escape", "cancel", "取消", priority=True),
+        Binding("a", "all", "全选"),
+        Binding("n", "none", "全不选"),
+    ]
+
+    def __init__(self, col: str, items: List, total: int, prior=None, anchor=None):
+        super().__init__()
+        self._col = col
+        self._items = items  # [(value, count), ...] 按频次降序
+        self._total = total
+        self._prior = prior  # 上次保留值集 (None=未筛→默认全选)
+        self._anchor = anchor  # (x, y) 列头下方; None=居中
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="vf-box"):
+            yield Static(f"[b]按 {escape(self._col)} 值筛选[/b]", id="picker-title")
+            yield SelectionList(id="cols")
+            yield Static("[dim]空格 勾选/取消 · 亦可点下方按钮[/dim]", id="picker-hint")
+            with Horizontal(classes="panel-btns"):  # 鼠标可点: 全流程无需回键盘
+                yield Button("全选", id="vf-all")
+                yield Button("全不选", id="vf-none")
+                yield Button("应用", id="vf-apply", variant="primary")
+                yield Button("取消", id="vf-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        {
+            "vf-all": self.action_all,
+            "vf-none": self.action_none,
+            "vf-apply": self.action_close,
+            "vf-cancel": self.action_cancel,
+        }[event.button.id]()
+
+    def on_mount(self) -> None:
+        sl = self.query_one(SelectionList)
+        for val, cnt in self._items:
+            label = val if val != "" else "(空)"
+            if len(label) > 46:
+                label = label[:45] + "…"
+            checked = True if self._prior is None else (val in self._prior)
+            sl.add_option(Selection(Text(f"{label}  ({cnt})"), val, checked))
+        sl.focus()
+        if self._anchor is not None:  # 贴列头下方弹出, 右溢出则左移使面板不超屏
+            x, y = self._anchor
+            x = max(0, min(x, self.app.size.width - self._BOX_W))
+            box = self.query_one("#vf-box", Vertical)
+            self.styles.align = ("left", "top")
+            box.styles.offset = (x, y)
+
+    def action_all(self) -> None:
+        self.query_one(SelectionList).select_all()
+
+    def action_none(self) -> None:
+        self.query_one(SelectionList).deselect_all()
+
+    def action_close(self) -> None:
+        self.dismiss(set(self.query_one(SelectionList).selected))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class ViewApp(App):
@@ -242,6 +331,16 @@ class ViewApp(App):
     #picker-title { text-align: center; width: 1fr; margin-bottom: 1; }
     #picker-box #cols { width: 1fr; height: auto; max-height: 20; background: $surface; }
     #picker-hint { text-align: center; width: 1fr; margin-top: 1; }
+    ValueFilterScreen { align: center middle; }
+    #vf-box { width: 46; height: auto; max-height: 85%; border: round $primary;
+              background: $surface; padding: 1 2; }
+    #vf-box #cols { width: 1fr; height: auto; max-height: 16; background: $surface; }
+    /* 紧凑单行按钮 (去掉 Button 默认的边框/height:3/min-width:16, 不再又大又丑) */
+    .panel-btns { width: 1fr; height: auto; align: center middle; margin-top: 1; }
+    .panel-btns Button {
+        height: 1; min-width: 0; border: none; padding: 0 2; margin: 0 1; color: $text;
+    }
+    .panel-btns Button.-primary { background: $primary; }
     """
 
     BINDINGS = [
@@ -249,6 +348,7 @@ class ViewApp(App):
         Binding("question_mark", "help", "帮助"),
         Binding("slash", "search", "搜索"),
         Binding("f", "filter", "筛选"),
+        Binding("F", "value_filter", "值筛选"),
         Binding("s", "sort", "排序"),
         Binding("S", "snapshot", "列快照"),
         Binding("z", "toggle_layout", "布局"),
@@ -299,6 +399,11 @@ class ViewApp(App):
         self._subset: Optional[List[int]] = None
         self._global_nos: List[int] = list(range(win_offset, win_offset + len(window)))
         self._filter_label: Optional[str] = None  # 状态栏显示的全量筛选说明
+        # 统一约束模型: 子集 = 全文件中满足 (表达式约束 且 每列值约束) 的行。
+        # 值约束按列独立存"保留值集", 故某列可反复调整/加回; 表达式约束来自 f/搜索(单个)。
+        self._col_value_filters: Dict[str, set] = {}
+        self._expr_pred = None
+        self._expr_label: Optional[str] = None
         self._scan_cancel: Optional[object] = None  # 扫描中的取消 Event (threading.Event)
         self._scan_msg: str = ""  # 扫描进度文案 (worker 线程回填, 状态栏展示)
         self.fmt = fmt
@@ -348,11 +453,21 @@ class ViewApp(App):
     def _visible_columns(self) -> List[str]:
         return [c for c in self.columns if c not in self._hidden]
 
+    def _header_plain(self, name: str) -> str:
+        """列头纯文本 (含值筛选标记), 用于列宽估算。"""
+        return f"{name} ▾" if name in self._col_value_filters else name
+
+    def _header_label(self, name: str) -> Text:
+        """列头显示: 被值筛选的列加黄色漏斗 ▾ 标记, 一眼可辨。"""
+        if name in self._col_value_filters:
+            return Text(f"{name} ▾", style="bold yellow")
+        return Text(name)
+
     def _add_columns(self, table: DataTable) -> None:
         """显式给每列宽度, 避免 DataTable 对全表自动测量 (大文件会两阶段闪烁 + 卡顿)。"""
         vis = self._visible_columns()
         for name, w in zip(vis, self._column_widths(vis)):
-            table.add_column(Text(name), width=w)
+            table.add_column(self._header_label(name), width=w)
 
     def _column_widths(self, vis: List[str]) -> List[int]:
         """自适应列宽: 采样估算每列自然宽, 再按可用屏宽做 max-min 公平分配。
@@ -374,7 +489,7 @@ class ViewApp(App):
                 max_no = (max(self._global_nos) + 1) if self._global_nos else 1
                 naturals.append(max(cell_len(name), len(str(max_no))))
                 continue
-            w = cell_len(name)
+            w = cell_len(self._header_plain(name))  # 含 ▾ 标记宽度, 避免标记被截
             for cells in sample:
                 w = max(w, cell_len(cells[ci]))
             naturals.append(min(max(w, 1), CAP))
@@ -432,6 +547,13 @@ class ViewApp(App):
         self._update_status()
         if self.view_indices:
             self._refresh_detail(0)
+        else:  # 空视图 (0 命中): 清详情, 免残留上个样本
+            try:
+                self.query_one("#detail", VerticalScroll).remove_children()
+            except NoMatches:
+                pass
+            self._field_widgets = []
+            self._cur_anchors = {}
 
     def _field_names(self) -> List[str]:
         return [w._field_name for w in self._field_widgets]
@@ -595,6 +717,12 @@ class ViewApp(App):
         if self._visual_anchor is not None:  # 多选态下移动光标, 实时更新选区范围
             self._update_status()
 
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        """点列头 → 打开该列的值勾选筛选 (Excel AutoFilter)。"""
+        vis = self._visible_columns()
+        if 0 <= event.column_index < len(vis):
+            self._start_value_scan(vis[event.column_index])
+
     # ------------------------------------------------------------------ #
     # 动作
     # ------------------------------------------------------------------ #
@@ -668,12 +796,16 @@ class ViewApp(App):
         self._populate()
 
     def action_reset(self) -> None:
-        """清除全量筛选子集与排序, 回到文件开头的原始浏览。"""
+        """清除所有筛选约束 (表达式 + 各列值筛选) 与排序, 回到文件开头的原始浏览。"""
         was_filtered = self._subset is not None
+        self._col_value_filters = {}
+        self._expr_pred = None
+        self._expr_label = None
         self._subset = None
         self._filter_label = None
         self._sort_label = None
         self._load_window(0)
+        self._rebuild_columns()  # 清列头 ▾ 标记
         self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
 
     # ------------------------------------------------------------------ #
@@ -741,6 +873,13 @@ class ViewApp(App):
         子集态: 位置为子集内序号, 取 subset[offset:] 的全局行号经 rows_at 拉取。
         """
         seq_total = self._seq_total()
+        if self._subset is not None and seq_total == 0:  # 空子集: 清空视图 (0 命中)
+            self.win_offset = 0
+            self.all_rows = []
+            self._global_nos = []
+            self.view_indices = []
+            self._populate()
+            return
         offset = max(0, min(offset, seq_total - 1)) if seq_total else 0
         if self._subset is None:
             rows = self.source.window(offset, self.cap)
@@ -847,6 +986,9 @@ class ViewApp(App):
             "全量筛选 列名(表头所见) 运算符 值; and/or 组合 (如 turns>=6 and chars<2000):",
         )
 
+    def action_value_filter(self) -> None:
+        self._open_prompt("value_filter", "按列值勾选筛选: 输入列名 (亦可直接点表头):")
+
     def _open_prompt(self, mode: str, placeholder: str) -> None:
         self._prompt_mode = mode
         prompt = self.query_one("#prompt", Input)
@@ -874,6 +1016,8 @@ class ViewApp(App):
             self._apply_sort(text)
         elif mode == "snapshot":
             self._apply_snapshot(text)
+        elif mode == "value_filter":
+            self._start_value_scan(text)
         elif mode == "jump":
             self._apply_jump(text)
 
@@ -885,7 +1029,9 @@ class ViewApp(App):
         def predicate(row: Dict) -> bool:
             return any(low in c.lower() for c in render.row_cells(0, row, fmt, vis))
 
-        self._start_scan(predicate, f"搜索 '{text}'")
+        self._expr_pred = predicate
+        self._expr_label = f"搜索'{text}'"
+        self._recompute_subset()
 
     def _apply_filter(self, expr: str) -> None:
         try:
@@ -893,20 +1039,47 @@ class ViewApp(App):
         except ValueError as e:
             self.notify(escape(str(e)), severity="error")
             return
-        self._start_scan(fn, f"筛选 '{expr}'")
+        self._expr_pred = fn
+        self._expr_label = f"筛选'{expr}'"
+        self._recompute_subset()
 
     # ------------------------------------------------------------------ #
-    # 全量筛选/搜索: worker 线程扫全文件, 命中的全局行号聚成可分页子集
+    # 统一约束重算: 子集 = 全文件中满足 (表达式约束 且 每列值约束) 的行
+    # worker 线程扫全文件, 进度回填状态栏, Esc 可取消
     # ------------------------------------------------------------------ #
-    def _start_scan(self, predicate, label: str) -> None:
-        """启动全量扫描: 逐行 (iter_all 枚举号即全局行号) 应用 predicate, 收集命中行号。
-
-        跑在 worker 线程避免阻塞 UI; 进度经 call_from_thread 回填状态栏; Esc 可取消。
-        """
-        import threading
-
+    def _recompute_subset(self) -> None:
+        """按当前所有约束 (表达式 + 每列值集) 重算子集; 无约束则回全量。"""
         if self._scan_cancel is not None:  # 已有扫描在跑, 忽略
             return
+        expr = self._expr_pred
+        colf = {c: set(v) for c, v in self._col_value_filters.items()}
+        fmt = self.fmt
+        labels = ([self._expr_label] if self._expr_label else []) + [
+            f"{c}∈{len(v)}值" for c, v in colf.items()
+        ]
+        label = " · ".join(labels)
+        if expr is None and not colf:  # 约束全清 → 回到全量浏览
+            self._subset = None
+            self._filter_label = None
+            self._load_window(0)
+            self._rebuild_columns()  # 清列头标记
+            return
+
+        def row_ok(row) -> bool:
+            if not isinstance(row, dict):
+                return False
+            if expr is not None and not expr(row):
+                return False
+            for c, kept in colf.items():
+                if render.row_cells(0, row, fmt, [c])[0] not in kept:
+                    return False
+            return True
+
+        self._start_subset_scan(row_ok, label)
+
+    def _start_subset_scan(self, row_ok, label: str) -> None:
+        import threading
+
         cancel = threading.Event()
         self._scan_cancel = cancel
         total = self.source.total
@@ -916,10 +1089,10 @@ class ViewApp(App):
             matches: List[int] = []
             for i, row in enumerate(self.source.iter_all()):
                 if cancel.is_set():
-                    self.call_from_thread(self._on_scan_done, None, label, True)
+                    self.call_from_thread(self._on_subset_scan_done, None, label, True)
                     return
                 try:
-                    if predicate(row):
+                    if row_ok(row):
                         matches.append(i)
                 except Exception:  # noqa: BLE001  单行畸形不该中断整轮扫描
                     pass
@@ -928,7 +1101,7 @@ class ViewApp(App):
                         self._set_scan_msg,
                         f"扫描中 {i + 1}/{total} · 命中 {len(matches)} (Esc 取消)",
                     )
-            self.call_from_thread(self._on_scan_done, matches, label, False)
+            self.call_from_thread(self._on_subset_scan_done, matches, label, False)
 
         self.run_worker(worker, thread=True, exclusive=True, group="scan")
 
@@ -936,21 +1109,21 @@ class ViewApp(App):
         self._scan_msg = msg
         self._update_status()
 
-    def _on_scan_done(self, matches: Optional[List[int]], label: str, cancelled: bool) -> None:
+    def _on_subset_scan_done(self, matches, label: str, cancelled: bool) -> None:
         self._scan_cancel = None
         self._scan_msg = ""
         if cancelled:
             self.notify("已取消扫描")
             self._update_status()
             return
-        if not matches:
-            self.notify(escape(f"{label}: 无匹配, 保持原视图"))
-            self._update_status()
-            return
-        self._subset = matches
-        self._filter_label = label
+        self._subset = matches  # 可能为空 (0 命中)
+        self._filter_label = label or None
         self._load_window(0)
-        self.notify(escape(f"{label}: {len(matches)} 条命中 (全量)"))
+        self._rebuild_columns()  # 刷新列头标记 (值筛选列加 ▾)
+        if matches:
+            self.notify(escape(f"{label}: {len(matches)} 命中 (全量)"))
+        else:
+            self.notify(escape(f"{label}: 0 命中 (点列头/F 可放宽该列)"))
 
     # ------------------------------------------------------------------ #
     # 列快照: 对当前浏览序列的某列给一行 n·min·max·mean·非空率 (即时决策用)
@@ -965,6 +1138,123 @@ class ViewApp(App):
                 if cancel.is_set():
                     return
                 yield from self.source.rows_at(self._subset[start : start + 1000])
+
+    def _iter_sequence_indexed(self, cancel):
+        """同 _iter_sequence, 但产出 (全局行号, 行): 原始态枚举号即全局行号, 子集态取 subset 值。"""
+        if self._subset is None:
+            for i, row in enumerate(self.source.iter_all()):
+                yield i, row
+        else:
+            for start in range(0, len(self._subset), 1000):
+                if cancel.is_set():
+                    return
+                chunk = self._subset[start : start + 1000]
+                for gidx, row in zip(chunk, self.source.rows_at(chunk)):
+                    yield gidx, row
+
+    # ------------------------------------------------------------------ #
+    # 列值勾选筛选 (Excel AutoFilter): 列出该列"在其他约束下"的全量唯一值 → 勾选 → 该列值约束
+    # 列出全量值 (而非当前子集) + 回显上次勾选 → 可反复调整/把去掉的加回
+    # ------------------------------------------------------------------ #
+    _VALUE_FILTER_MAX_UNIQUE = 300  # 唯一值超此数不适合逐个勾, 引导改用 f 条件筛选
+
+    def _start_value_scan(self, col: str) -> None:
+        import threading
+        from collections import Counter
+
+        col = col.strip()
+        if col == "#":
+            self.notify("行号列不支持值筛选")
+            return
+        if col not in self.columns:
+            self.notify(
+                escape(f"无此列: {col} (可选: {', '.join(self.columns)})"), severity="error"
+            )
+            return
+        if self._scan_cancel is not None:
+            return
+        fmt = self.fmt
+        cap = self._VALUE_FILTER_MAX_UNIQUE
+        expr = self._expr_pred
+        # 关键: 算该列候选值时应用"除本列外"的其他约束 → 本列自己筛掉的值仍在列表里, 可加回
+        other = {c: set(v) for c, v in self._col_value_filters.items() if c != col}
+        cancel = threading.Event()
+        self._scan_cancel = cancel
+        total = self.source.total
+        self._set_scan_msg(f"扫描 {col} 值 0/{total} (Esc 取消)")
+
+        def worker() -> None:
+            counts: Counter = Counter()
+            n = 0
+            for row in self.source.iter_all():
+                if cancel.is_set():
+                    self.call_from_thread(self._on_value_scan_done, col, None, "cancelled")
+                    return
+                n += 1
+                if n % 5000 == 0:
+                    self.call_from_thread(
+                        self._set_scan_msg, f"扫描 {col} 值 {n}/{total} (Esc 取消)"
+                    )
+                if not isinstance(row, dict):
+                    continue
+                if expr is not None and not expr(row):
+                    continue
+                if any(
+                    render.row_cells(0, row, fmt, [c])[0] not in kept for c, kept in other.items()
+                ):
+                    continue
+                counts[render.row_cells(0, row, fmt, [col])[0]] += 1
+                if len(counts) > cap:  # 唯一值过多: 逐个勾无意义, 终止
+                    self.call_from_thread(self._on_value_scan_done, col, None, "exceeded")
+                    return
+            self.call_from_thread(self._on_value_scan_done, col, counts, "ok")
+
+        self.run_worker(worker, thread=True, exclusive=True, group="scan")
+
+    def _on_value_scan_done(self, col, counts, status: str) -> None:
+        self._scan_cancel = None
+        self._scan_msg = ""
+        self._update_status()
+        if status == "cancelled":
+            self.notify("已取消扫描")
+            return
+        if status == "exceeded":
+            self.notify(
+                escape(f"{col} 唯一值过多 (>{self._VALUE_FILTER_MAX_UNIQUE}), 请用 f 条件筛选"),
+                severity="warning",
+            )
+            return
+        items = counts.most_common()  # [(值, 频次)] 按频次降序
+        total = len(items)
+        prior = self._col_value_filters.get(col)  # 上次保留集 (None=该列未筛→默认全选)
+
+        def apply(selected) -> None:
+            if selected is None:  # Esc 取消
+                return
+            if not selected:
+                self.notify("至少选一个值")
+                return
+            if len(selected) == total:  # 全选 = 清除该列筛选 (Excel 语义)
+                self._col_value_filters.pop(col, None)
+            else:
+                self._col_value_filters[col] = selected
+            self._recompute_subset()
+
+        anchor = self._column_anchor(col)
+        self.push_screen(ValueFilterScreen(col, items, total, prior, anchor), apply)
+
+    def _column_anchor(self, col: str):
+        """被点列头正下方的屏幕坐标 (x, y), 供值面板贴着该列弹出; 拿不到则 None (居中)。"""
+        try:
+            table = self.query_one("#table", DataTable)
+            vis = self._visible_columns()
+            ci = vis.index(col)
+            region = table._get_column_region(ci)
+            x = table.content_region.x + region.x - table.scroll_offset.x
+            y = table.content_region.y + (table.header_height if table.show_header else 0)
+            return (max(0, x), y)
+        except Exception:  # noqa: BLE001  定位失败退回居中, 不影响功能
+            return None
 
     def action_snapshot(self) -> None:
         default = next((c for c in self._visible_columns() if c not in ("#",)), "chars")
