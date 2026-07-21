@@ -5,10 +5,17 @@ DataTransformer.load() 对 .kv 文件物化为 list，与其他格式行为一�
 CLI 命令（sample/head/tail/stats）利用 FlaxList 随机访问做免加载优化。
 """
 
+import importlib.util
+
 import pytest
 
 from dtflow import DataTransformer
 from dtflow.storage.io import load_data, save_data
+
+# 整个文件测的是 flaxkv (.kv) 格式; flaxkv2 为可选依赖 (未必在公共 PyPI), 缺失则整体跳过
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("flaxkv2") is None, reason="flaxkv2 未安装"
+)
 
 
 @pytest.fixture
