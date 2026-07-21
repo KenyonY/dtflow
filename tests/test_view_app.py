@@ -48,6 +48,18 @@ def _chat_app(n=30):
 
 
 @pytest.mark.asyncio
+async def test_index_column_frozen():
+    # # 索引列冻结: 水平滚动查看右侧列时始终可见, 且列重建后仍保持
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        t = app.query_one("#table")
+        assert t.fixed_columns == 1
+        app._rebuild_columns()  # 选列/折叠触发的重建不应丢失冻结
+        await pilot.pause()
+        assert t.fixed_columns == 1
+
+
+@pytest.mark.asyncio
 async def test_vim_navigation():
     app = _chat_app(5)
     async with app.run_test() as pilot:

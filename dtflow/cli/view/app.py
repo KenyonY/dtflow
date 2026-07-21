@@ -330,7 +330,8 @@ class ViewApp(App):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
-            yield FastDataTable(id="table", cursor_type="row", zebra_stripes=True)
+            # fixed_columns=1: 冻结 # 索引列, 列多水平滚动时始终可见 (# 恒为第一列, 不可隐藏)
+            yield FastDataTable(id="table", cursor_type="row", zebra_stripes=True, fixed_columns=1)
             yield VerticalScroll(id="detail")  # 每字段一个 Static, 动态挂载 (真实布局定位)
         yield Input(id="prompt")
         yield Static(id="status")
