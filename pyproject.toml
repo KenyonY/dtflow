@@ -140,11 +140,11 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/DataTransformer"
-Documentation = "https://github.com/yourusername/DataTransformer#readme"
-Repository = "https://github.com/yourusername/DataTransformer"
-Issues = "https://github.com/yourusername/DataTransformer/issues"
-Changelog = "https://github.com/yourusername/DataTransformer/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/KenyonY/dtflow"
+Documentation = "https://github.com/KenyonY/dtflow#readme"
+Repository = "https://github.com/KenyonY/dtflow"
+Issues = "https://github.com/KenyonY/dtflow/issues"
+Changelog = "https://github.com/KenyonY/dtflow/blob/main/CHANGELOG.md"
 
 # Hatchling version configuration
 [tool.hatch.version]
