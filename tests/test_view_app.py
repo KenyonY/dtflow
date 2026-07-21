@@ -72,7 +72,7 @@ async def test_value_filter_select_subset():
         assert isinstance(app.screen, ValueFilterScreen)
         # 面板列出两个唯一值 a/b
         sl = app.screen.query_one("SelectionList")
-        assert len(sl.options) == 2
+        assert sl.option_count == 2
         # 只保留 "a" (取消勾选 b): 应用后异步重算子集
         app.screen.dismiss({"a"})
         await app.workers.wait_for_complete()
@@ -206,7 +206,7 @@ async def test_value_filter_readd_excluded_value():
         await app.workers.wait_for_complete()
         await pilot.pause()
         sl = app.screen.query_one("SelectionList")
-        assert len(sl.options) == 2  # a、b 都在, b 可加回
+        assert sl.option_count == 2  # a、b 都在, b 可加回
         assert set(sl.selected) == {"a"}  # 回显上次保留集
         # 把 a、b 都勾上 (加回 b) → 全选 = 清除该列筛选 → 回全量
         app.screen.dismiss({"a", "b"})

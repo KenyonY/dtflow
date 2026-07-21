@@ -1,5 +1,6 @@
 """流式处理模块测试"""
 
+import importlib.util as _ilu
 import json
 import os
 import tempfile
@@ -7,6 +8,9 @@ import tempfile
 import pytest
 
 from dtflow.streaming import StreamingTransformer, load_sharded, load_stream, process_shards
+
+# flaxkv 后端为可选依赖 (flaxkv2 未必在公共 PyPI); 未安装时跳过相关测试
+requires_flaxkv = pytest.mark.skipif(_ilu.find_spec("flaxkv2") is None, reason="flaxkv2 未安装")
 
 
 @pytest.fixture
@@ -328,6 +332,7 @@ class TestEdgeCases:
         os.unlink(temp_jsonl)
 
 
+@requires_flaxkv
 class TestFlaxKVStreaming:
     """FlaxKV (FlaxList backend) 流式处理测试"""
 

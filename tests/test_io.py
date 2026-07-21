@@ -2,6 +2,7 @@
 Tests for storage/io module.
 """
 
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,11 @@ from dtflow.storage.io import (
     sample_file,
     save_data,
     stream_jsonl,
+)
+
+# flaxkv 后端为可选依赖 (flaxkv2 未必在公共 PyPI); 未安装时跳过相关测试, 不让 CI 硬失败
+requires_flaxkv = pytest.mark.skipif(
+    importlib.util.find_spec("flaxkv2") is None, reason="flaxkv2 未安装"
 )
 
 
@@ -306,6 +312,7 @@ class TestSerializeDeserialize:
         assert result[0]["bool"] is True
 
 
+@requires_flaxkv
 class TestSaveLoadFlaxKV:
     """Test cases for FlaxKV (FlaxList backend) format save/load."""
 
@@ -378,6 +385,7 @@ class TestSaveLoadFlaxKV:
         assert _detect_format(Path("data")) == "flaxkv"
 
 
+@requires_flaxkv
 class TestFlaxKVStreamHelpers:
     """Test cases for FlaxKV streaming helper functions."""
 
@@ -446,6 +454,7 @@ class TestFlaxKVStreamHelpers:
         assert _stream_random_flaxkv(filepath, 10) == []
 
 
+@requires_flaxkv
 class TestFlaxKVAppend:
     """Test cases for FlaxKV append."""
 
@@ -479,6 +488,7 @@ class TestFlaxKVAppend:
         assert [item["id"] for item in loaded] == [0, 1, 2, 3, 4]
 
 
+@requires_flaxkv
 class TestFlaxKVSampleFile:
     """Test cases for sample_file with FlaxKV format."""
 

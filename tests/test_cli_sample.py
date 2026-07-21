@@ -2,11 +2,16 @@
 Tests for CLI sample/head/tail commands.
 """
 
+import importlib.util as _ilu
+
 import pytest
 import typer
 
 from dtflow.cli.sample import head, sample, tail
 from dtflow.storage.io import load_data, save_data
+
+# flaxkv 后端为可选依赖 (flaxkv2 未必在公共 PyPI); 未安装时跳过相关测试
+requires_flaxkv = pytest.mark.skipif(_ilu.find_spec("flaxkv2") is None, reason="flaxkv2 未安装")
 
 # ============== Fixtures ==============
 
@@ -427,6 +432,7 @@ class TestWhereFilter:
 # ============== FlaxKV Format Conversion Tests ==============
 
 
+@requires_flaxkv
 class TestFlaxKVFormatConversion:
     """Test format conversion between JSONL and FlaxKV via sample command."""
 
