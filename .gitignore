@@ -62,3 +62,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# 私有内容, 不进入公共仓库
+label-app/
+next-gen-designer/
+审核标准与数据/
