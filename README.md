@@ -1,5 +1,17 @@
 # dtflow
 
+<p align="left">
+    <a href="https://pypi.org/project/dtflow/">
+        <img src="https://img.shields.io/pypi/v/dtflow?color=brightgreen&style=flat-square" alt="PyPI version">
+    </a>
+    <a href="https://github.com/KenyonY/dtflow/blob/main/LICENSE">
+        <img alt="License" src="https://img.shields.io/github/license/KenyonY/dtflow.svg?color=blue&style=flat-square">
+    </a>
+    <a href="https://pypistats.org/packages/dtflow">
+        <img alt="pypi downloads" src="https://img.shields.io/pypi/dm/dtflow?style=flat-square">
+    </a>
+</p>
+
 简洁的数据格式转换工具，专为机器学习训练数据设计。
 
 ## 安装
