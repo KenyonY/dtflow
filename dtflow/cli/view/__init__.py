@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Optional
 
 # 单个窗口默认加载行数; 只 parse 这么多行, 其余靠偏移索引按需翻页。
-_DEFAULT_CAP = 20000
+# 首屏/翻页耗时随行数线性 (add_row 成本), 主瓶颈的逐格 measure 已由 FastDataTable
+# 消除; 1 万行是流畅度与窗口内搜索/排序覆盖面的平衡点, 可用 --cap 调整。
+_DEFAULT_CAP = 10000
 
 
 def _run_tui(source, cap: int, offset: int, format_hint: Optional[str], title: str) -> None:

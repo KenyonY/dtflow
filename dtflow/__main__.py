@@ -80,6 +80,7 @@ from .cli.commands import transform as _transform
 from .cli.commands import uninstall_skill as _uninstall_skill
 from .cli.commands import validate as _validate
 from .cli.output import CLIState, set_state
+from .cli.view import _DEFAULT_CAP as _VIEW_CAP
 from .cli.view import view as _view
 
 # ============ 受约束参数枚举 ============
@@ -287,7 +288,9 @@ def view(
     num_arg: Optional[int] = typer.Argument(
         None, metavar="NUM", help="窗口大小简写（等价 --cap，首屏 N 行，仍可 ]/[ 翻页）"
     ),
-    cap: int = typer.Option(20000, "--cap", help="单窗口加载行数（只 parse 这么多，其余按需翻页）"),
+    cap: int = typer.Option(
+        _VIEW_CAP, "--cap", help="单窗口加载行数（只 parse 这么多，其余按需翻页）"
+    ),
     offset: int = typer.Option(
         0, "--offset", help="起始行号（0-based），从文件中间打开（stdin 模式无效）"
     ),

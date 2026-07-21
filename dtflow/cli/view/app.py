@@ -15,11 +15,40 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.geometry import Size
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
 from . import render
+
+
+class FastDataTable(DataTable):
+    """定宽列 + 定高行专用: 跳过 textual 对每个 cell 的 measure。
+
+    dt view 首屏/翻页的主瓶颈: textual 的 _update_dimensions 会对每个新增 cell
+    调 measure() 更新 column.content_width (2万行 x 列 = 十几万次)。但定宽列的
+    render_width 恒为 width, content_width 从不被 get_render_width 读取——这些
+    measure 是纯浪费 (占首屏耗时的 2/3)。这里只保留刷新 virtual_size 的部分。
+
+    前提 (dt view 始终满足): 所有列显式定宽 (_add_columns 传 width), 行默认
+    height=1 非 auto_height。若引入 auto_width 列或 auto_height 行, 需回退父类实现。
+    """
+
+    def _update_dimensions(self, new_rows) -> None:
+        for row_key in new_rows:
+            row = self.rows.get(row_key)
+            if row is not None and row.label is not None:
+                self._labelled_row_exists = True
+        self._line_cache.clear()
+        self._styles_cache.clear()
+        data_cells_width = sum(c.get_render_width(self) for c in self.columns.values())
+        header_height = self.header_height if self.show_header else 0
+        self.virtual_size = Size(
+            data_cells_width + self._row_label_column_width,
+            self._total_row_height + header_height,
+        )
+
 
 _HELP = """[b]dt view 快捷键[/b]
 
@@ -199,7 +228,7 @@ class ViewApp(App):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
-            yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+            yield FastDataTable(id="table", cursor_type="row", zebra_stripes=True)
             yield VerticalScroll(id="detail")  # 每字段一个 Static, 动态挂载 (真实布局定位)
         yield Input(id="prompt")
         yield Static(id="status")
