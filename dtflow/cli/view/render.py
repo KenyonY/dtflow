@@ -12,12 +12,15 @@ dt view 的数据模型与渲染层
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Tuple
 
 from rich.console import Group, RenderableType
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
+
+# 搜索命中的高亮样式 (表格单元格与详情共用; 黄底黑字在明暗主题下都醒目)
+HIGHLIGHT_STYLE = "black on yellow"
 
 # role → 颜色 (对话气泡上色)
 _ROLE_STYLE = {
@@ -199,89 +202,143 @@ def row_cells(
     return cells
 
 
+def row_text(row: Any) -> str:
+    """把一行里所有标量值拼成可搜索的纯文本 (只取值, 不含键名)。
+
+    ``/`` 问的是"这条样本里有没有这个词", 所以必须看整条记录: 表格列只是派生摘要
+    (first_user 只是第一条用户消息), 靠列搜会把 assistant 回复、后续轮次整个漏掉 ——
+    而那恰恰是最常要找的地方。不含键名, 免得搜 "content" 命中每一行。
+    """
+    out: List[str] = []
+
+    def walk(v: Any) -> None:
+        if isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+        elif v is not None:
+            out.append(str(v))
+
+    walk(row)
+    return "\n".join(out)
+
+
 # --------------------------------------------------------------------------- #
 # 详情渲染: 选中样本 → Rich renderable
 # --------------------------------------------------------------------------- #
-def _render_content(content: str) -> List[RenderableType]:
-    """按 ``` 代码块切分, 代码高亮, 普通文本原样。"""
+def _hl(text: Text, highlight: Optional[Pattern]) -> Text:
+    """给 Text 里所有命中处叠加高亮样式 (原地改, 返回自身便于内联)。"""
+    if highlight is not None:
+        text.highlight_regex(highlight, style=HIGHLIGHT_STYLE)
+    return text
+
+
+def _render_content(content: str, highlight: Optional[Pattern] = None) -> List[RenderableType]:
+    """按 ``` 代码块切分, 代码高亮, 普通文本原样。
+
+    highlight: 搜索命中的正则, 命中处叠加黄底。代码块 (Syntax) 不叠加 —— Syntax 自带
+    词法着色, rich 不支持在其上再加 span; 代码里的命中靠上下文文本段定位。
+    """
     out: List[RenderableType] = []
     last = 0
     for m in _CODE_FENCE.finditer(content):
         if m.start() > last:
             pre = content[last : m.start()].strip("\n")
             if pre:
-                out.append(Text(pre))
+                out.append(_hl(Text(pre), highlight))
         lang = m.group(1) or "text"
         code = m.group(2).rstrip("\n")
         out.append(Syntax(code, lang, theme="ansi_dark", word_wrap=True, padding=(0, 1)))
         last = m.end()
     tail = content[last:].strip("\n")
     if tail or not out:
-        out.append(Text(tail))
+        out.append(_hl(Text(tail), highlight))
     return out
 
 
-def _render_conversation(turns: List[Tuple[str, str]]) -> RenderableType:
+def _render_turn(role: str, content: str, highlight: Optional[Pattern] = None) -> RenderableType:
+    """单条消息: [role] 标题行 + 正文。"""
+    style = _ROLE_STYLE.get(role, "bold white")
+    return Group(Text(f"[{role}]", style=style), *_render_content(content, highlight))
+
+
+def _render_conversation(
+    turns: List[Tuple[str, str]], highlight: Optional[Pattern] = None
+) -> RenderableType:
     parts: List[RenderableType] = []
     for role, content in turns:
-        style = _ROLE_STYLE.get(role, "bold white")
-        parts.append(Text(f"[{role}]", style=style))
-        parts.extend(_render_content(content))
+        parts.append(_render_turn(role, content, highlight))
         parts.append(Text(""))
     return Group(*parts)
 
 
+def _labeled(label: str, style: str, text: str, highlight: Optional[Pattern]):
+    """``[label]`` 标题行 + 正文, 并返回配套纯文本 (供命中查找)。"""
+    return (
+        Group(Text(f"[{label}]", style=style), *_render_content(text, highlight)),
+        f"[{label}]\n{text}",
+    )
+
+
 def render_detail_sections(
-    row: Dict, fmt: str, hidden: Optional[set] = None
-) -> List[Tuple[str, RenderableType]]:
-    """把详情拆成 [(字段名, renderable)] 分段, 供锚点定位 (切样本保持字段位置)。
+    row: Dict,
+    fmt: str,
+    hidden: Optional[set] = None,
+    split_turns: bool = False,
+    highlight: Optional[Pattern] = None,
+) -> List[Tuple[str, RenderableType, str]]:
+    """把详情拆成 [(字段名, renderable, 纯文本)] 分段, 供锚点定位与命中查找。
 
     分段名即"字段": generic 为每个顶层 key; dpo/alpaca 为段名; 对话为 对话 + 元数据。
+    纯文本与 renderable 同源, 用来判断"这一段里有没有搜索命中"(``*`` 跳转)。
+
     hidden: 被折叠的字段, 详情里也不显示。
+    split_turns: 对话格式下每条消息独立成段 (段名 ``msg0``/``msg1``…), 使 n/N 变成
+        逐条消息导航。段名刻意不含 role —— 切样本时靠段名对齐位置, 而不同样本同一位置
+        的角色未必相同, 名字带 role 会对不齐。role 仍显示在段内容的 ``[user]`` 标题行。
+        默认 False: dt head/sample 的静态打印走 render_detail, 不该被拆成一堆分隔块。
+    highlight: 搜索命中的正则, 命中处叠加黄底。
     """
     hidden = hidden or set()
 
     if fmt in ("openai_chat", "sharegpt"):
-        secs: List[Tuple[str, RenderableType]] = [
-            ("对话", _render_conversation(_normalize_turns(row, fmt)))
-        ]
+        turns = _normalize_turns(row, fmt)
+        secs: List[Tuple[str, RenderableType, str]] = []
+        if split_turns:
+            for i, (role, content) in enumerate(turns):
+                secs.append(
+                    (f"msg{i}", _render_turn(role, content, highlight), f"[{role}]\n{content}")
+                )
+        else:
+            plain = "\n".join(f"[{r}]\n{c}" for r, c in turns)
+            secs.append(("对话", _render_conversation(turns, highlight), plain))
         extra = {
             k: v
             for k, v in row.items()
             if k not in ("messages", "conversations") and k not in hidden
         }
         if extra:
-            secs.append(("元数据", _render_generic(extra)))
+            secs.append(("元数据", *_render_generic(extra, highlight)))
         return secs
 
     if fmt == "dpo":
         secs = []
         if row.get("prompt") and "prompt" not in hidden:
             secs.append(
-                (
-                    "prompt",
-                    Group(
-                        Text("[prompt]", style="bold cyan"),
-                        *_render_content(_as_text(row["prompt"])),
-                    ),
-                )
+                ("prompt", *_labeled("prompt", "bold cyan", _as_text(row["prompt"]), highlight))
             )
         secs.append(
             (
                 "chosen",
-                Group(
-                    Text("[chosen]", style="bold green"),
-                    *_render_content(_as_text(row.get("chosen", ""))),
-                ),
+                *_labeled("chosen", "bold green", _as_text(row.get("chosen", "")), highlight),
             )
         )
         secs.append(
             (
                 "rejected",
-                Group(
-                    Text("[rejected]", style="bold red"),
-                    *_render_content(_as_text(row.get("rejected", ""))),
-                ),
+                *_labeled("rejected", "bold red", _as_text(row.get("rejected", "")), highlight),
             )
         )
         return secs
@@ -290,40 +347,31 @@ def render_detail_sections(
         secs = []
         for key in ("instruction", "input"):
             if row.get(key) and key not in hidden:
-                secs.append(
-                    (
-                        key,
-                        Group(
-                            Text(f"[{key}]", style="bold cyan"),
-                            *_render_content(_as_text(row[key])),
-                        ),
-                    )
-                )
+                secs.append((key, *_labeled(key, "bold cyan", _as_text(row[key]), highlight)))
         out = row.get("output") or row.get("response") or ""
-        secs.append(
-            ("output", Group(Text("[output]", style="bold green"), *_render_content(_as_text(out))))
-        )
+        secs.append(("output", *_labeled("output", "bold green", _as_text(out), highlight)))
         return secs
 
-    return [(k, _render_generic({k: v})) for k, v in row.items() if k not in hidden]
+    return [(k, *_render_generic({k: v}, highlight)) for k, v in row.items() if k not in hidden]
 
 
 def render_detail(row: Dict, fmt: str, hidden: Optional[set] = None) -> RenderableType:
     """把选中样本渲染成 Rich 可绘制对象, 默认全展开, 无需逐层进入。
 
-    由 render_detail_sections 拼成 (段间插 Rule), 与锚点测量同源, 保证滚动定位精确。
+    由 render_detail_sections 拼成 (段间插 Rule)。对话不拆条 (split_turns 默认 False),
+    与 dt head/sample 的既有输出保持一致。
     """
     parts: List[RenderableType] = []
-    for i, (_, rend) in enumerate(render_detail_sections(row, fmt, hidden)):
+    for i, (_, rend, _plain) in enumerate(render_detail_sections(row, fmt, hidden)):
         if i:
             parts.append(Rule(style="dim"))
         parts.append(rend)
     return Group(*parts)
 
 
-def _render_generic(row: Any) -> RenderableType:
-    """通用 JSON: 复用现有树形格式化, 全展开。"""
+def _render_generic(row: Any, highlight: Optional[Pattern] = None) -> Tuple[RenderableType, str]:
+    """通用 JSON: 复用现有树形格式化, 全展开。返回 (renderable, 纯文本)。"""
     from ..common import _format_nested
 
-    lines = _format_nested(row, max_len=2000)
-    return Group(*[Text.from_markup(ln) for ln in lines])
+    texts = [_hl(Text.from_markup(ln), highlight) for ln in _format_nested(row, max_len=2000)]
+    return Group(*texts), "\n".join(t.plain for t in texts)

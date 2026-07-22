@@ -303,24 +303,47 @@ def view(
     format: Optional[str] = typer.Option(
         None, "--format", help="强制格式: openai_chat|sharegpt|dpo|alpaca|generic"
     ),
+    where: Optional[List[str]] = typer.Option(
+        None,
+        "--where",
+        help="启动即筛选，列名取表头所见，可多次使用（与关系）；单条内可用 and/or",
+    ),
+    search: Optional[str] = typer.Option(
+        None, "--search", help="启动即全字段搜索（不分大小写；re: 前缀走正则），命中处高亮"
+    ),
+    sort: Optional[str] = typer.Option(
+        None, "--sort", help="启动即全量排序，列名前加 - 为降序（如 -chars）"
+    ),
 ):
     """交互式浏览数据（表格 + 详情联动，Textual TUI）
 
     表格扫视 + 详情按格式渲染（对话气泡/dpo对比/alpaca分段），无需逐层展开。
     大文件靠偏移索引窗口化浏览：只 parse 当前窗口，TUI 内按 ] / [ 翻窗口、: 跳行。
-    管道模式 dt view - 从 stdin 读 NDJSON 全量入内存（适合看处理结果的一小撮）。
+    筛选/搜索/排序都是全量的（扫整个文件），可叠加；TUI 内按 w 把结果导出成文件，
+    按 C 复制"复现当前视图"的命令。管道模式 dt view - 从 stdin 读 NDJSON 全量入内存。
     需要交互式终端（TTY）。按 ? 查看快捷键。
 
     示例:
         dt view data.jsonl                       # 打开浏览器（顺序从第 1 行）
         dt view data.jsonl 100                   # 首屏 100 行（NUM = --cap 简写）
         dt view data.jsonl --format=dpo          # 强制按 dpo 渲染
-        dt view big.jsonl --offset=20000         # 从第 2 万行开始（即你要的 20000–40000）
+        dt view big.jsonl --offset=20000         # 从第 2 万行开始（默认每窗口 1 万行）
         dt view big.jsonl --cap=50000            # 每窗口加载 5 万行
+        dt view data.jsonl --sort=-chars         # 最长的样本排在最前（全量排序）
+        dt view data.jsonl --where="turns>=6" --where="source==alpaca"   # 多条为与关系
+        dt view data.jsonl --search=报错          # 命中子集 + 详情里黄底高亮
         dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果
     """
     # 位置参数 NUM 优先于 --cap（与 sample/head 的 num_arg 惯例一致）
-    _view(filename, cap=num_arg if num_arg is not None else cap, offset=offset, format_hint=format)
+    _view(
+        filename,
+        cap=num_arg if num_arg is not None else cap,
+        offset=offset,
+        format_hint=format,
+        where=where,
+        search=search,
+        sort=sort,
+    )
 
 
 @app.command("slice")

@@ -1063,8 +1063,14 @@ def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
                             f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
                             file=sys.stderr,
                         )
-                    except json.JSONDecodeError:
-                        raise
+                    except json.JSONDecodeError as e:
+                        # 流式处理会写出新文件, 不能静默跳行; 但报错必须能定位到行
+                        snippet = line.decode("utf-8", errors="replace")[:120]
+                        raise ValueError(
+                            f"{filepath} 第 {i + 1} 行不是合法 JSON: {e}\n"
+                            f"  行内容: {snippet}\n"
+                            f"  想直接看这一行用: dt view {filepath}"
+                        ) from e
 
 
 def _stream_csv(filepath: str, batch_size: int = 10000) -> Generator[Dict[str, Any], None, None]:

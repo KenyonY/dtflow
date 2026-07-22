@@ -129,10 +129,34 @@ def _save_jsonl(data: List[Dict[str, Any]], filepath: Path) -> None:
             f.write(orjson.dumps(item) + b"\n")
 
 
+def _warn_skipped_lines(filepath: Path, skipped: List[int]) -> None:
+    """报告被跳过的坏行。
+
+    预览/采样路径跳过坏行是可以的（不该因为一行坏数据就看不了文件），但**不能不吭声**：
+    少了几条、少在哪几行，用户必须知道 —— dt sample -o 是会写出新文件的。
+    """
+    if not skipped:
+        return
+    import sys
+
+    shown = ", ".join(str(n) for n in skipped[:5])
+    more = f" 等 {len(skipped)} 行" if len(skipped) > 5 else ""
+    print(
+        f"[Warning] {filepath}: 已跳过无法解析的第 {shown} 行{more}"
+        f"（用 dt view {filepath} 可直接定位，坏行会显示出来）",
+        file=sys.stderr,
+    )
+
+
 def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
     """Load data from JSONL format.
 
     使用 orjson 解析，如果失败（如遇到 NaN 等非标准 JSON）则回退到标准 json。
+
+    真正解不动的行直接抛错而不是跳过：这条路径喂给 clean/transform/dedupe 等会写出新
+    文件的操作，静默丢行等于悄悄改数据。但错误必须能定位到行——只抛原始 JSONDecodeError
+    的话，几十万行里你无从下手。（只想「看一眼」坏在哪就用 dt view，它把坏行显示出来
+    而不是拦在门外。）
     """
     import json
     import sys
@@ -161,8 +185,13 @@ def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
                             f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
                             file=sys.stderr,
                         )
-                    except json.JSONDecodeError:
-                        raise  # 标准 json 也失败，抛出原始错误
+                    except json.JSONDecodeError as e:
+                        snippet = line.decode("utf-8", errors="replace")[:120]
+                        raise ValueError(
+                            f"{filepath} 第 {i + 1} 行不是合法 JSON: {e}\n"
+                            f"  行内容: {snippet}\n"
+                            f"  想直接看这一行用: dt view {filepath}（坏行会显示出来，不会中断浏览）"
+                        ) from e
 
     return data
 
@@ -511,17 +540,20 @@ def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
             file=sys.stderr,
         )
 
-        result = []
+        result: List[Dict[str, Any]] = []
+        skipped: List[int] = []
         with open(filepath, "rb") as f:
-            for line in f:
+            for i, line in enumerate(f):
                 line = line.strip()
                 if line:
                     try:
                         result.append(orjson.loads(line))
                     except orjson.JSONDecodeError:
-                        continue  # 跳过无效行
+                        skipped.append(i + 1)  # 跳过无效行, 但结束时要报出来
+                        continue
                     if len(result) >= num:
                         break
+        _warn_skipped_lines(filepath, skipped)
         return result
 
 
@@ -569,11 +601,11 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
             for _ in f:
                 total_lines += 1
 
-        if total_lines <= num:
-            return _load_jsonl(filepath)
-
-        skip_count = total_lines - num
-        result = []
+        # 行数不足 N 时也走同一个循环, 不再抄近路转 _load_jsonl —— 那条路遇到坏行是抛错,
+        # 会变成"4 行的文件 tail 报错、400 行的文件 tail 只是跳过"这种同因不同果。
+        skip_count = max(0, total_lines - num)
+        result: List[Dict[str, Any]] = []
+        skipped: List[int] = []
         with open(filepath, "rb") as f:
             for i, line in enumerate(f):
                 if i < skip_count:
@@ -583,7 +615,9 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
                     try:
                         result.append(orjson.loads(line))
                     except orjson.JSONDecodeError:
-                        continue  # 跳过无效行
+                        skipped.append(i + 1)
+                        continue
+        _warn_skipped_lines(filepath, skipped)
         return result
 
 
@@ -642,7 +676,8 @@ def _count_sample_jsonl(
     selected_indices = set(random.sample(range(total_lines), num))
 
     # Step 3: 只解析选中的行
-    result = []
+    result: List[Dict[str, Any]] = []
+    skipped: List[int] = []
     with open(filepath, "rb") as f:
         for i, line in enumerate(f):
             if i in selected_indices:
@@ -651,10 +686,12 @@ def _count_sample_jsonl(
                     try:
                         result.append(orjson.loads(line))
                     except orjson.JSONDecodeError:
+                        skipped.append(i + 1)
                         continue
                 if len(result) >= num:
                     break
 
+    _warn_skipped_lines(filepath, skipped)
     return result
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # 单个窗口默认加载行数; 只 parse 这么多行, 其余靠偏移索引按需翻页。
 # 首屏/翻页耗时随行数线性 (add_row 成本), 主瓶颈的逐格 measure 已由 FastDataTable
@@ -18,7 +18,17 @@ from typing import Optional
 _DEFAULT_CAP = 10000
 
 
-def _run_tui(source, cap: int, offset: int, format_hint: Optional[str], title: str) -> None:
+def _run_tui(
+    source,
+    cap: int,
+    offset: int,
+    format_hint: Optional[str],
+    title: str,
+    where: Optional[List[str]] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
+    filepath: Optional[str] = None,
+) -> None:
     """公共 TUI 启动: 取首窗口 → 检测格式 → 起 ViewApp。"""
     if source.total == 0:
         print("无数据。", file=sys.stderr)
@@ -33,10 +43,27 @@ def _run_tui(source, cap: int, offset: int, format_hint: Optional[str], title: s
 
     from .app import ViewApp
 
-    ViewApp(source, window, offset, cap, fmt, title).run()
+    ViewApp(
+        source,
+        window,
+        offset,
+        cap,
+        fmt,
+        title,
+        where=where,
+        search=search,
+        sort=sort,
+        filepath=filepath,
+    ).run()
 
 
-def _view_stdin(cap: int, format_hint: Optional[str]) -> None:
+def _view_stdin(
+    cap: int,
+    format_hint: Optional[str],
+    where: Optional[List[str]] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
+) -> None:
     """dt view -: 先读完 stdin 数据, 再把 fd 0 重定向到 /dev/tty 供 TUI 读键盘。
 
     管道占用了 stdin 作数据流, 而 Textual 硬编码从 fd 0 读键盘 → 二者冲突;
@@ -59,7 +86,8 @@ def _view_stdin(cap: int, format_hint: Optional[str]) -> None:
     os.dup2(tty.fileno(), 0)  # fd 0 → tty, Textual 从此读真实键盘
 
     # 管道数据已全在内存, offset 无意义 (从头开始; 可在 TUI 内 : 跳行)
-    _run_tui(source, cap, 0, format_hint, "<stdin>")
+    # filepath 留空: 管道输入没有可复现的源文件, C 复制命令会据此提示改用导出
+    _run_tui(source, cap, 0, format_hint, "<stdin>", where=where, search=search, sort=sort)
 
 
 def view(
@@ -67,10 +95,17 @@ def view(
     cap: int = _DEFAULT_CAP,
     offset: int = 0,
     format_hint: Optional[str] = None,
+    where: Optional[List[str]] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
 ) -> None:
-    """启动 dt view TUI。filename 为 - 时从 stdin 读 (管道模式)。"""
+    """启动 dt view TUI。filename 为 - 时从 stdin 读 (管道模式)。
+
+    where/search/sort: 启动即带上的约束, 与 TUI 内按 f / / / s 完全同义 (同一条扫描管线),
+    于是 C 复制出来的命令粘回终端能还原当时的视图。
+    """
     if filename == "-":
-        _view_stdin(cap, format_hint)
+        _view_stdin(cap, format_hint, where=where, search=search, sort=sort)
         return
 
     filepath = Path(filename)
@@ -84,4 +119,14 @@ def view(
 
     from .source import open_source
 
-    _run_tui(open_source(filepath), cap, offset, format_hint, filepath.name)
+    _run_tui(
+        open_source(filepath),
+        cap,
+        offset,
+        format_hint,
+        filepath.name,
+        where=where,
+        search=search,
+        sort=sort,
+        filepath=filename,
+    )

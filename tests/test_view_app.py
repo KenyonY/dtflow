@@ -133,7 +133,7 @@ async def test_value_filter_stacks_with_expr():
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(0, 30, 2))
-        assert app._expr_pred is not None and app._col_value_filters == {"source": {"b"}}
+        assert app._where_specs and app._col_value_filters == {"source": {"b"}}
 
 
 @pytest.mark.asyncio
@@ -247,16 +247,62 @@ async def test_vim_navigation():
         assert t.cursor_row == 0
 
 
+def _chars(i: int) -> int:
+    """_chat_rows 第 i 行的 chars 派生列值 (user 'q{i}' + assistant 'a'*(i%5))。"""
+    return len(f"q{i}") + i % 5
+
+
 @pytest.mark.asyncio
-async def test_sort_by_column_name():
-    app = _chat_app(5)  # chars = i%5 → 0..4
-    async with app.run_test():
+async def test_sort_is_full_scan_and_survives_paging():
+    # 排序是全量的: 扫全文件 → 排好序的全局行号序列即浏览序列, 翻窗口不失效
+    app = _make_app(_chat_rows(30), cap=10)  # 30 行分 3 个窗口
+    async with app.run_test() as pilot:
+        app._apply_sort("-chars")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(app._subset) == 30  # 排序只重排, 不筛掉任何行
+        vals = [_chars(i) for i in app._subset]
+        assert vals == sorted(vals, reverse=True)  # 整体有序, 而不只是首窗口内有序
+        assert app._sort_label == "chars↓"
+        assert app._filter_label is None  # 无筛选 → 状态栏不报"命中 30/30"
+        # 翻到第二个窗口: 排序仍在 (旧的"仅当前窗口内排序"翻页即丢)
+        app.action_next_window()
+        await pilot.pause()
+        assert app._sort_label == "chars↓"
+        assert app._global_nos == app._subset[10:20]
+
+
+@pytest.mark.asyncio
+async def test_sort_ascending_and_bad_column():
+    app = _make_app(_chat_rows(12))
+    async with app.run_test() as pilot:
         app._apply_sort("chars")  # 升序
-        assert app.view_indices[-1] == 4
-        app._apply_sort("-chars")  # 反向
-        assert app.view_indices[0] == 4
-        app._apply_sort("nope")  # 无此列, 不改动不崩溃
-        assert app.view_indices[0] == 4
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        vals = [_chars(i) for i in app._subset]
+        assert vals == sorted(vals)
+        app._apply_sort("nope")  # 无此列: 不改排序、不启动扫描、不崩
+        await pilot.pause()
+        assert app._sort_spec == ("chars", False)
+
+
+@pytest.mark.asyncio
+async def test_sort_stacks_with_filter():
+    # 排序与筛选共用一条管线: 先筛后排, 两者同时生效
+    app = _make_app(_chat_rows(30))
+    async with app.run_test() as pilot:
+        app._apply_filter("source=a")  # 奇数 idx
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app._apply_sort("-chars")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert all(i % 2 == 1 for i in app._subset)  # 筛选仍在
+        vals = [_chars(i) for i in app._subset]
+        assert vals == sorted(vals, reverse=True)  # 排序也在
+        app.action_reset()
+        await pilot.pause()
+        assert app._subset is None and app._sort_spec is None
 
 
 @pytest.mark.asyncio
@@ -1067,3 +1113,579 @@ async def test_both_pickers_hint_mentions_keys(size):
         app.screen.query_one("#vf-search").value = "alpaca"  # 有搜索词时改讲 a 的新语义
         await pilot.pause()
         assert "a 全选" in str(app.screen.query_one("#picker-hint", Static).render())
+
+
+# ---------------------------------------------------------------------- #
+# 约束叠加: 搜索与 where 各占独立槽位, 多条 where 之间是 AND
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_multiple_filters_stack_with_and():
+    # 连按两次 f 追加条件而非覆盖; 需要括号语义时就靠"拆成多条"表达
+    app = _make_app(_chat_rows(30))
+    async with app.run_test() as pilot:
+        app._apply_filter("source=a")  # 奇数 idx
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(1, 30, 2))
+        app._apply_filter("chars>=6")  # 再叠一条
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(app._where_specs) == 2
+        assert app._subset == [i for i in range(1, 30, 2) if _chars(i) >= 6]
+
+
+@pytest.mark.asyncio
+async def test_search_and_filter_do_not_overwrite_each_other():
+    """回归: 搜索与 f 曾共用一个槽位, 先 f 再 / 会静默丢掉 f 的条件 (README 却说可叠加)。"""
+    app = _make_app(_chat_rows(30))
+    async with app.run_test() as pilot:
+        app._apply_filter("source=a")  # 奇数 idx
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app._apply_search("q1")  # 含 q1 的: 1, 10-19
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        expected = [i for i in range(30) if i % 2 == 1 and "q1" in f"q{i}"]
+        assert app._subset == expected  # 两个约束同时生效
+        assert app._where_specs and app._search_re is not None
+
+
+@pytest.mark.asyncio
+async def test_search_regex_prefix_and_bad_regex():
+    app = _make_app(_chat_rows(20))
+    async with app.run_test() as pilot:
+        app._apply_search(r"re:q1\d")  # q10..q19
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(10, 20))
+        app._apply_search("re:[")  # 非法正则: 提示但不崩、不改子集
+        await pilot.pause()
+        assert app._subset == list(range(10, 20))
+
+
+@pytest.mark.asyncio
+async def test_search_highlights_cells_and_detail():
+    from dtflow.cli.view.render import HIGHLIGHT_STYLE
+
+    app = _make_app(_chat_rows(6))
+    async with app.run_test() as pilot:
+        app._apply_search("q3")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # 表格单元格: first_user 列命中处带黄底
+        cell = app.query_one("#table").get_cell_at((0, app._visible_columns().index("first_user")))
+        assert any(HIGHLIGHT_STYLE in str(sp.style) for sp in cell.spans)
+
+
+@pytest.mark.asyncio
+async def test_next_match_jumps_to_matching_message():
+    # 长对话里 * 直奔命中那条消息 (n/N 是逐条走, * 只在含命中的段间跳)
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "开头"},
+                {"role": "assistant", "content": "中间"},
+                {"role": "user", "content": "关键词在这"},
+            ]
+        }
+    ]
+    app = _make_app(rows)
+    async with app.run_test() as pilot:
+        app._apply_search("关键词")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._field_i == 0
+        app.action_next_match()
+        await pilot.pause()
+        assert app._field_i == 2  # msg2
+        app.action_next_match()  # 绕一圈回到唯一命中
+        await pilot.pause()
+        assert app._field_i == 2
+
+
+@pytest.mark.asyncio
+async def test_next_match_without_search_is_noop():
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        app.action_next_match()  # 未搜索: 提示而已, 不崩
+        await pilot.pause()
+        assert app._field_i == 0
+
+
+# ---------------------------------------------------------------------- #
+# 导出: 筛出来的子集必须能落盘 (剪贴板 OSC52 装不下几千条)
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_export_subset_to_jsonl_with_lineage(tmp_path):
+    import orjson
+
+    app = _make_app(_chat_rows(30))
+    app.filepath = str(tmp_path / "src.jsonl")
+    out = tmp_path / "out.jsonl"
+    async with app.run_test() as pilot:
+        app._apply_filter("source=a")  # 奇数 idx, 15 条
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        lines = out.read_text().strip().split("\n")
+        assert len(lines) == 15
+        assert [orjson.loads(x)["source"] for x in lines] == ["a"] * 15
+        # 血缘 sidecar: 条件与可复现命令都记下了
+        rec = orjson.loads((tmp_path / "out.jsonl.lineage.json").read_bytes())
+        params = rec["operations"][0]["params"]
+        assert params["where"] == ["source=a"]
+        assert "--where" in params["command"]
+        assert rec["operations"][0]["output_count"] == 15
+
+
+@pytest.mark.asyncio
+async def test_export_visual_selection(tmp_path):
+    out = tmp_path / "sel.jsonl"
+    app = _make_app(_chat_rows(10))
+    async with app.run_test() as pilot:
+        app._visual_anchor = 2
+        app.query_one("#table").move_cursor(row=5)
+        await pilot.pause()
+        assert app._export_scope() == ("选区", 4)
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(out.read_text().strip().split("\n")) == 4
+
+
+@pytest.mark.asyncio
+async def test_export_refuses_to_overwrite(tmp_path):
+    out = tmp_path / "exists.jsonl"
+    out.write_text("keep\n")
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        app._apply_export(str(out))
+        await pilot.pause()
+        assert out.read_text() == "keep\n"  # 原文件没被动
+
+
+@pytest.mark.asyncio
+async def test_export_non_jsonl_format(tmp_path):
+    out = tmp_path / "out.json"
+    app = _make_app(_chat_rows(6))
+    async with app.run_test() as pilot:
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        import orjson
+
+        assert len(orjson.loads(out.read_bytes())) == 6
+
+
+# ---------------------------------------------------------------------- #
+# 可复现命令 + 启动参数 (同一件事: C 生成的命令必须能被 dt view 吃回去)
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_build_command_translates_all_constraints():
+    app = _make_app(_chat_rows(30))
+    app.filepath = "data.jsonl"
+    async with app.run_test() as pilot:
+        app._apply_filter("turns>=2")
+        await app.workers.wait_for_complete()
+        app._search_text, app._search_re = "报错", __import__("re").compile("报错")
+        app._col_value_filters = {"source": {"a", "b"}}
+        app._sort_spec = ("chars", True)
+        await pilot.pause()
+        cmd, skipped = app._build_command()
+        assert not skipped
+        # 单列多值 → 一条 where 内 or; 多条 where 之间 AND (表达式没有括号, 靠这层表达)
+        # 值经 shlex.quote, 含 > 或空格的会带引号 —— 粘回终端才不会被 shell 当重定向
+        assert "--where='turns>=2'" in cmd
+        assert "--where='source==a or source==b'" in cmd
+        assert "--search='报错'" in cmd and "--sort=-chars" in cmd
+
+
+@pytest.mark.asyncio
+async def test_build_command_skips_unsafe_values():
+    # 值含运算符/被截断 → 无法安全写进 where 表达式, 如实说明而不是生成错命令
+    app = _chat_app(5)
+    app.filepath = "d.jsonl"
+    async with app.run_test():
+        app._col_value_filters = {"source": {"a=b"}}
+        cmd, skipped = app._build_command()
+        assert "source" not in cmd and skipped
+
+
+@pytest.mark.asyncio
+async def test_build_command_none_for_stdin():
+    app = _chat_app(5)  # filepath 为 None = 管道模式
+    async with app.run_test():
+        cmd, skipped = app._build_command()
+        assert cmd is None and skipped
+
+
+@pytest.mark.asyncio
+async def test_startup_constraints_apply():
+    # --where/--search/--sort 走的是和 TUI 内完全相同的扫描管线
+    rows = _chat_rows(30)
+    src = _ListSource(rows)
+    app = ViewApp(
+        src,
+        src.window(0, 20000),
+        0,
+        20000,
+        "openai_chat",
+        "t.jsonl",
+        where=["source=a"],
+        sort="-chars",
+    )
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert all(i % 2 == 1 for i in app._subset)
+        vals = [_chars(i) for i in app._subset]
+        assert vals == sorted(vals, reverse=True)
+        assert app._sort_label == "chars↓"
+
+
+@pytest.mark.asyncio
+async def test_startup_bad_where_does_not_crash():
+    rows = _chat_rows(10)
+    src = _ListSource(rows)
+    app = ViewApp(src, src.window(0, 100), 0, 100, "openai_chat", "t.jsonl", where=["bad@@expr"])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._where_specs == []  # 非法条件不入约束
+
+
+@pytest.mark.asyncio
+async def test_search_covers_whole_record_not_just_columns():
+    """/ 必须搜整条记录: 表格列只有派生摘要 (first_user = 第一条用户消息),
+    只搜列会把 assistant 回复和后续轮次整个漏掉 —— 而那正是最常要找的地方。"""
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "开头"},
+                {"role": "assistant", "content": "藏在回复里的词"},
+            ]
+        },
+        {"messages": [{"role": "user", "content": "无关"}]},
+    ]
+    app = _make_app(rows)
+    async with app.run_test() as pilot:
+        app._apply_search("藏在回复里")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == [0]
+
+
+@pytest.mark.asyncio
+async def test_search_scope_independent_of_hidden_columns():
+    # 折叠一列不该悄悄改变搜索范围
+    app = _make_app(_chat_rows(10))
+    async with app.run_test() as pilot:
+        app._hidden = {"source"}
+        app._apply_search("q7")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == [7]
+
+
+@pytest.mark.asyncio
+async def test_navigation_survives_late_render_callback():
+    """回归: 详情渲染的收尾回调比按键晚一帧, 曾把刚按下的 * / n 静默撤销回原字段。"""
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": "开头"},
+                {"role": "assistant", "content": "命中在这"},
+            ]
+        }
+    ]
+    app = _make_app(rows)
+    async with app.run_test() as pilot:
+        app._apply_search("命中")
+        await app.workers.wait_for_complete()
+        await pilot.pause()  # 只等一帧: 渲染回调可能还在队列里
+        app.action_next_match()
+        await pilot.pause()
+        await pilot.pause()  # 迟到的回调在这里落地, 不该覆盖上面的跳转
+        assert app._current_field() == "msg1"
+
+
+# ---------------------------------------------------------------------- #
+# 扫描进行中的一致性: 屏幕 / 约束模型 / C 命令 / 血缘 四者必须描述同一个视图
+# ---------------------------------------------------------------------- #
+class _SlowSource(RowSource):
+    """每行 sleep 一下, 制造"扫描进行中"的时间窗 (真实大文件就是这个体感)。"""
+
+    def __init__(self, rows, delay=0.002):
+        self._rows, self.total, self._d = rows, len(rows), delay
+
+    def window(self, offset, size):
+        return self._rows[max(0, offset) : offset + size]
+
+    def iter_all(self, progress_cb=None):
+        import time
+
+        for r in self._rows:
+            time.sleep(self._d)
+            yield r
+
+    def rows_at(self, indices):
+        return [self._rows[i] for i in indices if 0 <= i < self.total]
+
+
+def _slow_app(n=300):
+    rows = [{"messages": [{"role": "user", "content": f"q{i}"}], "id": i} for i in range(n)]
+    src = _SlowSource(rows)
+    return ViewApp(src, src.window(0, n), 0, n, "openai_chat", "t.jsonl", filepath="t.jsonl")
+
+
+@pytest.mark.asyncio
+async def test_filter_during_scan_is_refused_not_half_applied():
+    """回归: 扫描中改约束曾"先改状态, 再静默 return" —— 屏幕停在旧子集, 而 C 命令和
+    导出血缘却在描述新条件, 复现出来的行数与屏幕对不上。宁可拒绝, 不可半改。"""
+    app = _slow_app()
+    async with app.run_test() as pilot:
+        app._apply_filter("id<100")
+        await pilot.pause()
+        assert app._scan_cancel is not None  # 扫描确实在跑
+        app._apply_filter("id<5")  # 扫描中的第二条: 应被拒绝
+        assert [e for e, _ in app._where_specs] == ["id<100"]
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(app._subset) == 100
+        cmd, _ = app._build_command()
+        assert "id<5" not in cmd  # 命令不描述未生效的条件
+
+
+@pytest.mark.asyncio
+async def test_sort_during_scan_is_refused():
+    app = _slow_app()
+    async with app.run_test() as pilot:
+        app._apply_filter("id<100")
+        await pilot.pause()
+        app._apply_sort("-id")
+        assert app._sort_spec is None  # 状态栏不会声称"已排序"而顺序纹丝不动
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._sort_label is None
+
+
+@pytest.mark.asyncio
+async def test_reset_during_scan_is_not_revived_by_late_result():
+    """r 在扫描中必须有效 (它正是"不想等了"的出口), 且迟到的结果不得把筛选复活。"""
+    app = _slow_app()
+    async with app.run_test() as pilot:
+        app._apply_filter("id<100")
+        await pilot.pause()
+        app.action_reset()
+        await app.workers.wait_for_complete()
+        for _ in range(5):
+            await pilot.pause()  # 让迟到的完成回调有机会落地
+        assert app._subset is None and app._filter_label is None and app._where_specs == []
+        assert app._scan_cancel is None  # 槽位已释放, 不会把后续操作卡死
+        app._apply_filter("id<7")  # 重置后仍可正常使用
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(7))
+
+
+@pytest.mark.asyncio
+async def test_sort_by_index_column():
+    """回归: 按 # 排序曾被接受、扫全文件、报告成功, 实际全部同键 → 顺序纹丝不动。
+    # 是"第几行"这一事实, 不在行数据里, 排序键必须用扫描时的全局行号。"""
+    app = _make_app(_chat_rows(30))
+    async with app.run_test() as pilot:
+        app._apply_sort("-#")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(29, -1, -1))
+        app._apply_sort("#")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(30))
+
+
+# ---------------------------------------------------------------------- #
+# 约束的提交时机: 改约束只是提案, 扫描结果落地才算数 —— 取消/失败必须退回原状
+# ---------------------------------------------------------------------- #
+async def _cancel_scan(app, pilot, keys):
+    """按 keys 发起一次全量扫描, 确认它在跑, 然后按 Esc 取消并等落定。"""
+    for k in keys:
+        await pilot.press(k)
+    await pilot.pause()
+    assert app._scan_cancel is not None, "扫描应在进行中"
+    await pilot.press("escape")
+    await app.workers.wait_for_complete()
+    for _ in range(4):
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_filter_leaves_no_trace(tmp_path):
+    """回归: Esc 取消扫描曾只停 worker 不退条件 —— 屏幕是全量, 约束模型里却留着被取消的
+    条件, 于是 C 命令和导出血缘都在描述另一个视图。取消就该是"什么都没发生"。"""
+    app = _slow_app()
+    async with app.run_test() as pilot:
+        await _cancel_scan(app, pilot, ["f", *"id<100", "enter"])
+        assert app._where_specs == [] and app._subset is None
+        cmd, _ = app._build_command()
+        assert "id<100" not in cmd
+        out = tmp_path / "o.jsonl"
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(out.read_text().strip().split("\n")) == 300  # 导出的是屏幕上的全量
+        import orjson
+
+        rec = orjson.loads((tmp_path / "o.jsonl.lineage.json").read_bytes())
+        assert rec["operations"][0]["params"]["where"] == []  # 血缘不记未生效的条件
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sort_does_not_claim_sorted():
+    app = _slow_app()
+    async with app.run_test() as pilot:
+        await _cancel_scan(app, pilot, ["s", *"-id", "enter"])
+        assert app._sort_spec is None and app._sort_label is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_condition_is_not_silently_revived():
+    """取消掉的条件不得在下一次操作时被静默 AND 进去。"""
+    app = _slow_app()
+    async with app.run_test() as pilot:
+        await _cancel_scan(app, pilot, ["f", *"id<100", "enter"])
+        for k in ["f", *"id>=200", "enter"]:
+            await pilot.press(k)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [e for e, _ in app._where_specs] == ["id>=200"]
+        assert len(app._subset) == 100  # 200..299, 而非 id<100 and id>=200 的 0 命中
+
+
+@pytest.mark.asyncio
+async def test_malformed_line_is_browsable_not_fatal(tmp_path):
+    """坏行不再打断任何环节: 能打开、能筛、能被搜出来 —— 它成了一条看得见的占位行。"""
+    from dtflow.cli.view.source import PARSE_ERROR_FIELD, open_source
+
+    p = tmp_path / "bad.jsonl"
+    p.write_bytes(
+        b"{ this is not json\n"  # 首行就坏, 以前连界面都进不去
+        b'{"messages":[{"role":"user","content":"a"}],"id":1}\n'
+        b'{"messages":[{"role":"user","content":"b"}],"id":2}\n'
+    )
+    src = open_source(p)
+    app = ViewApp(src, src.window(0, 3), 0, 3, "openai_chat", "bad.jsonl", filepath=str(p))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one("#table").row_count == 3  # 坏行占一行, 行号不错位
+        assert PARSE_ERROR_FIELD in app._visible_columns()  # 坏在哪看得见
+        app._apply_filter("id>=1")  # 扫描不再崩, 也不回滚
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.is_running and app._subset == [1, 2]
+        app.action_reset()
+        await pilot.pause()
+        app._apply_search("not json")  # 反过来: 用搜索把坏行定位出来
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == [0]
+
+
+@pytest.mark.asyncio
+async def test_scan_worker_error_is_reported_not_fatal():
+    """worker 里逃逸的异常必须变成提示 + 回滚, 而不是被 Textual 当致命错误整个退出。
+
+    坏行已在数据源层化解, 这里守的是其余任何意外 (磁盘错误、源实现有 bug 等)。
+    """
+
+    class _BoomSource(RowSource):
+        total = 5
+
+        def window(self, offset, size):
+            return [{"messages": [{"role": "user", "content": "x"}], "id": i} for i in range(5)]
+
+        def iter_all(self, progress_cb=None):
+            yield {"id": 0}
+            raise OSError("源炸了")
+
+        def rows_at(self, indices):
+            return []
+
+    src = _BoomSource()
+    app = ViewApp(src, src.window(0, 5), 0, 5, "openai_chat", "t.jsonl", filepath="t.jsonl")
+    async with app.run_test() as pilot:
+        app._apply_filter("id>=0")
+        await app.workers.wait_for_complete()
+        for _ in range(4):
+            await pilot.pause()
+        assert app.is_running  # 没被打死
+        assert app._scan_cancel is None  # 槽位没泄漏
+        assert app._where_specs == [] and app._subset is None  # 失败 → 回滚
+
+
+@pytest.mark.asyncio
+async def test_field_navigation_reaches_last_field_without_stutter():
+    """回归: 跳到末尾字段时滚动被 max_scroll_y 夹住, 该段并没真对齐到视口顶, 于是滚动
+    反查算出的"顶部可见字段"仍是前一段, 把刚跳过去的字段拽了回来 —— n 走到末尾会原地
+    停一次, 状态栏字段名跟着抖。到底之后不反查即可, 那里本来就区分不了末尾几段。"""
+    rows = [
+        {
+            "messages": [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"第{i}段 " + "内容" * 30,
+                }
+                for i in range(7)
+            ],
+            "source": "x",
+        }
+    ]
+    app = _make_app(rows)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        names = app._field_names()
+        assert len(names) == 8  # msg0..msg6 + 元数据
+
+        seen = []
+        for _ in range(len(names) - 1):
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.pause()  # 让迟到的 scroll watch 落地
+            seen.append(app._current_field())
+        assert seen == names[1:]  # 逐条推进, 不原地停
+
+        back = []
+        for _ in range(len(names) - 1):
+            await pilot.press("N")
+            await pilot.pause()
+            await pilot.pause()
+            back.append(app._current_field())
+        assert back == names[-2::-1]
+
+        # 但用户真的滚动时, 字段指示仍须跟着走 (别为了修抖动把同步整个关掉)
+        detail = app.query_one("#detail")
+        detail.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert app._current_field() == names[0]
+
+
+@pytest.mark.asyncio
+async def test_next_match_reaches_last_field():
+    # * 跳到落在末尾的命中同样不能被拽回来
+    rows = [
+        {
+            "messages": [{"role": "user", "content": f"第{i}段 " + "内容" * 30} for i in range(6)]
+            + [{"role": "assistant", "content": "命中关键词在最后"}]
+        }
+    ]
+    app = _make_app(rows)
+    async with app.run_test(size=(100, 24)) as pilot:
+        app._apply_search("命中关键词")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.action_next_match()
+        await pilot.pause()
+        await pilot.pause()
+        assert app._current_field() == "msg6"

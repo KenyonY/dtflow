@@ -14,13 +14,39 @@ from typing import Callable, Dict, Iterator, List, Optional, Sequence
 
 import orjson
 
+# 坏行占位行的字段名。带前缀且足够具体, 避免与真实数据撞名。
+PARSE_ERROR_FIELD = "_parse_error"
+RAW_LINE_FIELD = "_raw_line"
+_RAW_KEEP = 500  # 原始行留多少字符 (够看出坏在哪, 又不至于把表格撑爆)
+
+
+def _bad_row(line: bytes, err: Exception) -> Dict:
+    """坏行 → 占位行, 而不是抛出。
+
+    dt view 的职责就是"看数据", 而语法坏掉的行恰恰是人打开它要找的东西: 崩掉最差,
+    悄悄跳过次之 (行号会与文件错位, 而且你根本不知道漏了什么), 显示出来才对。
+
+    偏移索引按"非空行"计数, 坏行本就占一个行号 —— 返回占位行, ``#`` 列与文件行号
+    继续对齐, total 也不用改, 索引语义一点不动。
+    """
+    return {
+        PARSE_ERROR_FIELD: f"{type(err).__name__}: {err}",
+        RAW_LINE_FIELD: line.decode("utf-8", errors="replace")[:_RAW_KEEP],
+    }
+
 
 def _loads(line: bytes) -> Dict:
-    """orjson 优先, 失败回退标准 json (与 streaming._stream_jsonl 一致)。"""
+    """orjson 优先, 失败回退标准 json (与 streaming._stream_jsonl 一致)。
+
+    两者都解不动时返回占位行 —— 浏览器不该被一行坏数据挡在门外。
+    """
     try:
         return orjson.loads(line)
     except orjson.JSONDecodeError:
-        return json.loads(line)
+        try:
+            return json.loads(line)  # 标准 json 更宽松 (NaN/Infinity)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            return _bad_row(line, e)
 
 
 class RowSource:
