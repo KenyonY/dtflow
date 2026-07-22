@@ -115,18 +115,8 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
             size /= 1024
         return f"{size:.1f} TB"
 
-    # 快速统计行数
+    # 快速统计行数（_count_rows_fast 覆盖所有支持的格式；None = 文件损坏/无法解析）
     total = _count_rows_fast(str(filepath))
-    if total is None:
-        # 回退：手动计数
-        total = 0
-        try:
-            with open(filepath, "rb") as f:
-                for line in f:
-                    if line.strip():
-                        total += 1
-        except Exception:
-            total = -1
 
     # 读取前几条数据推断字段结构
     sample_data = []
@@ -162,6 +152,10 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
 
             df = pl.scan_ipc(str(filepath)).head(sample_size).collect()
             sample_data = df.to_dicts()
+        elif ext in (".xlsx", ".xls"):
+            import polars as pl
+
+            sample_data = pl.read_excel(str(filepath)).head(sample_size).to_dicts()
         elif ext == ".json":
             with open(filepath, "rb") as f:
                 data = orjson.loads(f.read())
@@ -202,10 +196,11 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
     from rich.table import Table
 
     size_line = f"\n[bold]大小:[/bold] {format_size(file_size)}" if file_size is not None else ""
+    total_text = f"{total:,} 条" if total is not None else "未知（无法解析）"
     log_panel(
         (
             f"[bold]文件:[/bold] {filepath.name}{size_line}\n"
-            f"[bold]总数:[/bold] {total:,} 条\n"
+            f"[bold]总数:[/bold] {total_text}\n"
             f"[bold]字段:[/bold] {len(fields)} 个"
         ),
         title="📊 快速统计",

@@ -59,6 +59,16 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
         elif ext in (".arrow", ".feather"):
             # Arrow: Polars LazyFrame
             return pl.scan_ipc(filepath).select(pl.len()).collect().item()
+        elif ext in (".xlsx", ".xls"):
+            # Excel: 无 lazy scan，只能全量读取
+            return pl.read_excel(filepath).height
+        elif ext == ".json":
+            # JSON: 整体是一个数组，必须全量解析
+            import orjson
+
+            with open(filepath, "rb") as f:
+                obj = orjson.loads(f.read())
+            return len(obj) if isinstance(obj, list) else 1
         elif ext in (".flaxkv", ".kv") or _is_flaxkv_path(path):
             from dtflow.storage.io import _open_flaxlist
 

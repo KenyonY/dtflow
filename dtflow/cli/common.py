@@ -75,28 +75,13 @@ def _get_file_row_count(filepath: Path) -> Optional[int]:
     """
     快速获取文件行数（不加载全部数据）。
 
-    支持 JSONL、CSV、Parquet、Arrow 格式的快速计数。
-    对于不支持的格式（如 JSON、Excel），会加载数据计数。
+    JSONL/CSV/Parquet/Arrow/FlaxList 走流式或元数据计数；
+    JSON/Excel 无 lazy scan，由 _count_rows_fast 内部全量解析。
+    无法解析时返回 None。
     """
     from ..streaming import _count_rows_fast
 
-    # 先尝试快速计数（支持 JSONL/CSV/Parquet/Arrow）
-    count = _count_rows_fast(str(filepath))
-    if count is not None:
-        return count
-
-    # 对于其他格式（JSON、Excel），需要加载数据
-    ext = filepath.suffix.lower()
-    if ext in (".json", ".xlsx", ".xls"):
-        try:
-            from ..storage.io import load_data
-
-            data = load_data(str(filepath))
-            return len(data)
-        except Exception:
-            return None
-
-    return None
+    return _count_rows_fast(str(filepath))
 
 
 def _escape_markup(text: str) -> str:
