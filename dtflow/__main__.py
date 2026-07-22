@@ -201,7 +201,12 @@ def sample(
         "-R",
         help="格式感知渲染: 对话气泡/dpo对比/alpaca分段/通用表格 (默认逐条 JSON)",
     ),
-    where: Optional[List[str]] = typer.Option(None, "--where", "-w", help="筛选条件 (可多次使用)"),
+    where: Optional[List[str]] = typer.Option(
+        None,
+        "--where",
+        "-w",
+        help="筛选条件 字段 运算符 值, 可多次使用 (与关系); 运算符 = != > >= < <= ~=(包含,不分大小写)",
+    ),
 ):
     """从数据文件中采样指定数量的数据
 
@@ -209,6 +214,7 @@ def sample(
         dt sample data.jsonl --num=10                     # 随机 10 条
         dt sample data.jsonl 100 --by=category            # 按字段分层 100 条
         dt sample data.jsonl --where="messages.#>=2"      # 筛选后采样
+        dt sample data.jsonl -w "meta.source~=alpaca"     # 包含子串 (不分大小写)
         dt sample data.jsonl --dist='{"A":0.5,"B":0.5}' --by=label
         dt --format=json sample data.jsonl                # stdout 输出 JSON
 

@@ -616,7 +616,7 @@ async def test_compressed_col_min_width_and_narrow_exempt():
     app = _make_app(rows, fmt="generic")
     async with app.run_test(size=(120, 30)):
         vis = app._visible_columns()
-        w = dict(zip(vis, app._column_widths(vis)))
+        w = dict(zip(vis, app._column_widths(vis), strict=False))
         # 被压的宽文本列下限 8 (不再是 4)
         assert min(w[c] for c in vis if c.startswith("c")) >= 8
         # 天然窄列不被硬撑到 8, 保持自然宽 2
@@ -838,3 +838,232 @@ async def test_rapid_refresh_no_duplicate_ids():
         app._refresh_detail(2)
         await pilot.pause()
         assert app._field_names()  # 详情正常渲染
+
+
+# --------------------------------------------------------------------------- #
+# 包含筛选 (~=): 派生列按全文匹配, 真实字段路径交给 _parse_where
+# --------------------------------------------------------------------------- #
+def test_contains_operator_on_derived_column_matches_full_text():
+    # first_user 表格里只显示前 80 字, 但 ~= 必须搜全文, 否则靠后的词被静默漏掉
+    from dtflow.cli.view.app import _compile_where
+
+    row = {
+        "messages": [
+            {"role": "user", "content": "x" * 200 + "尾部关键词"},
+            {"role": "assistant", "content": "ok"},
+        ],
+        "source": "alpaca_zh",
+    }
+    assert _compile_where("first_user~=尾部关键词", "openai_chat")(row)  # 预览截断外
+    assert not _compile_where("first_user~=不存在的词", "openai_chat")(row)
+    assert _compile_where("source~=alpaca", "openai_chat")(row)  # 真实字段走 _parse_where
+    assert _compile_where("messages[-1].content~=ok", "openai_chat")(row)  # 深层路径
+    # 与其他条件组合
+    assert _compile_where("turns==2 and first_user~=尾部", "openai_chat")(row)
+    assert not _compile_where("turns==3 and first_user~=尾部", "openai_chat")(row)
+
+
+def test_contains_operator_never_numeric():
+    # chars~=200 是子串语义 ("200" in "2003"), 不能被当成数值比较而炸掉
+    from dtflow.cli.view.app import _compile_where
+
+    row = {"messages": [{"role": "user", "content": "x" * 2003}]}
+    assert _compile_where("chars~=200", "openai_chat")(row)
+    assert not _compile_where("chars~=999", "openai_chat")(row)
+
+
+@pytest.mark.asyncio
+async def test_search_matches_beyond_preview_truncation():
+    # / 全量搜索也搜全文: 200 字后的词在表格里看不见, 但必须能被搜到
+    rows = [{"messages": [{"role": "user", "content": "y" * 200 + f"标记{i}"}]} for i in range(5)]
+    app = _make_app(rows)
+    async with app.run_test() as pilot:
+        app._apply_search("标记3")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == [3]
+
+
+# --------------------------------------------------------------------------- #
+# 值面板搜索框: 上千唯一值时靠打字定位, "全选"= 只保留匹配项
+# --------------------------------------------------------------------------- #
+def _tag_app(n=30):
+    """tag 列取 5 个值: alpaca_zh / alpaca_en / sharegpt / dolly / other。"""
+    tags = ["alpaca_zh", "alpaca_en", "sharegpt", "dolly", "other"]
+    rows = [
+        {"messages": [{"role": "user", "content": f"q{i}"}], "tag": tags[i % 5]} for i in range(n)
+    ]
+    return _make_app(rows)
+
+
+@pytest.mark.asyncio
+async def test_value_filter_search_box_filters_options():
+    app = _tag_app(30)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        sl = app.screen.query_one("SelectionList")
+        assert sl.option_count == 5
+        # 输入子串 → 列表只剩匹配项 (大小写不敏感)
+        app.screen.query_one("#vf-search").value = "ALPACA"
+        await pilot.pause()
+        assert sl.option_count == 2
+        shown = {sl.get_option_at_index(i).value for i in range(sl.option_count)}
+        assert shown == {"alpaca_zh", "alpaca_en"}
+        # 清空搜索词 → 恢复全部
+        app.screen.query_one("#vf-search").value = ""
+        await pilot.pause()
+        assert sl.option_count == 5
+
+
+@pytest.mark.asyncio
+async def test_value_filter_search_then_select_all_keeps_only_matches():
+    # 用户诉求"某列包含某子串": 打字 → 全选 → 应用, 三步拿到子集
+    app = _tag_app(30)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.screen.query_one("#vf-search").value = "alpaca"
+        await pilot.pause()
+        await pilot.click("#vf-all")  # 有搜索词: 全选 = 只保留匹配项
+        await pilot.pause()
+        await pilot.click("#vf-apply")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._col_value_filters == {"tag": {"alpaca_zh", "alpaca_en"}}
+        assert app._subset == [i for i in range(30) if i % 5 in (0, 1)]
+
+
+@pytest.mark.asyncio
+async def test_value_filter_selection_survives_search_change():
+    # 勾选状态的真值是 _checked, 不是列表: 被搜索词过滤掉的项不能丢勾选
+    app = _tag_app(30)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        screen, sl = app.screen, app.screen.query_one("SelectionList")
+        await pilot.click("#vf-none")  # 从空集开始
+        await pilot.pause()
+        # 搜 dolly 勾上
+        screen.query_one("#vf-search").value = "dolly"
+        await pilot.pause()
+        sl.select("dolly")
+        await pilot.pause()
+        # 换搜索词: dolly 不在列表里了, 但勾选必须还在
+        screen.query_one("#vf-search").value = "sharegpt"
+        await pilot.pause()
+        assert screen._checked == {"dolly"}
+        sl.select("sharegpt")
+        await pilot.pause()
+        await pilot.click("#vf-apply")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._col_value_filters == {"tag": {"dolly", "sharegpt"}}
+
+
+@pytest.mark.asyncio
+async def test_value_filter_search_deselect_only_matches():
+    # 有搜索词时 "全不选" 只取消匹配项, 不碰其他勾选
+    app = _tag_app(30)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#vf-search").value = "alpaca"
+        await pilot.pause()
+        await pilot.click("#vf-none")  # 只去掉 alpaca_*
+        await pilot.pause()
+        assert screen._checked == {"sharegpt", "dolly", "other"}
+
+
+def _assert_panel_fits(screen, box_id, size):
+    """面板整体在屏内, 且可见按钮不越出面板 (溢出时最先被裁的就是按钮行)。"""
+    from textual.widgets import Button
+
+    box = screen.query_one(box_id).region
+    assert box.bottom <= size[1] and box.right <= size[0], f"{box_id} 溢出屏幕 {box}"
+    for b in screen.query(Button):
+        if not b.display:  # 窄屏下 全选/全不选 会被主动隐藏, 键盘 a/n 仍可用
+            continue
+        assert b.region.bottom <= box.bottom, f"{b.label} 纵向被裁"
+        assert b.region.right <= box.right, f"{b.label} 横向被裁"
+
+
+# 支持区间的下沿 (屏高 11 / 屏宽 40) 也要覆盖: 边界只测通过侧等于没测边界
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(110, 40), (100, 24), (100, 16), (80, 14), (80, 12), (40, 24)])
+async def test_panels_fit_screen_on_short_terminals(size):
+    app = _tag_app(40)
+    async with app.run_test(size=size) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        _assert_panel_fits(app.screen, "#vf-box", size)
+        app.screen.dismiss(None)
+        await pilot.pause()
+        app.action_columns()  # 列选择面板同样的结构, 同样不能裁
+        await pilot.pause()
+        _assert_panel_fits(app.screen, "#picker-box", size)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(120, 40), (120, 30), (100, 24), (80, 14)])
+async def test_help_screen_fits_and_scrolls(size):
+    """帮助文本只会越加越长: 超屏时必须可滚动, 不能把末尾几行连边框一起裁掉。"""
+    from textual.containers import VerticalScroll
+
+    app = _chat_app(5)
+    async with app.run_test(size=size) as pilot:
+        await pilot.press("question_mark")
+        await pilot.pause()
+        box = app.screen.query_one("#help-box", VerticalScroll)
+        assert box.region.bottom <= size[1] and box.region.right <= size[0]
+        # 装不下时靠滚动而非裁剪; 30 行终端已经装不下当前帮助
+        if size[1] < 34:
+            assert box.max_scroll_y > 0
+
+
+def test_contains_operator_is_case_insensitive():
+    """~= 是"找包含某个词", 三个入口 (f 的 ~= / 全量搜索 / 值面板搜索框) 必须同语义。
+
+    要区分大小写用 == / !=。此前 ~= 敏感而另两个不敏感, 同一个词换个入口就 0 命中。
+    """
+    from dtflow.cli.sample import _parse_where
+    from dtflow.cli.view.app import _compile_where
+
+    row = {"messages": [{"role": "user", "content": "A" * 100 + "TAIL_Key"}], "source": "Alpaca_ZH"}
+    assert _compile_where("first_user~=tail_key", "openai_chat")(row)  # 派生列
+    assert _compile_where("first_user~=TAIL_KEY", "openai_chat")(row)
+    assert _compile_where("source~=ALPACA", "openai_chat")(row)  # 真实字段路径
+    assert _compile_where("source~=alpaca", "openai_chat")(row)
+    assert _parse_where("source~=ALPACA")(row)  # CLI --where 同语义
+    assert not _compile_where("source==alpaca", "openai_chat")(row)  # == 仍精确
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(120, 30), (40, 24)])
+async def test_both_pickers_hint_mentions_keys(size):
+    """两个勾选面板的提示必须讲按键: 窄屏下 全选/全不选 按钮会被隐藏, 只讲按钮等于没讲。"""
+    from textual.widgets import Static
+
+    from dtflow.cli.view.app import _PICK_HINT
+
+    assert "a/n" in _PICK_HINT
+    app = _tag_app(30)
+    async with app.run_test(size=size) as pilot:
+        app.action_columns()  # 列选择面板
+        await pilot.pause()
+        assert _PICK_HINT in str(app.screen.query_one("#picker-hint", Static).render())
+        app.screen.dismiss(None)
+        await pilot.pause()
+        app._start_value_scan("tag")  # 值筛选面板: 无搜索词时同一句
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert _PICK_HINT in str(app.screen.query_one("#picker-hint", Static).render())
+        app.screen.query_one("#vf-search").value = "alpaca"  # 有搜索词时改讲 a 的新语义
+        await pilot.pause()
+        assert "a 全选" in str(app.screen.query_one("#picker-hint", Static).render())

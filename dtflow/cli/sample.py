@@ -41,7 +41,7 @@ def _parse_where(condition: str) -> Callable[[dict], bool]:
     支持的操作符:
         =   等于
         !=  不等于
-        ~=  包含（字符串）
+        ~=  包含（子串，不区分大小写）
         >   大于
         >=  大于等于
         <   小于
@@ -88,10 +88,11 @@ def _parse_where(condition: str) -> Callable[[dict], bool]:
                 return value != "" and value.lower() != "none"
             return str(field_value) != value and field_value != parsed_value
         elif op == "~=":
-            # 包含
+            # 包含: 不区分大小写 —— "包含某个词"是人在找数据, 不是精确比对;
+            # 要区分大小写用 = / !=。dt view 的 / 搜索和值面板搜索框同此语义。
             if field_value is None:
                 return False
-            return value in str(field_value)
+            return value.lower() in str(field_value).lower()
         elif op in (">", ">=", "<", "<="):
             # 数值比较
             if field_value is None:

@@ -78,8 +78,11 @@ def _as_text(v: Any) -> str:
     return str(v)
 
 
-def _preview(text: str, n: int = 40) -> str:
+def _preview(text: str, n: Optional[int] = 40) -> str:
+    """压平成单行; n=None 表示不截断 (搜索/包含筛选用全文, 不能只看可见前缀)。"""
     text = text.replace("\n", " ").strip()
+    if n is None:
+        return text
     return text[:n] + "…" if len(text) > n else text
 
 
@@ -147,12 +150,21 @@ def build_columns(rows: List[Dict], fmt: str) -> List[str]:
 
 
 def row_cells(
-    idx: int, row: Dict, fmt: str, columns: List[str], row_no: Optional[int] = None
+    idx: int,
+    row: Dict,
+    fmt: str,
+    columns: List[str],
+    row_no: Optional[int] = None,
+    preview: bool = True,
 ) -> List[str]:
     """把一行数据转成表格单元格字符串列表 (与 columns 对齐)。
 
     row_no: 用于 ``#`` 列显示的行号 (0-based); None 时用 idx (窗口化后应传全局行号)。
+    preview: False 时文本列不截断 —— 搜索/包含筛选须匹配全文, 否则长内容里靠后的
+             关键词会被"只搜可见前缀"静默漏掉。表格显示/值勾选仍用 True。
     """
+    n_long = 80 if preview else None  # 长文本列 (first_user/prompt/instruction)
+    n_meta = 60 if preview else None  # 普通标量列
     derived: Dict[str, Any] = {"#": str((idx if row_no is None else row_no) + 1)}
 
     if fmt in ("openai_chat", "sharegpt"):
@@ -161,18 +173,18 @@ def row_cells(
         derived.update(
             turns=str(len(turns)),
             roles=_roles_sig(turns),
-            first_user=_preview(first_user, 80),
+            first_user=_preview(first_user, n_long),
             chars=str(sum(len(c) for _, c in turns)),
         )
     elif fmt == "dpo":
         derived.update(
-            prompt=_preview(_as_text(row.get("prompt", "")), 80),
+            prompt=_preview(_as_text(row.get("prompt", "")), n_long),
             chosen_chars=str(len(_as_text(row.get("chosen", "")))),
             rejected_chars=str(len(_as_text(row.get("rejected", "")))),
         )
     elif fmt == "alpaca":
         derived.update(
-            instruction=_preview(_as_text(row.get("instruction", "")), 80),
+            instruction=_preview(_as_text(row.get("instruction", "")), n_long),
             has_input="✓" if row.get("input") else "",
             out_chars=str(len(_as_text(row.get("output") or row.get("response") or ""))),
         )
@@ -183,7 +195,7 @@ def row_cells(
             cells.append(derived[col])
         else:
             v = row.get(col) if isinstance(row, dict) else None
-            cells.append("" if v is None else _preview(str(v), 60))
+            cells.append("" if v is None else _preview(str(v), n_meta))
     return cells
 
 

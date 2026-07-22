@@ -367,6 +367,20 @@ class TestWhereFilter:
         assert len(result) > 0
         assert all("Question 1" in item["question"] for item in result)
 
+    def test_where_contains_is_case_insensitive(self):
+        """~= 是"找包含某个词"，不区分大小写；要区分大小写用 = / !=。
+
+        dt view 的 f 筛选、/ 搜索、值面板搜索框共用这个语义，四处必须一致。
+        """
+        from dtflow.cli.sample import _parse_where
+
+        item = {"question": "What is Alpha_ZH?"}
+        assert _parse_where("question~=alpha")(item)
+        assert _parse_where("question~=ALPHA")(item)
+        assert _parse_where("question~=Alpha")(item)
+        assert not _parse_where("question=alpha")(item)  # = 仍精确
+        assert not _parse_where("question~=beta")(item)
+
     def test_where_nested_field(self, sample_nested_file, tmp_path, capsys):
         """Test where filter on nested fields."""
         filepath, _ = sample_nested_file

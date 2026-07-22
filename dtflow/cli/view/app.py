@@ -34,7 +34,8 @@ def _compile_atom(expr: str, fmt: str):
     """编译单个条件 ``字段 运算符 值`` → predicate(row)->bool。
 
     字段直接用表格里看到的列名 (turns/roles/chars/source 等):
-    - 若是**派生列** (计算列, 无字段路径, 如 chars/turns) → 按该列表格显示值比较;
+    - 若是**派生列** (计算列, 无字段路径, 如 chars/turns/first_user) → 按该列的值比较;
+      ``~=`` (包含) 匹配未截断的完整文本, 不是表格里那 80 字的预览。
     - 否则当**真实字段路径**交给 _parse_where (标量列名 source, 或深层 messages.#>=2)。
     """
     import operator
@@ -45,12 +46,15 @@ def _compile_atom(expr: str, fmt: str):
         (">=", operator.ge),
         ("<=", operator.le),
         ("!=", operator.ne),
+        # 包含; 必须排在 "=" 之前。不区分大小写, 与 _parse_where、/ 搜索、值面板搜索框一致
+        ("~=", lambda cell, v: v.lower() in cell.lower()),
         ("==", operator.eq),
         (">", operator.gt),
         ("<", operator.lt),
         ("=", operator.eq),
     ]
     field = op = value = None
+    token = ""
     for token, _op in ops:
         if token in expr:
             field, _, value = expr.partition(token)
@@ -62,17 +66,22 @@ def _compile_atom(expr: str, fmt: str):
 
     col = field_s
     value = (value or "").strip()
-    try:
-        cmp_value = float(value)
-        numeric = True
-    except ValueError:
-        cmp_value = value
-        numeric = False
+    if token == "~=":  # 包含永远是字符串语义, 不能把 "2000" 当数字比
+        numeric, cmp_value = False, value
+    else:
+        try:
+            cmp_value = float(value)
+            numeric = True
+        except ValueError:
+            cmp_value = value
+            numeric = False
+    # 包含筛选要看全文 (预览只有 80 字, 截断会静默漏掉靠后的关键词)
+    preview = token != "~="
 
     def predicate(row) -> bool:
         if not isinstance(row, dict):
             return False
-        cell = render.row_cells(0, row, fmt, [col])[0]
+        cell = render.row_cells(0, row, fmt, [col], preview=preview)[0]
         if cell == "":
             return False
         if numeric:
@@ -146,12 +155,15 @@ _HELP = """[b]dt view 快捷键[/b]
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
   s            排序 (输入列名, 加 - 反向, 仅当前窗口内)
   S            列快照 (某列的 n·min·max·mean·非空率, 当前浏览序列; 完整分布用 dt stats)
-  /            全量搜索 (子串, 全字段, 扫描整个文件 → 命中子集)
+  /            全量搜索 (子串, 全字段全文, 扫描整个文件 → 命中子集)
   f            全量筛选 (扫全文件 → 命中子集): 列名取表头所见
-                 单条件  列名 运算符 值   运算符: > >= < <= == != =
+                 单条件  列名 运算符 值   运算符: > >= < <= == != = ~=(包含,不分大小写)
                  例: chars>2000 · turns>=6 · source==alpaca · messages.#>=2(深层字段)
+                 包含: first_user~=退款 · source~=alpaca · messages[0].content~=报错
+                       messages[*].content:join~=词  (搜整段对话, :join 不可省)
                  多条件  and / or 组合   例: turns>=6 and chars<2000
   F / 点列头   列值勾选筛选 (Excel 式): 列出该列唯一值+频次, 勾选保留哪些 → 子集
+                 顶部搜索框按子串过滤候选值; 有搜索词时 a(全选) = 只保留匹配项
                  被筛的列头带 ▾ 标记; 再次打开可加回之前去掉的值 (全选=清除该列筛选)
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
@@ -176,11 +188,55 @@ class _FieldStatic(Static):
         event.stop()
 
 
+def _fit_panel(screen, sl: SelectionList, chrome: int, hard_max: int) -> int:
+    """把勾选面板压进当前终端尺寸; 返回列表最终高度。
+
+    面板是 height:auto, 列表却有固定 max-height —— 内容总高一旦超过屏幕,
+    超出部分被静默裁剪, 最先没的就是排在最后的按钮行 (矮终端上按钮凭空消失)。
+    这里反过来算: 列表能占的 = 屏高 - 固定装饰(chrome, 含边框/标题/提示/按钮行) - 1。
+
+    装不下时按"可推断的先牺牲"排序: 列表压到 3 行 → 去掉提示行(换 2 行) → 窄屏去掉
+    全选/全不选按钮(键盘 a/n 仍可用), 始终保住应用/取消。屏高 11 行 / 屏宽 40 列以下
+    仍会裁 —— 那种尺寸下 dt view 主界面本身就没法用了, 不做适配。
+
+    对面板的约定 (新加勾选面板时照做, 否则降级不会生效): 提示行 id 为 ``picker-hint``,
+    次要按钮 id 以 ``-all`` / ``-none`` 结尾 (如 ``cp-all``/``vf-none``)。
+    """
+    size = screen.app.size
+    avail = size.height - chrome - 1
+    if avail < 3:
+        screen.query_one("#picker-hint", Static).display = False
+        avail += 2
+    list_h = max(1, min(hard_max, avail))
+    sl.styles.max_height = list_h
+    if size.width < 50:  # 4 个按钮横排需要 ~38 列内容宽, 窄屏只留最关键的两个
+        for btn in screen.query(Button):
+            if str(btn.id).endswith(("-all", "-none")):
+                btn.display = False
+    return list_h
+
+
+# 勾选面板的默认提示。讲按键而不只是按钮名: 窄屏下 _fit_panel 会隐藏 全选/全不选
+# 两个按钮, 只讲按钮等于没讲。两个面板共用同一句, 免得改一处漏一处。
+_PICK_HINT = "空格 勾选/取消 · a/n 全选/全不选 · 亦可点下方按钮"
+
+# 面板中列表之外的固定行数 (边框2 + 内边距2 + 标题1 + 提示1&margin1 + 按钮1&margin1)
+_PICKER_CHROME = 10
+_VF_CHROME = _PICKER_CHROME + 2  # 值面板多一行搜索框 + 其 margin
+
+
 class HelpScreen(ModalScreen):
+    """帮助。放在 VerticalScroll 里: 帮助文本只会越加越长, 而终端高度是给定的,
+    定高 Static 一旦超屏就把末尾几行连边框一起静默裁掉 (最先没的正是 q 退出那行)。"""
+
     BINDINGS = [Binding("escape,q,question_mark", "dismiss", "关闭")]
 
     def compose(self) -> ComposeResult:
-        yield Static(Text.from_markup(_HELP), id="help-box")
+        with VerticalScroll(id="help-box"):
+            yield Static(Text.from_markup(_HELP))
+
+    def on_mount(self) -> None:
+        self.query_one("#help-box", VerticalScroll).focus()  # 矮终端下可用 ↑↓ 滚动
 
 
 class ColumnPicker(ModalScreen):
@@ -203,7 +259,7 @@ class ColumnPicker(ModalScreen):
         with Vertical(id="picker-box"):
             yield Static("[b]选择要显示的列[/b]", id="picker-title")
             yield SelectionList(id="cols")
-            yield Static("[dim]空格 勾选/取消 · 亦可点下方按钮[/dim]", id="picker-hint")
+            yield Static(f"[dim]{_PICK_HINT}[/dim]", id="picker-hint")
             with Horizontal(classes="panel-btns"):
                 yield Button("全选", id="cp-all")
                 yield Button("全不选", id="cp-none")
@@ -222,6 +278,7 @@ class ColumnPicker(ModalScreen):
         sl = self.query_one(SelectionList)
         for col in self._columns:
             sl.add_option(Selection(Text(col), col, col not in self._hidden))
+        _fit_panel(self, sl, _PICKER_CHROME, hard_max=20)
         sl.focus()
 
     def action_all(self) -> None:
@@ -240,9 +297,15 @@ class ColumnPicker(ModalScreen):
 class ValueFilterScreen(ModalScreen):
     """Excel 式列值勾选筛选: 列出某列唯一值(带频次), 勾选要保留的值。
 
+    - 顶部搜索框实时按子串过滤候选值 (大小写不敏感), 唯一值成百上千时靠它定位。
+    - 有搜索词时 全选/全不选 只作用于匹配项, 且"全选"= 只保留匹配项 (Excel 语义),
+      于是"某列包含某子串"= 打字 → 全选 → Enter。
     - prior 非 None 时回显上次保留集 (故可把去掉的值重新勾回); 否则默认全选。
     - anchor 非 None 时面板贴着被点列头下方弹出 (右溢出自动左移), 否则居中。
     - Enter 应用返回勾选集合, Esc 返回 None (取消)。
+
+    勾选状态的真值是 ``self._checked``, 不是 SelectionList —— 列表随搜索词重建,
+    被过滤掉的项不在列表里, 只能靠 _checked 记住。
     """
 
     _BOX_W = 56
@@ -250,6 +313,7 @@ class ValueFilterScreen(ModalScreen):
     BINDINGS = [
         Binding("enter", "close", "应用", priority=True),
         Binding("escape", "cancel", "取消", priority=True),
+        Binding("down", "focus_list", "进入列表", show=False),
         Binding("a", "all", "全选"),
         Binding("n", "none", "全不选"),
     ]
@@ -261,12 +325,17 @@ class ValueFilterScreen(ModalScreen):
         self._total = total
         self._prior = prior  # 上次保留值集 (None=未筛→默认全选)
         self._anchor = anchor  # (x, y) 列头下方; None=居中
+        self._checked: Set[str] = (
+            {v for v, _ in items} if prior is None else {v for v, _ in items if v in prior}
+        )
+        self._query = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="vf-box"):
-            yield Static(f"[b]按 {escape(self._col)} 值筛选[/b]", id="picker-title")
+            yield Static(id="picker-title")
+            yield Input(placeholder="输入子串过滤候选值…", id="vf-search")
             yield SelectionList(id="cols")
-            yield Static("[dim]空格 勾选/取消 · 亦可点下方按钮[/dim]", id="picker-hint")
+            yield Static(id="picker-hint")
             with Horizontal(classes="panel-btns"):  # 鼠标可点: 全流程无需回键盘
                 yield Button("全选", id="vf-all")
                 yield Button("全不选", id="vf-none")
@@ -282,29 +351,81 @@ class ValueFilterScreen(ModalScreen):
         }[event.button.id]()
 
     def on_mount(self) -> None:
-        sl = self.query_one(SelectionList)
-        for val, cnt in self._items:
-            label = val if val != "" else "(空)"
-            if len(label) > 46:
-                label = label[:45] + "…"
-            checked = True if self._prior is None else (val in self._prior)
-            sl.add_option(Selection(Text(f"{label}  ({cnt})"), val, checked))
-        sl.focus()
-        if self._anchor is not None:  # 贴列头下方弹出, 右溢出则左移使面板不超屏
+        self._rebuild()
+        self.query_one("#vf-search", Input).focus()  # 打开即可打字过滤; ↓ 进列表勾选
+        list_h = _fit_panel(self, self.query_one(SelectionList), _VF_CHROME, hard_max=14)
+        if self._anchor is not None:  # 贴列头下方弹出; 右/下溢出则左移上移, 保证整块可见
             x, y = self._anchor
             x = max(0, min(x, self.app.size.width - self._BOX_W))
+            y = min(y, max(0, self.app.size.height - (list_h + _VF_CHROME)))
             box = self.query_one("#vf-box", Vertical)
             self.styles.align = ("left", "top")
             box.styles.offset = (x, y)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._sync()  # 先把当前列表的勾选并回 _checked, 再按新词重建
+        self._query = event.value.strip().lower()
+        self._rebuild()
+
+    # -------------------------------------------------------------- #
+    def _matched(self) -> List:
+        """当前搜索词命中的候选值 [(值, 频次)]; 空词=全部。"""
+        if not self._query:
+            return self._items
+        return [(v, c) for v, c in self._items if self._query in v.lower()]
+
+    def _sync(self) -> None:
+        """把列表里(即当前匹配项)的勾选状态并回 _checked; 未显示的项保持原状。"""
+        try:
+            sl = self.query_one(SelectionList)
+        except NoMatches:
+            return
+        selected = set(sl.selected)
+        for val, _ in self._matched():
+            if val in selected:
+                self._checked.add(val)
+            else:
+                self._checked.discard(val)
+
+    def _rebuild(self) -> None:
+        sl = self.query_one(SelectionList)
+        sl.clear_options()
+        matched = self._matched()
+        for val, cnt in matched:
+            label = val if val != "" else "(空)"
+            if len(label) > 46:
+                label = label[:45] + "…"
+            sl.add_option(Selection(Text(f"{label}  ({cnt})"), val, val in self._checked))
+        scope = f"匹配 {len(matched)}/{self._total}" if self._query else f"{self._total} 个值"
+        self.query_one("#picker-title", Static).update(
+            Text.from_markup(f"[b]按 {escape(self._col)} 值筛选[/b] [dim]({scope})[/dim]")
+        )
+        hint = "a 全选 = 只保留匹配项 · ↓ 进列表空格勾选" if self._query else _PICK_HINT
+        self.query_one("#picker-hint", Static).update(Text.from_markup(f"[dim]{hint}[/dim]"))
+
+    # -------------------------------------------------------------- #
+    def action_focus_list(self) -> None:
+        self.query_one(SelectionList).focus()
+
     def action_all(self) -> None:
-        self.query_one(SelectionList).select_all()
+        """无搜索词: 全选。有搜索词: 只保留匹配项 (非匹配项一并取消)。"""
+        if self._query:
+            self._checked = {v for v, _ in self._matched()}
+        else:
+            self._checked = {v for v, _ in self._items}
+        self._rebuild()
 
     def action_none(self) -> None:
-        self.query_one(SelectionList).deselect_all()
+        """无搜索词: 全不选。有搜索词: 只取消匹配项。"""
+        if self._query:
+            self._checked -= {v for v, _ in self._matched()}
+        else:
+            self._checked = set()
+        self._rebuild()
 
     def action_close(self) -> None:
-        self.dismiss(set(self.query_one(SelectionList).selected))
+        self._sync()
+        self.dismiss(set(self._checked))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -324,17 +445,26 @@ class ViewApp(App):
     #prompt { dock: bottom; display: none; }
     #prompt.active { display: block; }
     #status { dock: bottom; height: 1; background: $panel; color: $text-muted; padding: 0 1; }
-    #help-box { padding: 1 2; border: round $primary; background: $surface; width: auto; }
+    /* 宽度写死: VerticalScroll 的 width:auto 会塌缩 (滚动容器不按内容测宽),
+       98 = 帮助最长行 + 内边距 + 边框; max-* 100% 保证窄/矮终端下改为滚动而非被裁 */
+    #help-box { padding: 1 2; border: round $primary; background: $surface;
+                width: 98; max-width: 100%; height: auto; max-height: 100%; }
+    #help-box Static { width: auto; }
     ColumnPicker { align: center middle; }
-    #picker-box { width: 56; height: auto; max-height: 85%; border: round $primary;
+    #picker-box { width: 56; max-width: 100%; height: auto; max-height: 100%;
+              border: round $primary;
                   background: $surface; padding: 1 2; }
     #picker-title { text-align: center; width: 1fr; margin-bottom: 1; }
     #picker-box #cols { width: 1fr; height: auto; max-height: 20; background: $surface; }
     #picker-hint { text-align: center; width: 1fr; margin-top: 1; }
     ValueFilterScreen { align: center middle; }
-    #vf-box { width: 56; height: auto; max-height: 85%; border: round $primary;
+    #vf-box { width: 56; max-width: 100%; height: auto; max-height: 100%;
+              border: round $primary;
               background: $surface; padding: 1 2; }
-    #vf-box #cols { width: 1fr; height: auto; max-height: 16; background: $surface; }
+    #vf-box #cols { width: 1fr; height: auto; max-height: 14; background: $surface; }
+    /* 紧凑搜索框: 去掉 Input 默认 border 占的 2 行, 面板不至于顶到屏幕外 */
+    #vf-search { border: none; height: 1; padding: 0; margin-bottom: 1;
+                 background: $boost; width: 1fr; }
     /* 紧凑单行按钮 (去掉 Button 默认的边框/height:3/min-width:16, 不再又大又丑) */
     .panel-btns { width: 1fr; height: auto; align: center middle; margin-top: 1; }
     .panel-btns Button {
@@ -466,7 +596,7 @@ class ViewApp(App):
     def _add_columns(self, table: DataTable) -> None:
         """显式给每列宽度, 避免 DataTable 对全表自动测量 (大文件会两阶段闪烁 + 卡顿)。"""
         vis = self._visible_columns()
-        for name, w in zip(vis, self._column_widths(vis)):
+        for name, w in zip(vis, self._column_widths(vis), strict=False):
             table.add_column(self._header_label(name), width=w)
 
     def _column_widths(self, vis: List[str]) -> List[int]:
@@ -983,7 +1113,8 @@ class ViewApp(App):
     def action_filter(self) -> None:
         self._open_prompt(
             "filter",
-            "全量筛选 列名(表头所见) 运算符 值; and/or 组合 (如 turns>=6 and chars<2000):",
+            "全量筛选 列名 运算符 值 (~= 为包含); and/or 组合 "
+            "(如 turns>=6 and first_user~=退款):",
         )
 
     def action_value_filter(self) -> None:
@@ -1027,7 +1158,8 @@ class ViewApp(App):
         fmt = self.fmt
 
         def predicate(row: Dict) -> bool:
-            return any(low in c.lower() for c in render.row_cells(0, row, fmt, vis))
+            # preview=False: 搜全文而非表格可见前缀, 否则长内容靠后的词会被静默漏掉
+            return any(low in c.lower() for c in render.row_cells(0, row, fmt, vis, preview=False))
 
         self._expr_pred = predicate
         self._expr_label = f"搜索'{text}'"
@@ -1149,14 +1281,16 @@ class ViewApp(App):
                 if cancel.is_set():
                     return
                 chunk = self._subset[start : start + 1000]
-                for gidx, row in zip(chunk, self.source.rows_at(chunk)):
+                for gidx, row in zip(chunk, self.source.rows_at(chunk), strict=False):
                     yield gidx, row
 
     # ------------------------------------------------------------------ #
     # 列值勾选筛选 (Excel AutoFilter): 列出该列"在其他约束下"的全量唯一值 → 勾选 → 该列值约束
     # 列出全量值 (而非当前子集) + 回显上次勾选 → 可反复调整/把去掉的加回
     # ------------------------------------------------------------------ #
-    _VALUE_FILTER_MAX_UNIQUE = 300  # 唯一值超此数不适合逐个勾, 引导改用 f 条件筛选
+    # 面板带搜索框后, 上千唯一值也能用 (打字过滤 → 全选); 此数只防"唯一值≈行数"
+    # 的列 (如 first_user) 把内存和列表撑爆, 那种列该用 f 的 ``列~=子串``。
+    _VALUE_FILTER_MAX_UNIQUE = 2000
 
     def _start_value_scan(self, col: str) -> None:
         import threading
@@ -1220,7 +1354,10 @@ class ViewApp(App):
             return
         if status == "exceeded":
             self.notify(
-                escape(f"{col} 唯一值过多 (>{self._VALUE_FILTER_MAX_UNIQUE}), 请用 f 条件筛选"),
+                escape(
+                    f"{col} 唯一值过多 (>{self._VALUE_FILTER_MAX_UNIQUE}), "
+                    f"改用 f 条件筛选, 如 {col}~=子串 (包含)"
+                ),
                 severity="warning",
             )
             return
