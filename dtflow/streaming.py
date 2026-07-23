@@ -25,8 +25,27 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-# 支持的流式格式
-STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv", ".kv"}
+# 支持的流式格式。分发一律走 storage.io._detect_format, 不再各处比较扩展名字符串 ——
+# "这是什么格式"只该有一个答案, 分散成 5 处 ext== 比较, 新格式必然漏掉其中几处
+# (.ndjson 就是这么掉出流式路径的: 它和 .jsonl 是同一种东西, 却因为字符串不等而全量入内存)。
+STREAMING_FORMATS = {
+    ".jsonl",
+    ".ndjson",
+    ".csv",
+    ".tsv",
+    ".parquet",
+    ".arrow",
+    ".feather",
+    ".flaxkv",
+    ".kv",
+}
+
+
+def _fmt_of(filepath) -> str:
+    """该文件的规范格式名 (jsonl/csv/tsv/parquet/arrow/excel/json/flaxkv)。"""
+    from dtflow.storage.io import _detect_format
+
+    return _detect_format(Path(filepath))
 
 
 def _is_flaxkv_path(path: Path) -> bool:
@@ -44,15 +63,17 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
     """快速统计文件行数（不加载数据）"""
     path = Path(filepath)
     ext = path.suffix.lower()
+    fmt = _fmt_of(path)
 
     try:
-        if ext == ".jsonl":
-            # JSONL: 直接数换行符
+        if fmt == "jsonl":
+            # JSONL/NDJSON: 直接数换行符
             with open(filepath, "rb") as f:
                 return sum(1 for line in f if line.strip())
-        elif ext == ".csv":
-            # CSV: Polars LazyFrame
-            return pl.scan_csv(filepath).select(pl.len()).collect().item()
+        elif fmt in ("csv", "tsv"):
+            # CSV/TSV: Polars LazyFrame
+            sep = "\t" if fmt == "tsv" else ","
+            return pl.scan_csv(filepath, separator=sep).select(pl.len()).collect().item()
         elif ext == ".parquet":
             # Parquet: Polars LazyFrame
             return pl.scan_parquet(filepath).select(pl.len()).collect().item()
@@ -147,15 +168,21 @@ class StreamingTransformer:
         # 快速统计总行数（用于进度条）
         total = _count_rows_fast(filepath)
 
+        fmt = _fmt_of(filepath)
         if is_flaxkv:
             return cls(_stream_flaxkv(filepath), source_path=filepath, total=total)
-        elif ext == ".jsonl":
+        elif fmt == "jsonl":
             return cls(_stream_jsonl(filepath), source_path=filepath, total=total)
-        elif ext == ".csv":
-            return cls(_stream_csv(filepath, batch_size), source_path=filepath, total=total)
-        elif ext == ".parquet":
+        elif fmt in ("csv", "tsv"):
+            sep = "\t" if fmt == "tsv" else ","
+            return cls(
+                _stream_csv(filepath, batch_size, separator=sep),
+                source_path=filepath,
+                total=total,
+            )
+        elif fmt == "parquet":
             return cls(_stream_parquet(filepath, batch_size), source_path=filepath, total=total)
-        elif ext in (".arrow", ".feather"):
+        elif fmt == "arrow":
             return cls(_stream_arrow(filepath), source_path=filepath, total=total)
         else:
             raise ValueError(f"未知格式: {ext}")
@@ -184,17 +211,17 @@ class StreamingTransformer:
 
         def generator():
             for filepath in files:
-                ext = Path(filepath).suffix.lower()
-                if ext == ".jsonl":
-                    yield from _stream_jsonl(filepath)
-                elif ext == ".csv":
-                    yield from _stream_csv(filepath, batch_size)
-                elif ext == ".parquet":
+                fmt = _fmt_of(filepath)
+                if fmt in ("csv", "tsv"):
+                    yield from _stream_csv(
+                        filepath, batch_size, separator="\t" if fmt == "tsv" else ","
+                    )
+                elif fmt == "parquet":
                     yield from _stream_parquet(filepath, batch_size)
-                elif ext in (".arrow", ".feather"):
+                elif fmt == "arrow":
                     yield from _stream_arrow(filepath)
                 else:
-                    # 默认当作 JSONL
+                    # jsonl/ndjson 及未知扩展名: 一律按 JSONL 读 (与 _detect_format 一致)
                     yield from _stream_jsonl(filepath)
 
         return cls(generator(), source_path=pattern)
@@ -606,24 +633,16 @@ class StreamingTransformer:
         """
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
-        ext = path.suffix.lower()
 
         # flaxkv: .flaxkv 后缀或无后缀（通过 _detect_format 判断）
-        from dtflow.storage.io import _detect_format
-
-        fmt = _detect_format(path)
+        fmt = _fmt_of(path)
 
         if fmt == "flaxkv":
             count = self._save_flaxkv_stream(filepath, batch_size, show_progress)
-        elif ext == ".jsonl":
-            count = self._save_jsonl(filepath, show_progress)
-        elif ext == ".csv":
-            count = self._save_batched(filepath, "csv", batch_size, show_progress)
-        elif ext == ".parquet":
-            count = self._save_batched(filepath, "parquet", batch_size, show_progress)
-        elif ext in (".arrow", ".feather"):
-            count = self._save_batched(filepath, "arrow", batch_size, show_progress)
+        elif fmt in ("csv", "tsv", "parquet", "arrow"):
+            count = self._save_batched(filepath, fmt, batch_size, show_progress)
         else:
+            # jsonl/ndjson 及未知扩展名: 按 JSONL 写 (与 _detect_format 一致)
             count = self._save_jsonl(filepath, show_progress)
 
         # 打印错误摘要
@@ -695,13 +714,14 @@ class StreamingTransformer:
 
             df = pl.DataFrame(items)
 
-            if fmt == "csv":
+            if fmt in ("csv", "tsv"):
+                sep = "\t" if fmt == "tsv" else ","
                 if is_first:
-                    df.write_csv(path)
+                    df.write_csv(path, separator=sep)
                 else:
-                    # CSV 追加模式：不写表头
+                    # CSV/TSV 追加模式：不写表头
                     with open(path, "ab") as f:
-                        f.write(df.write_csv(include_header=False).encode("utf-8"))
+                        f.write(df.write_csv(include_header=False, separator=sep).encode("utf-8"))
 
             elif fmt == "parquet":
                 import pyarrow as pa
@@ -1073,9 +1093,11 @@ def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
                         ) from e
 
 
-def _stream_csv(filepath: str, batch_size: int = 10000) -> Generator[Dict[str, Any], None, None]:
-    """CSV 流式读取（使用 Polars BatchedCsvReader）"""
-    reader = pl.read_csv_batched(filepath, batch_size=batch_size)
+def _stream_csv(
+    filepath: str, batch_size: int = 10000, separator: str = ","
+) -> Generator[Dict[str, Any], None, None]:
+    """CSV/TSV 流式读取（使用 Polars BatchedCsvReader）。separator 决定 csv 还是 tsv。"""
+    reader = pl.read_csv_batched(filepath, batch_size=batch_size, separator=separator)
     while True:
         batches = reader.next_batches(1)
         if not batches:

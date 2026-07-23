@@ -55,7 +55,7 @@ dt = DataTransformer.load("data.jsonl")
 ### 数据加载与保存
 
 ```python
-# 支持 JSONL、JSON、CSV、Parquet、Arrow（使用 Polars 引擎，比 Pandas 快 3x）
+# 支持 JSONL/NDJSON、JSON、CSV/TSV、Parquet、Arrow、Excel（使用 Polars 引擎，比 Pandas 快 3x）
 dt = DataTransformer.load("data.jsonl")
 dt.save("output.jsonl")
 
@@ -651,7 +651,7 @@ dt logs                     # 查看使用说明
 
 ### 大文件流式处理
 
-专为超大文件设计的流式处理接口，内存占用 O(1)，支持 JSONL、CSV、Parquet、Arrow 格式：
+专为超大文件设计的流式处理接口，内存占用 O(1)，支持 JSONL/NDJSON、CSV/TSV、Parquet、Arrow 格式：
 
 ```python
 from dtflow import load_stream, load_sharded
@@ -686,7 +686,7 @@ for batch in load_stream("data.jsonl").batch(1000):
 特点：
 - **惰性执行**：filter/transform 不会立即执行，只在 save/collect 时才触发
 - **O(1) 内存**：无论文件多大，内存占用恒定（读取侧）
-- **多格式支持**：JSONL、CSV、Parquet、Arrow 均支持流式处理
+- **多格式支持**：JSONL/NDJSON、CSV/TSV、Parquet、Arrow 均支持流式处理
 - **跨格式转换**：可直接从 CSV 读取并保存为 Parquet 等
 - **分片支持**：支持 glob 模式加载多个分片，自动合并处理
 

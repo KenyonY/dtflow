@@ -1,7 +1,7 @@
 ---
 name: dtflow
 description: >
-  处理结构化数据文件 (JSONL/JSON/CSV/Parquet/Arrow/TSV) 时使用此 skill。
+  处理结构化数据文件 (JSONL/NDJSON/JSON/CSV/TSV/Parquet/Arrow/Excel) 时使用此 skill。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
   典型场景：数据预览/交互式浏览 (dt view，含全量搜索筛选排序/导出子集)/统计/清洗/去重/Schema 验证、格式转换
   (openai_chat/alpaca/sharegpt/dpo)、数据集切分、导出到训练框架
@@ -22,7 +22,8 @@ description: >
 **永远先问 CLI 自己**，不要凭记忆猜参数：
 
 ```bash
-dt --help                # 命令列表 + 全局选项
+dt --version             # 版本号 (裸值, 直接可比对; 同 dt schema 的 version 字段)
+dt --help                # 命令列表 + 全局选项 (标题行含版本号)
 dt schema                # 机器可读命令树 (JSON)，适合 jq 解析
 dt schema <cmd>          # 单个命令完整 schema
 dt <cmd> --help          # 具体命令的参数/示例/退出码

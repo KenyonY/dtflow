@@ -108,14 +108,21 @@ def view(
         _view_stdin(cap, format_hint, where=where, search=search, sort=sort)
         return
 
+    from ..common import _check_file_format, _require_file_exists
+    from ..output import die_usage
+
+    # 走和其他命令同一套检查: 结构化错误 + 统一退出码 (3 未找到 / 2 用法)。
+    # view 此前自己 print+SystemExit 且完全不查格式, 于是 dt view x.md 会一路把
+    # markdown 当 jsonl 解析, 最后抛个"第 1 行不是合法 JSON"——答非所问。
     filepath = Path(filename)
-    if not filepath.exists():
-        print(f"文件不存在: {filename}", file=sys.stderr)
-        raise SystemExit(3)
+    _require_file_exists(filepath)
+    _check_file_format(filepath)
 
     if not sys.stdout.isatty():
-        print("dt view 需要交互式终端 (TTY)。管道/重定向请用 dt head/sample。", file=sys.stderr)
-        raise SystemExit(2)
+        die_usage(
+            "dt view 需要交互式终端 (TTY)",
+            suggestion="管道/重定向场景请用 dt head / dt sample / dt slice",
+        )
 
     from .source import open_source
 

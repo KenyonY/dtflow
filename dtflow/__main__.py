@@ -123,16 +123,33 @@ class Framework(str, Enum):
 
 
 # 创建主应用
+try:  # 与 dt schema 的 version 字段同源, 三处 (--help / --version / schema) 不漂移
+    from . import __version__ as _VERSION
+except Exception:  # noqa: BLE001  源码树以外的异常安装方式
+    _VERSION = "unknown"
+
+
 app = typer.Typer(
     name="dt",
     help=(
-        "Datatron CLI - 数据转换工具 (Agent 友好)\n\n"
+        f"Datatron CLI v{_VERSION} - 数据转换工具 (Agent 友好)\n\n"
         "stdout=数据, stderr=消息, 退出码见 --help.\n"
         "Agent 建议先运行: dt schema | dt --help | dt <cmd> --help"
     ),
     add_completion=True,
     no_args_is_help=True,
 )
+
+
+def _version_callback(value: bool) -> None:
+    """--version: 只打裸版本号到 stdout。
+
+    与 dt schema 的 version 字段一致, 不加 "dt " 前缀 —— stdout 是数据, 版本号本身
+    就是这条命令的数据, 裸值最好解析 (dt --version 直接可比对)。
+    """
+    if value:
+        typer.echo(_VERSION)
+        raise typer.Exit()
 
 
 # ============ 全局选项 (注入 CLIState) ============
@@ -152,6 +169,13 @@ def _global_options(
     yes: bool = typer.Option(False, "--yes", help="跳过所有交互确认"),
     verbose: bool = typer.Option(False, "--verbose", "-V", help="显示更详细的日志"),
     quiet: bool = typer.Option(False, "--quiet", "-Q", help="抑制所有 stderr 消息"),
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,  # 先于其他选项处理: dt --version 不该被别的参数校验挡住
+        help="显示版本号并退出",
+    ),
 ):
     """全局运行状态注入；各命令通过 dtflow.cli.output.get_state() 读取。"""
     if fmt is not None and fmt not in {"json", "ndjson", "csv", "table"}:

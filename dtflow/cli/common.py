@@ -8,9 +8,14 @@ from typing import Any, Dict, List, Optional
 import orjson
 
 # 支持的文件格式
+# 命令入口的格式门禁：必须与 storage/io.py 实际读得动的格式一致。
+# .tsv 有 _load_tsv、.ndjson 由 _detect_format 落到 jsonl 分支，二者早就能读，
+# 只是漏在这份名单外 —— 门禁比实现窄，等于把能用的文件挡在门外。
 SUPPORTED_FORMATS = {
     ".csv",
+    ".tsv",
     ".jsonl",
+    ".ndjson",
     ".json",
     ".xlsx",
     ".xls",
@@ -22,7 +27,17 @@ SUPPORTED_FORMATS = {
 }
 
 # 支持流式处理的格式（与 streaming.py 保持一致）
-STREAMING_FORMATS = {".jsonl", ".csv", ".parquet", ".arrow", ".feather", ".flaxkv", ".kv"}
+STREAMING_FORMATS = {
+    ".jsonl",
+    ".ndjson",
+    ".csv",
+    ".tsv",
+    ".parquet",
+    ".arrow",
+    ".feather",
+    ".flaxkv",
+    ".kv",
+}
 
 
 def _is_streaming_supported(filepath: Path) -> bool:
