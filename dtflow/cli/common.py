@@ -106,8 +106,11 @@ def _escape_markup(text: str) -> str:
     return escape(text)
 
 
-def _format_value(value: Any, max_len: int = 120) -> str:
-    """格式化单个值，长文本截断。返回的是 rich markup 字符串，用户内容已转义。"""
+def _format_value(value: Any, max_len: Optional[int] = 120) -> str:
+    """格式化单个值。max_len 为 None 时不截断（详情面板等需完整展示的场景）。
+
+    返回的是 rich markup 字符串，用户内容已转义。
+    """
     if value is None:
         return "[dim]null[/dim]"
     if isinstance(value, bool):
@@ -115,19 +118,20 @@ def _format_value(value: Any, max_len: int = 120) -> str:
     if isinstance(value, (int, float)):
         return f"[cyan]{value}[/cyan]"
     if isinstance(value, str):
-        half_len = max_len // 2
         # 处理多行文本
         if "\n" in value:
             lines = value.split("\n")
             preview = value.replace("\n", "\\n")
-            if len(preview) > max_len:
+            if max_len is not None and len(preview) > max_len:
                 # 前半 + 省略标记 + 后半
+                half_len = max_len // 2
                 head = _escape_markup(preview[:half_len])
                 tail = _escape_markup(preview[-half_len:])
                 return f'"{head} [yellow]<<<{len(lines)}行>>>[/yellow] {tail}"'
             return f'"{_escape_markup(preview)}"'
-        if len(value) > max_len:
+        if max_len is not None and len(value) > max_len:
             # 前半 + 省略标记 + 后半
+            half_len = max_len // 2
             head = _escape_markup(value[:half_len])
             tail = _escape_markup(value[-half_len:])
             return f'"{head} [yellow]<<<{len(value)}字符>>>[/yellow] {tail}"'
@@ -139,7 +143,7 @@ def _format_nested(
     value: Any,
     indent: str = "",
     is_last: bool = True,
-    max_len: int = 120,
+    max_len: Optional[int] = 120,
 ) -> List[str]:
     """
     递归格式化嵌套结构，返回行列表。
@@ -189,8 +193,8 @@ def _format_nested(
                 if "role" in item and "content" in item:
                     role = item.get("role", "")
                     content = item.get("content", "")
-                    # 截断长内容
-                    if len(content) > max_len:
+                    # 截断长内容 (max_len=None 时不截断)
+                    if max_len is not None and len(content) > max_len:
                         content = content[:max_len].replace("\n", "\\n") + "..."
                     else:
                         content = content.replace("\n", "\\n")

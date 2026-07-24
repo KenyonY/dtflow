@@ -102,19 +102,31 @@ async def test_value_filter_opens_on_header_click():
 
 
 @pytest.mark.asyncio
-async def test_value_filter_high_cardinality_aborts():
-    # 唯一值过多的列 (每行不同) → 不弹面板, 提示改用 f
+async def test_value_filter_high_cardinality_caps_render_only():
+    # 高基数列照样弹面板: 列表只渲染前 _MAX_SHOW 项, 但搜索/全选作用于全量值
+    from dtflow.cli.view.app import ValueFilterScreen
+
     rows = [{"messages": [{"role": "user", "content": f"u{i}"}], "id": i} for i in range(50)]
     app = _make_app(rows)
-    app._VALUE_FILTER_MAX_UNIQUE = 10  # 压低阈值触发
     async with app.run_test() as pilot:
-        app._start_value_scan("id")  # 50 个唯一值 > 10
-        await app.workers.wait_for_complete()
-        await pilot.pause()
-        assert app._subset is None  # 未建子集
-        from dtflow.cli.view.app import ValueFilterScreen
-
-        assert not isinstance(app.screen, ValueFilterScreen)  # 未弹面板
+        ValueFilterScreen._MAX_SHOW = 10  # 压低渲染上限触发截断
+        try:
+            app._start_value_scan("id")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, ValueFilterScreen)  # 不再拒绝
+            sl = app.screen.query_one("SelectionList")
+            assert sl.option_count == 10  # 仅渲染前 10 项
+            assert len(app.screen._checked) == 50  # 默认全选覆盖全量 50 个值
+            # 搜索在全量值上过滤: "4" 命中 4/14/24/34/40-49 共 14 个 (含未渲染的低频值)
+            app.screen.query_one("#vf-search").value = "4"
+            await pilot.pause()
+            app.screen.action_close()  # 打字 → Enter: 只保留匹配项
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert app._subset == [i for i in range(50) if "4" in str(i)]
+        finally:
+            ValueFilterScreen._MAX_SHOW = 1000
 
 
 @pytest.mark.asyncio
@@ -964,8 +976,8 @@ async def test_value_filter_search_box_filters_options():
 
 
 @pytest.mark.asyncio
-async def test_value_filter_search_then_select_all_keeps_only_matches():
-    # 用户诉求"某列包含某子串": 打字 → 全选 → 应用, 三步拿到子集
+async def test_value_filter_search_then_apply_keeps_only_matches():
+    # 用户诉求"某列包含某子串": 打字 → 应用, 两步拿到子集 (无需先全不选再全选)
     app = _tag_app(30)
     async with app.run_test(size=(120, 30)) as pilot:
         app._start_value_scan("tag")
@@ -973,13 +985,29 @@ async def test_value_filter_search_then_select_all_keeps_only_matches():
         await pilot.pause()
         app.screen.query_one("#vf-search").value = "alpaca"
         await pilot.pause()
-        await pilot.click("#vf-all")  # 有搜索词: 全选 = 只保留匹配项
-        await pilot.pause()
-        await pilot.click("#vf-apply")
+        await pilot.click("#vf-apply")  # 有搜索词: 应用 = 只保留 勾选∩匹配
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._col_value_filters == {"tag": {"alpaca_zh", "alpaca_en"}}
         assert app._subset == [i for i in range(30) if i % 5 in (0, 1)]
+
+
+@pytest.mark.asyncio
+async def test_value_filter_search_uncheck_one_then_apply():
+    # 有搜索词时取消一个匹配项再应用 → 只保留剩下的匹配项 (视野外默认勾选不算数)
+    app = _tag_app(30)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.screen.query_one("#vf-search").value = "alpaca"
+        await pilot.pause()
+        app.screen.query_one("SelectionList").deselect("alpaca_en")
+        await pilot.pause()
+        await pilot.click("#vf-apply")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._col_value_filters == {"tag": {"alpaca_zh"}}
 
 
 @pytest.mark.asyncio
@@ -1003,6 +1031,9 @@ async def test_value_filter_selection_survives_search_change():
         await pilot.pause()
         assert screen._checked == {"dolly"}
         sl.select("sharegpt")
+        await pilot.pause()
+        # 跨搜索累积后, 清空搜索词回到全量视野再应用 (带词应用只保留匹配项)
+        screen.query_one("#vf-search").value = ""
         await pilot.pause()
         await pilot.click("#vf-apply")
         await app.workers.wait_for_complete()
@@ -1110,9 +1141,9 @@ async def test_both_pickers_hint_mentions_keys(size):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert _PICK_HINT in str(app.screen.query_one("#picker-hint", Static).render())
-        app.screen.query_one("#vf-search").value = "alpaca"  # 有搜索词时改讲 a 的新语义
+        app.screen.query_one("#vf-search").value = "alpaca"  # 有搜索词时改讲应用的新语义
         await pilot.pause()
-        assert "a 全选" in str(app.screen.query_one("#picker-hint", Static).render())
+        assert "应用" in str(app.screen.query_one("#picker-hint", Static).render())
 
 
 # ---------------------------------------------------------------------- #
@@ -1689,3 +1720,18 @@ async def test_next_match_reaches_last_field():
         await pilot.pause()
         await pilot.pause()
         assert app._current_field() == "msg6"
+
+
+def test_detail_panel_never_truncates_long_content():
+    # * 详情面板的职责是完整展示 — 超长字段不得出现 <<<N行>>>/<<<N字符>>> 占位符
+    from dtflow.cli.view.render import _render_generic
+
+    long_multiline = ("段落内容 " * 400) + "\n\n" + "x" * 3000
+    row = {
+        "reply": long_multiline,
+        "messages": [{"role": "user", "content": "q" * 5000}],
+    }
+    _, plain = _render_generic(row)
+    assert "<<<" not in plain
+    assert "x" * 3000 in plain
+    assert "q" * 5000 in plain  # messages 分支同样不截断

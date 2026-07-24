@@ -373,5 +373,6 @@ def _render_generic(row: Any, highlight: Optional[Pattern] = None) -> Tuple[Rend
     """通用 JSON: 复用现有树形格式化, 全展开。返回 (renderable, 纯文本)。"""
     from ..common import _format_nested
 
-    texts = [_hl(Text.from_markup(ln), highlight) for ln in _format_nested(row, max_len=2000)]
+    # 详情面板可滚动, 完整展示是它的职责 — 不截断 (截断只属于 head/sample 等预览场景)
+    texts = [_hl(Text.from_markup(ln), highlight) for ln in _format_nested(row, max_len=None)]
     return Group(*texts), "\n".join(t.plain for t in texts)

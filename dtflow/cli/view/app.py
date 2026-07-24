@@ -182,7 +182,7 @@ _HELP = """[b]dt view 快捷键[/b]
                  多条件  and / or 组合   例: turns>=6 and chars<2000
                  可反复按 f 叠加多条 (多条之间是 and; 需要括号语义就拆成多条)
   F / 点列头   列值勾选筛选 (Excel 式): 列出该列唯一值+频次, 勾选保留哪些 → 子集
-                 顶部搜索框按子串过滤候选值; 有搜索词时 a(全选) = 只保留匹配项
+                 顶部搜索框按子串过滤候选值; 有搜索词时应用 = 只保留勾选的匹配项
                  被筛的列头带 ▾ 标记; 再次打开可加回之前去掉的值 (全选=清除该列筛选)
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
@@ -320,17 +320,23 @@ class ValueFilterScreen(ModalScreen):
     """Excel 式列值勾选筛选: 列出某列唯一值(带频次), 勾选要保留的值。
 
     - 顶部搜索框实时按子串过滤候选值 (大小写不敏感), 唯一值成百上千时靠它定位。
-    - 有搜索词时 全选/全不选 只作用于匹配项, 且"全选"= 只保留匹配项 (Excel 语义),
-      于是"某列包含某子串"= 打字 → 全选 → Enter。
+    - 有搜索词时应用 = 只保留 勾选∩匹配 (Excel 语义: 所见即所得),
+      于是"某列包含某子串"= 打字 → Enter, 两步完成。
+    - 有搜索词时 全选=勾上匹配项(不动视野外勾选) / 全不选=只取消匹配项 —— 因此
+      跨搜索词可累积勾选 (搜A全选→搜B全选→清空搜索词→应用 = A∪B)。
     - prior 非 None 时回显上次保留集 (故可把去掉的值重新勾回); 否则默认全选。
     - anchor 非 None 时面板贴着被点列头下方弹出 (右溢出自动左移), 否则居中。
     - Enter 应用返回勾选集合, Esc 返回 None (取消)。
 
     勾选状态的真值是 ``self._checked``, 不是 SelectionList —— 列表随搜索词重建,
     被过滤掉的项不在列表里, 只能靠 _checked 记住。
+
+    高基数列: 列表只渲染前 _MAX_SHOW 项 (按频次降序) 防 UI 卡死, 但搜索/应用/
+    全选/全不选作用于全量匹配项 —— "打字 → Enter" 对未显示的值同样生效。
     """
 
     _BOX_W = 56
+    _MAX_SHOW = 1000  # 列表最多渲染的候选值数; 超出部分靠搜索框缩小范围后可见
 
     BINDINGS = [
         Binding("enter", "close", "应用", priority=True),
@@ -351,6 +357,7 @@ class ValueFilterScreen(ModalScreen):
             {v for v, _ in items} if prior is None else {v for v, _ in items if v in prior}
         )
         self._query = ""
+        self._shown: List[str] = []  # 当前列表实际渲染的值 (≤_MAX_SHOW), _sync 的作用域
 
     def compose(self) -> ComposeResult:
         with Vertical(id="vf-box"):
@@ -397,13 +404,13 @@ class ValueFilterScreen(ModalScreen):
         return [(v, c) for v, c in self._items if self._query in v.lower()]
 
     def _sync(self) -> None:
-        """把列表里(即当前匹配项)的勾选状态并回 _checked; 未显示的项保持原状。"""
+        """把列表里(即当前显示项)的勾选状态并回 _checked; 未显示的项保持原状。"""
         try:
             sl = self.query_one(SelectionList)
         except NoMatches:
             return
         selected = set(sl.selected)
-        for val, _ in self._matched():
+        for val in self._shown:
             if val in selected:
                 self._checked.add(val)
             else:
@@ -413,16 +420,25 @@ class ValueFilterScreen(ModalScreen):
         sl = self.query_one(SelectionList)
         sl.clear_options()
         matched = self._matched()
-        for val, cnt in matched:
+        shown = matched[: self._MAX_SHOW]
+        self._shown = [v for v, _ in shown]  # _sync 只并回显示过的项
+        for val, cnt in shown:
             label = val if val != "" else "(空)"
             if len(label) > 46:
                 label = label[:45] + "…"
             sl.add_option(Selection(Text(f"{label}  ({cnt})"), val, val in self._checked))
         scope = f"匹配 {len(matched)}/{self._total}" if self._query else f"{self._total} 个值"
+        if len(matched) > len(shown):
+            scope += f", 仅显示前 {len(shown)}"
         self.query_one("#picker-title", Static).update(
             Text.from_markup(f"[b]按 {escape(self._col)} 值筛选[/b] [dim]({scope})[/dim]")
         )
-        hint = "a 全选 = 只保留匹配项 · ↓ 进列表空格勾选" if self._query else _PICK_HINT
+        if self._query:
+            hint = "应用 = 只保留勾选的匹配项 · ↓ 进列表空格勾选"
+        elif len(matched) > len(shown):
+            hint = "候选过多, 输入子串缩小范围 · 应用 = 只保留匹配项"
+        else:
+            hint = _PICK_HINT
         self.query_one("#picker-hint", Static).update(Text.from_markup(f"[dim]{hint}[/dim]"))
 
     # -------------------------------------------------------------- #
@@ -430,9 +446,9 @@ class ValueFilterScreen(ModalScreen):
         self.query_one(SelectionList).focus()
 
     def action_all(self) -> None:
-        """无搜索词: 全选。有搜索词: 只保留匹配项 (非匹配项一并取消)。"""
+        """无搜索词: 全选。有搜索词: 勾上匹配项 (视野外的勾选不动, 可跨搜索词累积)。"""
         if self._query:
-            self._checked = {v for v, _ in self._matched()}
+            self._checked |= {v for v, _ in self._matched()}
         else:
             self._checked = {v for v, _ in self._items}
         self._rebuild()
@@ -446,8 +462,13 @@ class ValueFilterScreen(ModalScreen):
         self._rebuild()
 
     def action_close(self) -> None:
+        """应用。有搜索词时只保留 勾选∩匹配 (所见即所得) —— 默认全选下
+        "打字 → Enter" 即等于按包含子串筛选, 不必先全不选再全选。"""
         self._sync()
-        self.dismiss(set(self._checked))
+        selected = set(self._checked)
+        if self._query:
+            selected &= {v for v, _ in self._matched()}
+        self.dismiss(selected)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1790,10 +1811,8 @@ class ViewApp(App):
     # 列值勾选筛选 (Excel AutoFilter): 列出该列"在其他约束下"的全量唯一值 → 勾选 → 该列值约束
     # 列出全量值 (而非当前子集) + 回显上次勾选 → 可反复调整/把去掉的加回
     # ------------------------------------------------------------------ #
-    # 面板带搜索框后, 上千唯一值也能用 (打字过滤 → 全选); 此数只防"唯一值≈行数"
-    # 的列 (如 first_user) 把内存和列表撑爆, 那种列该用 f 的 ``列~=子串``。
-    _VALUE_FILTER_MAX_UNIQUE = 2000
-
+    # 唯一值再多也不拒绝筛选 (候选值已截断 ≤80 字符, 内存有界); 渲染开销由
+    # ValueFilterScreen._MAX_SHOW 兜底 —— 只显示前 N 项, 搜索框仍在全量值上过滤。
     def _start_value_scan(self, col: str) -> None:
         from collections import Counter
 
@@ -1809,7 +1828,6 @@ class ViewApp(App):
         if self._busy():
             return
         fmt = self.fmt
-        cap = self._VALUE_FILTER_MAX_UNIQUE
         expr = self._filter_pred()  # 搜索 + 各条 where
         # 关键: 算该列候选值时应用"除本列外"的其他约束 → 本列自己筛掉的值仍在列表里, 可加回
         other = {c: set(v) for c, v in self._col_value_filters.items() if c != col}
@@ -1837,8 +1855,6 @@ class ViewApp(App):
                 ):
                     continue
                 counts[render.row_cells(0, row, fmt, [col])[0]] += 1
-                if len(counts) > cap:  # 唯一值过多: 逐个勾无意义, 终止
-                    return self._on_value_scan_done, (col, None, "exceeded", gen)
             return self._on_value_scan_done, (col, counts, "ok", gen)
 
         self._run_scan(worker, gen)
@@ -1850,15 +1866,6 @@ class ViewApp(App):
         self._update_status()
         if status == "cancelled":
             self.notify("已取消扫描")
-            return
-        if status == "exceeded":
-            self.notify(
-                escape(
-                    f"{col} 唯一值过多 (>{self._VALUE_FILTER_MAX_UNIQUE}), "
-                    f"改用 f 条件筛选, 如 {col}~=子串 (包含)"
-                ),
-                severity="warning",
-            )
             return
         items = counts.most_common()  # [(值, 频次)] 按频次降序
         total = len(items)
