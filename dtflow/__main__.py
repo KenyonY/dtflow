@@ -49,7 +49,7 @@ Commands:
     validate      使用 Schema 验证数据格式
     schema        输出命令树 / 参数定义 (JSON)
     logs          日志查看工具使用说明
-    install-skill 安装 dtflow skill 到 Claude Code
+    install-skill 安装 dtflow skill 到 Claude Code 或 Codex
 """
 
 import os
@@ -93,6 +93,13 @@ class SampleType(str, Enum):
     random = "random"
     head = "head"
     tail = "tail"
+
+
+class SkillTarget(str, Enum):
+    """install-skill / uninstall-skill / skill-status 的目标 agent。"""
+
+    claude = "claude"
+    codex = "codex"
 
 
 class TransformPreset(str, Enum):
@@ -817,21 +824,27 @@ def schema_cmd(
 
 
 @app.command("install-skill")
-def install_skill():
-    """安装 dtflow skill 到 Claude Code"""
-    _install_skill()
+def install_skill(
+    target: SkillTarget = typer.Option(SkillTarget.claude, "--target", help="安装目标 agent"),
+):
+    """安装 dtflow skill 到 Claude Code 或 Codex。"""
+    _install_skill(target.value)
 
 
 @app.command("uninstall-skill")
-def uninstall_skill():
-    """卸载 dtflow skill"""
-    _uninstall_skill()
+def uninstall_skill(
+    target: SkillTarget = typer.Option(SkillTarget.claude, "--target", help="卸载目标 agent"),
+):
+    """从 Claude Code 或 Codex 卸载 dtflow skill。"""
+    _uninstall_skill(target.value)
 
 
 @app.command("skill-status")
-def skill_status():
-    """查看 skill 安装状态"""
-    _skill_status()
+def skill_status(
+    target: SkillTarget = typer.Option(SkillTarget.claude, "--target", help="查询目标 agent"),
+):
+    """查看 Claude Code 或 Codex 的 skill 安装状态。"""
+    _skill_status(target.value)
 
 
 def _show_completion_hint():

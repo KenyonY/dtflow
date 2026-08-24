@@ -25,16 +25,18 @@ pip install transformers      # Token 统计（HuggingFace 模型）
 pip install datasets          # HuggingFace Dataset 转换
 ```
 
-## 🤖 Claude Code 集成
+## 🤖 Agent Skill 集成
 
-dtflow 内置了 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill：
+dtflow 内置 Agent Skill，可安装到 Claude Code 或 Codex：
 
 ```bash
-dt install-skill      # 安装 skill
-dt skill-status       # 查看状态
+dt install-skill                         # 安装到 Claude Code（兼容默认）
+dt install-skill --target codex          # 安装到 Codex
+dt skill-status --target codex           # 查看 Codex 安装状态
 ```
 
-安装后在 Claude Code 中输入 `/dtflow`，Claude 将掌握 dtflow 的完整用法，可直接协助你完成数据处理任务。
+安装后可在 Claude Code 中输入 `/dtflow`，或在 Codex 中使用 `$dtflow`，让 agent
+掌握 dtflow 的完整用法并协助完成数据处理任务。
 
 ## 快速开始
 
@@ -448,9 +450,10 @@ dt stats data.jsonl --full --field=category               # 指定字段统计
 dt stats data.jsonl --full --expand=tags                  # 展开 list 字段统计元素分布
 dt stats data.jsonl --full --expand='messages[*].role'    # 展开嵌套 list 字段
 
-# Claude Code Skill 安装
-dt install-skill                              # 安装到 ~/.claude/skills/
-dt skill-status                               # 查看安装状态
+# Agent Skill 安装
+dt install-skill                              # 安装到 ~/.claude/skills/（默认）
+dt install-skill --target codex               # 安装到 ~/.agents/skills/
+dt skill-status --target codex                # 查看 Codex 安装状态
 
 # 数据验证
 dt validate data.jsonl --preset=openai_chat           # 使用预设 schema 验证
