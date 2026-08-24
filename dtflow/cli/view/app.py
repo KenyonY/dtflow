@@ -12,6 +12,7 @@ import orjson
 from rich.markup import escape
 from rich.rule import Rule
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -183,7 +184,7 @@ _HELP = """[b]dt view 快捷键[/b]
                  可反复按 f 叠加多条 (多条之间是 and; 需要括号语义就拆成多条)
   F / 点列头   列值勾选筛选 (Excel 式): 列出该列唯一值+频次, 勾选保留哪些 → 子集
                  顶部搜索框按子串过滤候选值; 有搜索词时应用 = 只保留勾选的匹配项
-                 被筛的列头带 ▾ 标记; 再次打开可加回之前去掉的值 (全选=清除该列筛选)
+                 点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
   z            切换 上下 / 左右 布局
@@ -326,7 +327,7 @@ class ValueFilterScreen(ModalScreen):
       跨搜索词可累积勾选 (搜A全选→搜B全选→清空搜索词→应用 = A∪B)。
     - prior 非 None 时回显上次保留集 (故可把去掉的值重新勾回); 否则默认全选。
     - anchor 非 None 时面板贴着被点列头下方弹出 (右溢出自动左移), 否则居中。
-    - Enter 应用返回勾选集合, Esc 返回 None (取消)。
+    - Enter 应用返回勾选集合, Esc 或点击面板外返回 None (取消)。
 
     勾选状态的真值是 ``self._checked``, 不是 SelectionList —— 列表随搜索词重建,
     被过滤掉的项不在列表里, 只能靠 _checked 记住。
@@ -390,6 +391,12 @@ class ValueFilterScreen(ModalScreen):
             box = self.query_one("#vf-box", Vertical)
             self.styles.align = ("left", "top")
             box.styles.offset = (x, y)
+
+    def on_click(self, event: events.Click) -> None:
+        """点击值筛选卡片外的模态背景时按“取消”语义关闭。"""
+        if event.screen_offset not in self.query_one("#vf-box", Vertical).region:
+            self.dismiss(None)
+            event.stop()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._sync()  # 先把当前列表的勾选并回 _checked, 再按新词重建

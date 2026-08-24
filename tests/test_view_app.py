@@ -197,6 +197,36 @@ async def test_value_filter_cancel_button():
 
 
 @pytest.mark.asyncio
+async def test_value_filter_click_outside_cancels():
+    # 点面板内不关闭; 修改选择后点模态背景则按“取消”关闭, 不应用临时选择
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ValueFilterScreen)
+
+        await pilot.click("#vf-none")
+        await pilot.click("#picker-title")
+        await pilot.pause()
+        assert app.screen is screen  # 卡片内点击仍由原控件正常处理
+
+        box = screen.query_one("#vf-box").region
+        outside = next(
+            point
+            for point in ((0, 0), (app.size.width - 1, app.size.height - 1))
+            if point not in box
+        )
+        await pilot.click(offset=outside)
+        await pilot.pause()
+        assert app.screen is not screen
+        assert app._subset is None and app._col_value_filters == {}
+
+
+@pytest.mark.asyncio
 async def test_value_filter_readd_excluded_value():
     # 关键: 筛掉一个值后再次打开该列, 面板列出全量唯一值(含被去掉的), 可重新勾回
     app = _chat_app(30)
