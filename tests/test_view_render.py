@@ -42,12 +42,35 @@ def test_generic_shows_all_columns():
     assert len([c for c in cols if c.startswith("col")]) == 14
 
 
-def test_training_format_caps_extra_scalar_columns():
-    # 训练格式: 派生列已含主信息, 额外标量元数据列限量
+def test_columns_scan_whole_window_and_include_container_fields():
+    rows = [{"early": i} for i in range(60)]
+    rows[50].update(late={"nested": 1}, tags=["a", "b"])
+    cols = R.build_columns(rows, "generic")
+    assert cols == ["#", "early", "late", "tags"]
+
+
+def test_training_format_keeps_full_catalog_with_compact_default():
+    # 训练格式完整收录元数据, 但默认只显示前 8 个；其余可从 c 面板启用。
     row = {"messages": [{"role": "user", "content": "x"}], **{f"m{i}": i for i in range(20)}}
     cols = R.build_columns([row], "openai_chat")
     extra = [c for c in cols if c.startswith("m")]
-    assert len(extra) == 8
+    visible = R.default_visible_columns(cols, "openai_chat")
+    assert len(extra) == 20
+    assert [c for c in visible if c.startswith("m")] == [f"m{i}" for i in range(8)]
+
+
+def test_derived_and_diagnostic_columns_are_not_hidden_or_duplicated():
+    row = {
+        "messages": [],
+        "turns": "real-field-collision",
+        **{f"m{i}": i for i in range(8)},
+        "_parse_error": "bad",
+        "_raw_line": "{broken",
+    }
+    cols = R.build_columns([row], "openai_chat")
+    visible = R.default_visible_columns(cols, "openai_chat")
+    assert cols.count("turns") == 1
+    assert "_parse_error" in visible and "_raw_line" in visible
 
 
 def test_roles_sig_truncates():

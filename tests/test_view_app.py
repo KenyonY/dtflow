@@ -681,6 +681,58 @@ async def test_window_paging_and_global_row_number():
 
 
 @pytest.mark.asyncio
+async def test_window_paging_incrementally_discovers_columns():
+    rows = [{"first": 1}, {"late": {"nested": True}}]
+    app = _make_app(rows, cap=1, fmt="generic")
+    async with app.run_test() as pilot:
+        table = app.query_one("#table")
+        assert app.columns == ["#", "first"]
+        app.action_next_window()
+        await pilot.pause()
+        assert app.columns == ["#", "first", "late"]
+        assert app._visible_columns() == app.columns
+        assert len(table.columns) == len(app.columns)
+        cells = dict(zip(app.columns, app._cells(0, app.columns), strict=False))
+        assert "nested" in cells["late"]
+
+
+def test_training_overflow_is_available_without_hiding_detail():
+    row = {"messages": [], **{f"m{i}": i for i in range(10)}}
+    app = _make_app([row])
+    assert "m9" in app.columns
+    assert "m9" not in app._visible_columns()
+    assert "m9" in app._auto_hidden
+    assert "m9" not in app._hidden  # 自动收起只管表格, 详情仍完整
+
+
+@pytest.mark.asyncio
+async def test_column_picker_can_reveal_auto_hidden_metadata():
+    from dtflow.cli.view.app import ColumnPicker
+
+    row = {"messages": [], **{f"m{i}": i for i in range(10)}}
+    app = _make_app([row])
+    async with app.run_test() as pilot:
+        app.action_columns()
+        await pilot.pause()
+        assert isinstance(app.screen, ColumnPicker)
+        picker = app.screen.query_one("SelectionList")
+        assert "m9" not in picker.selected
+        picker.select("m9")
+        app.screen.action_close()
+        await pilot.pause()
+        assert "m9" in app._visible_columns()
+        assert not app._auto_hidden
+
+
+def test_custom_column_selection_hides_later_discoveries():
+    app = _make_app([{"a": 1}], cap=1, fmt="generic")
+    app._columns_customized = True
+    assert app._merge_columns([{"late": 2}])
+    assert "late" in app.columns and "late" in app._hidden
+    assert "late" not in app._visible_columns()
+
+
+@pytest.mark.asyncio
 async def test_hash_column_width_fits_max_global_row_no():
     # # 列宽须容纳窗口最大行号, 不能靠采样前 200 行 (否则上万行号被截)
     app = _make_app(_chat_rows(20000), cap=20000)

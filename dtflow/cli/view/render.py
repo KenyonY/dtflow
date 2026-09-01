@@ -101,21 +101,23 @@ def _roles_sig(turns: List[Tuple[str, str]]) -> str:
 # --------------------------------------------------------------------------- #
 # 派生列: 定义列 + 逐行取值
 # --------------------------------------------------------------------------- #
-def _scalar_fields(rows: List[Dict], skip: set, limit: Optional[int] = None) -> List[str]:
-    """收集顶层标量字段作为额外列 (label/source/id 等元数据)。
+def _top_level_fields(rows: List[Dict], skip: set, reserved: set) -> List[str]:
+    """收集当前窗口里出现过的顶层字段, 保持首次出现顺序。
 
-    limit=None 表示不限 (generic/CSV: 字段本身就是数据, 全部展示; 列过多可用 c 折叠)。
+    对象/数组字段同样是 JSON 的真实列: 表格给紧凑预览, 完整内容交给详情。这里只跳过
+    已由派生列代替的训练主体字段, 不再用值类型或固定采样行数静默裁掉 schema。
     """
     fields: List[str] = []
-    for row in rows[:50]:
+    seen = set(reserved)
+    for row in rows:
         if not isinstance(row, dict):
             continue
-        for k, v in row.items():
-            if k in skip or k in fields:
+        for k in row:
+            if k in skip or k in seen:
                 continue
-            if isinstance(v, (str, int, float, bool)) or v is None:
-                fields.append(k)
-    return fields if limit is None else fields[:limit]
+            fields.append(k)
+            seen.add(k)
+    return fields
 
 
 # 各格式的"派生列"名 (计算列, 无对应字段路径; 与标量元数据列区分)。
@@ -127,6 +129,10 @@ _DERIVED_COLUMNS = {
     "alpaca": ["instruction", "has_input", "out_chars"],
 }
 
+_TRAINING_FORMATS = frozenset(_DERIVED_COLUMNS)
+_TRAINING_META_LIMIT = 8
+_DIAGNOSTIC_COLUMNS = ("_parse_error", "_raw_line")
+
 
 def derived_columns(fmt: str) -> set:
     """该格式的派生列名集合 (计算列, 无字段路径)。供筛选区分列名 vs 字段路径。"""
@@ -134,22 +140,36 @@ def derived_columns(fmt: str) -> set:
 
 
 def build_columns(rows: List[Dict], fmt: str) -> List[str]:
-    """根据格式返回表格列名 (含派生列 + 标量元数据列)。"""
+    """返回当前窗口发现的完整列目录 (派生列 + 顶层元数据列)。"""
     # base = "#" + 派生列 (单一来源 _DERIVED_COLUMNS, 与筛选的 derived_columns 一致, 不漂移)
     base = ["#"] + _DERIVED_COLUMNS.get(fmt, [])
     if fmt in ("openai_chat", "sharegpt"):
         skip = {"messages", "conversations"}
-        limit = 8  # 训练格式: 派生列已含主信息, 元数据列适度限量 (可 c 折叠增删)
     elif fmt == "dpo":
         skip = {"chosen", "rejected", "prompt"}
-        limit = 8
     elif fmt == "alpaca":
         skip = {"instruction", "input", "output", "response"}
-        limit = 8
     else:
         skip = set()
-        limit = None  # generic/CSV: 字段即数据, 全部展示
-    return base + _scalar_fields(rows, skip, limit)
+    return base + _top_level_fields(rows, skip, set(base))
+
+
+def default_visible_columns(columns: List[str], fmt: str) -> List[str]:
+    """给完整列目录套默认可见策略。
+
+    generic/CSV 默认展示全部；训练格式已有派生摘要，先展示 8 个元数据，其余留在 ``c``
+    列面板。坏行诊断列无论出现多晚都默认可见，避免“坏在哪”再次被紧凑策略藏掉。
+    """
+    if fmt not in _TRAINING_FORMATS:
+        return list(columns)
+
+    base = ["#"] + _DERIVED_COLUMNS[fmt]
+    metadata = [c for c in columns if c not in base]
+    visible = base + metadata[:_TRAINING_META_LIMIT]
+    for col in _DIAGNOSTIC_COLUMNS:
+        if col in columns and col not in visible:
+            visible.append(col)
+    return visible
 
 
 def row_cells(

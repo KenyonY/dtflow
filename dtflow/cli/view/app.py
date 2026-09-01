@@ -612,8 +612,14 @@ class ViewApp(App):
         self._init_where = list(where or [])  # 启动参数, on_mount 后统一走一次扫描
         self._init_search = search
         self._init_sort = sort
-        self.columns = render.build_columns(window, fmt)  # 列固定自首窗口 (数据集 schema 稳定)
-        self._hidden: Set[str] = set()  # 被折叠的列名 (同时作用于表格和详情)
+        # 列目录按已加载窗口增量取并集: JSONL 不为 schema 额外 parse 全文件, 但当前窗口内
+        # 任何行的字段都不会再因“只看前 50 行”而消失。训练格式的额外元数据先自动收起,
+        # 仍完整保留在 c 面板；自动收起不影响详情, 用户主动隐藏才同时作用于表格和详情。
+        self.columns = render.build_columns(window, fmt)
+        default_visible = set(render.default_visible_columns(self.columns, fmt))
+        self._auto_hidden: Set[str] = set(self.columns) - default_visible
+        self._hidden: Set[str] = set()
+        self._columns_customized = False
         self.view_indices: List[int] = list(range(len(window)))
         self._field_texts: List[str] = []  # 详情各字段的纯文本, 供 * 找命中
         self._prompt_mode: Optional[str] = None
@@ -813,7 +819,23 @@ class ViewApp(App):
             self._recompute_subset(empty)
 
     def _visible_columns(self) -> List[str]:
-        return [c for c in self.columns if c not in self._hidden]
+        hidden = self._hidden | self._auto_hidden
+        return [c for c in self.columns if c not in hidden]
+
+    def _merge_columns(self, rows: List[Dict]) -> bool:
+        """把新窗口字段并入稳定列目录；返回是否发现新列。"""
+        known = set(self.columns)
+        added = [c for c in render.build_columns(rows, self.fmt) if c not in known]
+        if not added:
+            return False
+        self.columns.extend(added)
+        if self._columns_customized:
+            # 用户已经明确选过列，此后新发现字段先放进 c 面板，不能擅自打乱其布局。
+            self._hidden.update(added)
+        else:
+            visible = set(render.default_visible_columns(self.columns, self.fmt))
+            self._auto_hidden = set(self.columns) - visible
+        return True
 
     def _header_plain(self, name: str) -> str:
         """列头纯文本 (含值筛选标记), 用于列宽估算。"""
@@ -1526,7 +1548,10 @@ class ViewApp(App):
         self.all_rows = rows
         self._global_nos = nos
         self.view_indices = list(range(len(rows)))
-        self._populate()
+        if self._merge_columns(rows):
+            self._rebuild_columns()
+        else:
+            self._populate()
         self.query_one("#table", DataTable).move_cursor(row=0)
 
     def action_next_window(self) -> None:
@@ -1597,9 +1622,11 @@ class ViewApp(App):
             if len(hidden) == len(self.columns):  # 不允许全隐藏, 至少留第一列
                 hidden.discard(self.columns[0])
             self._hidden = hidden
+            self._auto_hidden.clear()
+            self._columns_customized = True
             self._rebuild_columns()
 
-        self.push_screen(ColumnPicker(self.columns, self._hidden), apply)
+        self.push_screen(ColumnPicker(self.columns, self._hidden | self._auto_hidden), apply)
 
     def _rebuild_columns(self) -> None:
         """列可见集变化后重建表头并重填。"""
