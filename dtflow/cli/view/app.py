@@ -163,6 +163,7 @@ _HELP = """[b]dt view 快捷键[/b]
   ↑/↓  j/k     选行 (详情联动)
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
+  ←/→          水平滚动   h/l 水平滚动 2 字符
   ] / [        下/上一窗口 (大文件翻页)   :  跳到行号 (-1 为末行)
   n / N        详情下/上一字段 (对话按条走: msg0/msg1…; 亦可鼠标点击选中)
   *            跳到详情中下一处搜索命中 (命中处画黄底)
@@ -540,7 +541,7 @@ class ViewApp(App):
         # DataTable 内置只认箭头键, 这里补 vim 键 (与帮助屏承诺一致)
         Binding("j", "cursor_down", "下移", show=False),
         Binding("k", "cursor_up", "上移", show=False),
-        # h/l 与左右方向键一致: 水平滚动表格 (列超宽时可见右侧列)
+        # h/l 每次水平滚动 2 字符，方向键保留 Textual 默认的单字符跨度。
         Binding("h", "scroll_left", "左滚", show=False),
         Binding("l", "scroll_right", "右滚", show=False),
         # 调整表格/详情两区大小 (竖排调高度, 横排调宽度)
@@ -866,14 +867,17 @@ class ViewApp(App):
         CAP = 80
         sample = [self._cells(idx, vis) for idx in self.view_indices[:200]]
         naturals = []
+        header_widths = []
         for ci, name in enumerate(vis):
+            header_w = cell_len(self._header_plain(name))
+            header_widths.append(header_w)
             if name == "#":
                 # # 列是全局行号, 最大值取当前窗口的真实全局行号 (子集态可能很大), 不靠采样——
                 # 否则采样只看前 200 行, 宽度按 3 位数估算, 上万的行号会显示不下被截断。
                 max_no = (max(self._global_nos) + 1) if self._global_nos else 1
-                naturals.append(max(cell_len(name), len(str(max_no))))
+                naturals.append(max(header_w, len(str(max_no))))
                 continue
-            w = cell_len(self._header_plain(name))  # 含 ▾ 标记宽度, 避免标记被截
+            w = header_w  # 含 ▾ 标记宽度, 避免标记被截
             for cells in sample:
                 w = max(w, cell_len(cells[ci]))
             naturals.append(min(max(w, 1), CAP))
@@ -885,13 +889,14 @@ class ViewApp(App):
         if budget <= 0 or sum(naturals) <= budget:
             return naturals
 
-        # 被压的宽列至少留 MIN_COL_W, 否则只剩省略号无信息量; 但天然更窄的列不硬撑 (取其自然宽)。
+        # 被压的宽列至少留 MIN_COL_W；列名更长时则保住完整列头。
+        # 天然更窄的列不硬撑，仍取其自然宽。
         MIN_COL_W = 8
         widths = [0] * len(vis)
         remaining, nrem = budget, len(vis)
         for i in sorted(range(len(vis)), key=lambda i: naturals[i]):
             share = remaining // nrem
-            floor = min(MIN_COL_W, naturals[i])
+            floor = min(naturals[i], max(MIN_COL_W, header_widths[i]))
             widths[i] = naturals[i] if naturals[i] <= share else max(share, floor)
             remaining -= widths[i]
             nrem -= 1
@@ -1162,11 +1167,13 @@ class ViewApp(App):
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
 
-    def _table_action(self, name: str) -> None:
+    def _table_action(self, name: str, repeat: int = 1) -> None:
         """把 vim 键转调到 DataTable 的光标动作 (仅当详情未放大时)。"""
         table = self.query_one("#table", DataTable)
         if not table.has_class("hidden"):
-            getattr(table, f"action_{name}")()
+            action = getattr(table, f"action_{name}")
+            for _ in range(repeat):
+                action()
 
     def action_cursor_down(self) -> None:
         self._table_action("cursor_down")
@@ -1175,10 +1182,10 @@ class ViewApp(App):
         self._table_action("cursor_up")
 
     def action_scroll_left(self) -> None:
-        self._table_action("scroll_left")
+        self._table_action("scroll_left", repeat=2)
 
     def action_scroll_right(self) -> None:
-        self._table_action("scroll_right")
+        self._table_action("scroll_right", repeat=2)
 
     def _half_scroll(self, direction: int) -> None:
         """半屏滚动: 详情放大时滚详情, 否则按半屏移动表格光标。"""

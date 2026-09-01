@@ -752,7 +752,11 @@ async def test_hash_column_width_fits_max_global_row_no():
 @pytest.mark.asyncio
 async def test_compressed_col_min_width_and_narrow_exempt():
     # 一个天然仅 2 宽的列 + 一堆宽列 → 触发压缩
-    rows = [{"nw": "ab", **{f"c{i}": "x" * 30 for i in range(20)}} for _ in range(5)]
+    long_header = "moderately_long_header"
+    rows = [
+        {"nw": "ab", long_header: "x" * 30, **{f"c{i}": "x" * 30 for i in range(20)}}
+        for _ in range(5)
+    ]
     app = _make_app(rows, fmt="generic")
     async with app.run_test(size=(120, 30)):
         vis = app._visible_columns()
@@ -761,6 +765,21 @@ async def test_compressed_col_min_width_and_narrow_exempt():
         assert min(w[c] for c in vis if c.startswith("c")) >= 8
         # 天然窄列不被硬撑到 8, 保持自然宽 2
         assert w["nw"] == 2
+        # 长列名在压缩时仍完整显示，不再按统一下限 8 截断
+        assert w[long_header] >= len(long_header)
+
+
+@pytest.mark.asyncio
+async def test_vim_horizontal_scroll_moves_two_cells():
+    rows = [{f"column_{i}": "x" * 30 for i in range(20)}]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(60, 20)) as pilot:
+        table = app.query_one("#table")
+        assert table.max_scroll_x >= 2
+        await pilot.press("l")
+        assert table.scroll_target_x == 2
+        await pilot.press("h")
+        assert table.scroll_target_x == 0
 
 
 @pytest.mark.asyncio
