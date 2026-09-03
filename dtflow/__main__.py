@@ -319,11 +319,13 @@ def tail(
     _tail(filename, actual_num, output, fields, not pretty)
 
 
-@app.command()
+@app.command(context_settings={"ignore_unknown_options": True})
 def view(
     filename: str = typer.Argument(..., help="输入文件路径；- 表示从 stdin 读（管道模式）"),
     num_arg: Optional[int] = typer.Argument(
-        None, metavar="NUM", help="窗口大小简写（等价 --cap，首屏 N 行，仍可 ]/[ 翻页）"
+        None,
+        metavar="NUM",
+        help="窗口行数；正数从开头、负数从末尾打开，仍可 ]/[ 翻窗口",
     ),
     cap: int = typer.Option(
         _VIEW_CAP, "--cap", help="单窗口加载行数（只 parse 这么多，其余按需翻页）"
@@ -345,18 +347,26 @@ def view(
     sort: Optional[str] = typer.Option(
         None, "--sort", help="启动即全量排序，列名前加 - 为降序（如 -chars）"
     ),
+    follow: bool = typer.Option(
+        False,
+        "--follow",
+        help="实时追踪 JSONL/NDJSON 追加与日志轮转，从最新尾窗开始",
+    ),
 ):
     """交互式浏览数据（表格 + 详情联动，Textual TUI）
 
     表格扫视 + 详情按格式渲染（对话气泡/dpo对比/alpaca分段），无需逐层展开。
     大文件靠偏移索引窗口化浏览：只 parse 当前窗口，TUI 内按 ] / [ 翻窗口、: 跳行。
+    NUM 为负数时快速从文件尾部打开；--follow 在 JSONL/NDJSON 追加或轮转时持续追尾。
     筛选/搜索/排序都是全量的（扫整个文件），可叠加；TUI 内按 w 把结果导出成文件，
     按 C 复制"复现当前视图"的命令。管道模式 dt view - 从 stdin 读 NDJSON 全量入内存。
     需要交互式终端（TTY）。按 ? 查看快捷键。
 
     示例:
         dt view data.jsonl                       # 打开浏览器（顺序从第 1 行）
-        dt view data.jsonl 100                   # 首屏 100 行（NUM = --cap 简写）
+        dt view data.jsonl 100                   # 从开头浏览，窗口 100 行
+        dt view data.jsonl -100                  # 快速从倒数 100 行开始
+        dt view app.jsonl -100 --follow          # 看最新 100 行并持续追踪
         dt view data.jsonl --format=dpo          # 强制按 dpo 渲染
         dt view big.jsonl --offset=20000         # 从第 2 万行开始（默认每窗口 1 万行）
         dt view big.jsonl --cap=50000            # 每窗口加载 5 万行
@@ -365,15 +375,41 @@ def view(
         dt view data.jsonl --search=报错          # 命中子集 + 详情里黄底高亮
         dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果
     """
-    # 位置参数 NUM 优先于 --cap（与 sample/head 的 num_arg 惯例一致）
+    from pathlib import Path
+
+    from .cli.output import die_usage
+
+    actual_cap = abs(num_arg) if num_arg is not None else cap
+    tail = bool(num_arg is not None and num_arg < 0)
+    if actual_cap <= 0:
+        die_usage("dt view 的窗口大小必须大于 0", suggestion="例如: dt view data.jsonl 100")
+    if tail and offset:
+        die_usage("-NUM 不能与 --offset 同时使用", suggestion="删除 --offset")
+    if follow and offset:
+        die_usage("--follow 不能与 --offset 同时使用", suggestion="追尾模式固定从最新处开始")
+    if follow and sort:
+        die_usage(
+            "--follow 不能与启动排序 --sort 同时使用",
+            suggestion="先进入 follow，需要时再按 s 对固定高水位排序",
+        )
+    if follow and filename == "-":
+        die_usage("--follow 不支持 stdin", suggestion="请直接传入 JSONL/NDJSON 文件路径")
+    if follow and Path(filename).suffix.lower() not in (".jsonl", ".ndjson"):
+        die_usage(
+            "--follow 仅支持 JSONL/NDJSON 文件",
+            suggestion="纯文本日志可使用 tl --tail FILE",
+        )
+
     _view(
         filename,
-        cap=num_arg if num_arg is not None else cap,
+        cap=actual_cap,
         offset=offset,
         format_hint=format,
         where=where,
         search=search,
         sort=sort,
+        tail=tail,
+        follow=follow,
     )
 
 

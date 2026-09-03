@@ -28,13 +28,15 @@ def _run_tui(
     search: Optional[str] = None,
     sort: Optional[str] = None,
     filepath: Optional[str] = None,
+    follow: bool = False,
+    start_at_end: bool = False,
 ) -> None:
     """公共 TUI 启动: 取首窗口 → 检测格式 → 起 ViewApp。"""
-    if source.total == 0:
+    if source.total == 0 and not follow:
         print("无数据。", file=sys.stderr)
         raise SystemExit(1)
 
-    offset = min(max(0, offset), source.total - 1)
+    offset = min(max(0, offset), max(0, source.total - 1))
     window = source.window(offset, cap)
 
     from .render import detect_format
@@ -54,6 +56,8 @@ def _run_tui(
         search=search,
         sort=sort,
         filepath=filepath,
+        follow=follow,
+        start_at_end=start_at_end,
     ).run()
 
 
@@ -63,6 +67,7 @@ def _view_stdin(
     where: Optional[List[str]] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,
+    tail: bool = False,
 ) -> None:
     """dt view -: 先读完 stdin 数据, 再把 fd 0 重定向到 /dev/tty 供 TUI 读键盘。
 
@@ -87,7 +92,18 @@ def _view_stdin(
 
     # 管道数据已全在内存, offset 无意义 (从头开始; 可在 TUI 内 : 跳行)
     # filepath 留空: 管道输入没有可复现的源文件, C 复制命令会据此提示改用导出
-    _run_tui(source, cap, 0, format_hint, "<stdin>", where=where, search=search, sort=sort)
+    offset = max(0, source.total - cap) if tail else 0
+    _run_tui(
+        source,
+        cap,
+        offset,
+        format_hint,
+        "<stdin>",
+        where=where,
+        search=search,
+        sort=sort,
+        start_at_end=tail,
+    )
 
 
 def view(
@@ -98,6 +114,8 @@ def view(
     where: Optional[List[str]] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,
+    tail: bool = False,
+    follow: bool = False,
 ) -> None:
     """启动 dt view TUI。filename 为 - 时从 stdin 读 (管道模式)。
 
@@ -105,7 +123,14 @@ def view(
     于是 C 复制出来的命令粘回终端能还原当时的视图。
     """
     if filename == "-":
-        _view_stdin(cap, format_hint, where=where, search=search, sort=sort)
+        _view_stdin(
+            cap,
+            format_hint,
+            where=where,
+            search=search,
+            sort=sort,
+            tail=tail,
+        )
         return
 
     from ..common import _check_file_format, _require_file_exists
@@ -126,8 +151,18 @@ def view(
 
     from .source import open_source
 
+    source = open_source(
+        filepath,
+        tail_size=cap if tail or follow else None,
+        follow=follow,
+    )
+    if tail or follow:
+        offset = (
+            0 if filepath.suffix.lower() in (".jsonl", ".ndjson") else max(0, source.total - cap)
+        )
+
     _run_tui(
-        open_source(filepath),
+        source,
         cap,
         offset,
         format_hint,
@@ -136,4 +171,6 @@ def view(
         search=search,
         sort=sort,
         filepath=filename,
+        follow=follow,
+        start_at_end=tail or follow,
     )

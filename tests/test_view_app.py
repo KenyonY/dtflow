@@ -1836,3 +1836,187 @@ def test_detail_panel_never_truncates_long_content():
     assert "<<<" not in plain
     assert "x" * 3000 in plain
     assert "q" * 5000 in plain  # messages 分支同样不截断
+
+
+# ---------------------------------------------------------------------- #
+# 快速尾窗 / follow: 按需历史索引、暂停与增量约束
+# ---------------------------------------------------------------------- #
+def _file_app(path, cap=3, follow=False):
+    from dtflow.cli.view.source import open_source
+
+    src = open_source(path, tail_size=cap, follow=follow)
+    rows = src.window(0, cap)
+    return ViewApp(
+        src,
+        rows,
+        0,
+        cap,
+        "generic",
+        path.name,
+        filepath=str(path),
+        follow=follow,
+        start_at_end=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_static_tail_starts_relative_and_indexes_when_paging_back(tmp_path):
+    p = tmp_path / "tail.jsonl"
+    p.write_text("".join(f'{{"i":{i}}}\n' for i in range(10)))
+    app = _file_app(p)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert [row["i"] for row in app.all_rows] == [7, 8, 9]
+        assert app._global_nos == [-3, -2, -1]
+        assert app.query_one("#table").cursor_row == 2
+
+        app.action_prev_window()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.source.fully_indexed and app.source.total == 10
+        assert [row["i"] for row in app.all_rows] == [4, 5, 6]
+        assert app._global_nos == [4, 5, 6]
+
+
+@pytest.mark.asyncio
+async def test_static_tail_export_does_not_claim_tail_size_is_full_history(tmp_path):
+    p = tmp_path / "tail.jsonl"
+    p.write_text("".join(f'{{"i":{i}}}\n' for i in range(10)))
+    app = _file_app(p)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._export_scope() == ("全部（将按需建历史索引，行数待定）", -1)
+
+
+@pytest.mark.asyncio
+async def test_follow_appends_at_bottom_pauses_on_navigation_and_g_resumes(tmp_path):
+    p = tmp_path / "live.jsonl"
+    p.write_text("".join(f'{{"i":{i}}}\n' for i in range(5)))
+    app = _file_app(p, follow=True)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with p.open("a") as f:
+            f.write('{"i":5}\n')
+        app._on_follow_update(app.source.poll())
+        await pilot.pause()
+        assert [row["i"] for row in app.all_rows] == [3, 4, 5]
+        assert app.query_one("#table").cursor_row == 2
+
+        await pilot.press("k")
+        await pilot.pause()
+        assert app._follow_pinned is False
+        with p.open("a") as f:
+            f.write('{"i":6}\n')
+        app._on_follow_update(app.source.poll())
+        assert [row["i"] for row in app.all_rows] == [3, 4, 5]
+        assert app._follow_pending == 1
+
+        await pilot.press("G")
+        await pilot.pause()
+        assert app._follow_pinned is True and app._follow_pending == 0
+        assert [row["i"] for row in app.all_rows] == [4, 5, 6]
+
+
+@pytest.mark.asyncio
+async def test_follow_filter_scans_history_then_applies_to_new_rows(tmp_path):
+    p = tmp_path / "live.jsonl"
+    p.write_text("".join(f'{{"id":{i}}}\n' for i in range(10)))
+    app = _file_app(p, follow=True)
+
+    async with app.run_test() as pilot:
+        app._apply_filter("id>=5")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.source.fully_indexed
+        assert app._subset == [5, 6, 7, 8, 9]
+        assert [row["id"] for row in app.all_rows] == [7, 8, 9]
+
+        with p.open("a") as f:
+            f.write('{"id":10}\n{"id":1}\n')
+        app._on_follow_update(app.source.poll())
+        await pilot.pause()
+        assert app._subset == [5, 6, 7, 8, 9, 10]
+        assert [row["id"] for row in app.all_rows] == [8, 9, 10]
+
+
+@pytest.mark.asyncio
+async def test_follow_rotation_keeps_visible_tail_until_new_rows_evict_it(tmp_path):
+    import os
+
+    p = tmp_path / "live.jsonl"
+    p.write_text("".join(f'{{"old":{i}}}\n' for i in range(3)))
+    app = _file_app(p, follow=True)
+
+    async with app.run_test() as pilot:
+        replacement = tmp_path / "new.jsonl"
+        replacement.write_text('{"new":1}\n')
+        os.replace(replacement, p)
+        app._on_follow_update(app.source.poll())
+        await pilot.pause()
+
+        assert app._follow_generation == 1
+        assert app.all_rows[0] == {"old": 1}
+        assert app.all_rows[-1] == {"new": 1}
+        assert len(app.all_rows) == 3
+
+
+@pytest.mark.asyncio
+async def test_follow_rotation_refreshes_filter_index_without_dropping_visible_tail(tmp_path):
+    import os
+
+    p = tmp_path / "live.jsonl"
+    p.write_text("".join(f'{{"id":{i}}}\n' for i in range(6)))
+    app = _file_app(p, follow=True)
+
+    async with app.run_test() as pilot:
+        app._apply_filter("id>=3")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [row["id"] for row in app.all_rows] == [3, 4, 5]
+
+        replacement = tmp_path / "new.jsonl"
+        replacement.write_text("".join(f'{{"id":{i}}}\n' for i in range(4)))
+        os.replace(replacement, p)
+        app._on_follow_update(app.source.poll())
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert app._subset == [3]
+        assert [row["id"] for row in app.all_rows] == [4, 5, 3]
+
+        await pilot.press("G")
+        await pilot.pause()
+        assert [row["id"] for row in app.all_rows] == [3]
+
+
+@pytest.mark.asyncio
+async def test_follow_rotation_does_not_read_new_file_through_old_sort_indices(tmp_path):
+    import os
+
+    p = tmp_path / "live.jsonl"
+    p.write_text("".join(f'{{"id":{i}}}\n' for i in range(5)))
+    app = _file_app(p, follow=True)
+
+    async with app.run_test() as pilot:
+        app._apply_sort("-id")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        before = list(app.all_rows)
+
+        replacement = tmp_path / "new.jsonl"
+        replacement.write_text('{"id":100}\n')
+        os.replace(replacement, p)
+        app._on_follow_update(app.source.poll())
+        await pilot.pause()
+        assert app._follow_sort_snapshot and app._subset is None
+
+        await pilot.press("G")
+        await pilot.pause()
+        assert app.all_rows == before
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.all_rows == [{"id": 100}]

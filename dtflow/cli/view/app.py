@@ -165,6 +165,7 @@ _HELP = """[b]dt view 快捷键[/b]
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
   ←/→          水平滚动   h/l 水平滚动 2 字符
   ] / [        下/上一窗口 (大文件翻页)   :  跳到行号 (-1 为末行)
+                 尾窗首次前翻/全量操作会按需建历史索引；follow 中上移暂停，G 恢复追尾
   n / N        详情下/上一字段 (对话按条走: msg0/msg1…; 亦可鼠标点击选中)
   *            跳到详情中下一处搜索命中 (命中处画黄底)
   y            复制当前样本 JSON 到剪贴板
@@ -584,6 +585,8 @@ class ViewApp(App):
         search: Optional[str] = None,
         sort: Optional[str] = None,
         filepath: Optional[str] = None,
+        follow: bool = False,
+        start_at_end: bool = False,
     ):
         super().__init__()
         self.source = source  # RowSource: 随机窗口访问, 内存 O(窗口)
@@ -594,7 +597,7 @@ class ViewApp(App):
         # 且当有排序时按排序键重排过 (排序与筛选共用同一条管线, 语义一致且跨窗口有效)。
         # _global_nos 与 all_rows 对齐, 记每行真实全局行号 (供 # 列/跳行两模式统一显示)。
         self._subset: Optional[List[int]] = None
-        self._global_nos: List[int] = list(range(win_offset, win_offset + len(window)))
+        self._global_nos: List[int] = self.source.row_numbers(win_offset, len(window))
         self._filter_label: Optional[str] = None  # 状态栏显示的全量筛选说明
         # 统一约束模型: 子集 = 全文件中满足 (搜索 且 每条 where 且 每列值约束) 的行, 再按排序键排。
         # 三类约束分开存而不是塞进一个槽: 各自可独立增删/回显, 且能逐条翻译成 --where 复现。
@@ -610,6 +613,17 @@ class ViewApp(App):
         self.fmt = fmt
         self.filename = filename
         self.filepath = filepath  # 真实路径 (复现命令/血缘用); stdin 模式为 None
+        self._follow = follow
+        self._follow_pinned = follow
+        self._start_at_end = start_at_end
+        self._follow_polling = False
+        self._follow_moving = start_at_end
+        self._follow_pending = 0
+        self._follow_partial = False
+        self._follow_missing = False
+        self._follow_generation = getattr(source, "generation", 0)
+        self._follow_sort_snapshot = False
+        self._format_auto_empty = not window and fmt == "generic"
         self._init_where = list(where or [])  # 启动参数, on_mount 后统一走一次扫描
         self._init_search = search
         self._init_sort = sort
@@ -622,6 +636,8 @@ class ViewApp(App):
         self._hidden: Set[str] = set()
         self._columns_customized = False
         self.view_indices: List[int] = list(range(len(window)))
+        self._row_keys: List[str] = []
+        self._row_key_seq = 0
         self._field_texts: List[str] = []  # 详情各字段的纯文本, 供 * 找命中
         self._prompt_mode: Optional[str] = None
         self._split = 13  # 表格占比 (总 20 份, 每份 5%), 默认表格 65% : 详情 35%
@@ -717,6 +733,8 @@ class ViewApp(App):
             return
         self._end_scan()
         self._rollback_constraints()  # 这次改动没生效, 约束退回改之前
+        if self._sort_spec is None:
+            self._follow_sort_snapshot = False
         self.notify(escape(f"扫描失败: {msg}"), severity="error", timeout=10)
         self._update_status()
 
@@ -787,11 +805,16 @@ class ViewApp(App):
         table = self.query_one("#table", DataTable)
         self._add_columns(table)
         self._populate()
+        if self._start_at_end and self.view_indices:
+            table.move_cursor(row=len(self.view_indices) - 1)
+            self.call_after_refresh(self._unlock_follow_move)
         self._apply_split()
         # 详情滚动时同步当前字段并刷新状态栏 (拖动/翻页均触发)
         self.watch(self.query_one("#detail", VerticalScroll), "scroll_y", self._on_detail_scroll)
         table.focus()
         self._apply_initial_constraints()
+        if self._follow:
+            self.set_interval(0.5, self._poll_follow)
 
     def _apply_initial_constraints(self) -> None:
         """把 --where/--search/--sort 装进约束模型, 再走一次和 TUI 内完全相同的扫描。
@@ -874,8 +897,8 @@ class ViewApp(App):
             if name == "#":
                 # # 列是全局行号, 最大值取当前窗口的真实全局行号 (子集态可能很大), 不靠采样——
                 # 否则采样只看前 200 行, 宽度按 3 位数估算, 上万的行号会显示不下被截断。
-                max_no = (max(self._global_nos) + 1) if self._global_nos else 1
-                naturals.append(max(header_w, len(str(max_no))))
+                labels = [str(n if n < 0 else n + 1) for n in self._global_nos] or ["1"]
+                naturals.append(max(header_w, max(map(len, labels))))
                 continue
             w = header_w  # 含 ▾ 标记宽度, 避免标记被截
             for cells in sample:
@@ -934,9 +957,13 @@ class ViewApp(App):
     def _populate(self) -> None:
         table = self.query_one("#table", DataTable)
         table.clear()
+        self._row_keys = []
         vis = self._visible_columns()
-        for pos, idx in enumerate(self.view_indices):
-            table.add_row(*(self._cell_text(c) for c in self._cells(idx, vis)), key=str(pos))
+        for idx in self.view_indices:
+            key = f"r{self._row_key_seq}"
+            self._row_key_seq += 1
+            self._row_keys.append(key)
+            table.add_row(*(self._cell_text(c) for c in self._cells(idx, vis)), key=key)
         self._update_status()
         if self.view_indices:
             self._refresh_detail(0)
@@ -1123,6 +1150,20 @@ class ViewApp(App):
             parts.append(f"[reverse] {escape(self._scan_msg)} [/reverse]")
             status.update(Text.from_markup("  ·  ".join(parts)))
             return
+        if self._follow:
+            if self._follow_missing:
+                parts.append("[yellow]路径暂时不存在，等待轮转新文件[/yellow]")
+            elif self._follow_sort_snapshot:
+                parts.append("[yellow]排序快照（r 重置后回到实时）[/yellow]")
+            elif self._follow_pinned:
+                parts.append("[green]实时追尾[/green]")
+            else:
+                pending = f" · +{self._follow_pending} 新行" if self._follow_pending else ""
+                parts.append(f"[yellow]已暂停界面{pending}（G 回到最新）[/yellow]")
+            if self._follow_partial:
+                parts.append("[dim]尾行写入中[/dim]")
+        if self.source.has_unindexed_history:
+            parts.append(f"尾窗 {win} 行（历史未索引）")
         if self._visual_anchor is not None:  # 多选态: 醒目显示选区范围
             cur = self.query_one("#table", DataTable).cursor_row
             lo, hi = sorted((self._visual_anchor, cur))
@@ -1136,10 +1177,10 @@ class ViewApp(App):
                 f"[green]{escape(self._filter_label)}: "
                 f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]"
             )
-        if seq_total > win:  # 多窗口: 显示当前序列内的窗口范围
+        if seq_total > win and not self.source.has_unindexed_history:  # 多窗口
             parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}")
             parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
-        elif not self._filter_label:
+        elif not self._filter_label and not self.source.has_unindexed_history:
             parts.append(f"{total} 行")
         if self._sort_label:
             parts.append(f"排序:{escape(self._sort_label)}")
@@ -1150,8 +1191,142 @@ class ViewApp(App):
         parts.append("[dim]? 帮助[/dim]")
         status.update(Text.from_markup("  ·  ".join(parts)))
 
+    def _unlock_follow_move(self) -> None:
+        self._follow_moving = False
+
+    def _poll_follow(self) -> None:
+        """在 worker 中轮询文件，避免大批追加阻塞 Textual 事件循环。"""
+        if not self._follow or self._follow_polling or self._scan_cancel is not None:
+            return
+        self._follow_polling = True
+
+        def worker() -> None:
+            try:
+                update = self.source.poll()
+            except Exception as e:  # noqa: BLE001
+                self.call_from_thread(self._on_follow_error, f"{type(e).__name__}: {e}")
+                return
+            self.call_from_thread(self._on_follow_update, update)
+
+        self.run_worker(worker, thread=True, exclusive=True, group="follow")
+
+    def _on_follow_error(self, message: str) -> None:
+        self._follow_polling = False
+        self.notify(escape(f"追尾读取失败: {message}"), severity="error", timeout=10)
+
+    def _row_matches_constraints(self, row) -> bool:
+        if not isinstance(row, dict):
+            return False
+        pred = self._filter_pred()
+        if pred is not None and not pred(row):
+            return False
+        for col, kept in self._col_value_filters.items():
+            if render.row_cells(0, row, self.fmt, [col])[0] not in kept:
+                return False
+        return True
+
+    def _on_follow_update(self, update) -> None:
+        self._follow_polling = False
+        self._follow_partial = update.pending
+        refresh_rotation_subset = False
+        if update.kind == "missing":
+            self._follow_missing = True
+            self._update_status()
+            return
+        if update.kind == "restored":
+            self._follow_missing = False
+            self.notify("日志路径已恢复")
+        if update.kind == "rotation":
+            self._follow_missing = False
+            self._follow_generation = update.generation
+            self._subset = None
+            self._follow_sort_snapshot = self._sort_spec is not None
+            refresh_rotation_subset = self._has_filters() and self._sort_spec is None
+            self.notify("检测到日志轮转，已跟随新文件；旧尾窗将逐步淘汰", timeout=8)
+
+        if not update.rows:
+            self._update_status()
+            if refresh_rotation_subset:
+                self._recompute_subset(preserve_window=True)
+            return
+
+        pairs = list(zip(update.rows, update.row_numbers, strict=False))
+        if self._has_filters():
+            pairs = [(row, no) for row, no in pairs if self._row_matches_constraints(row)]
+
+        if (
+            self._subset is not None
+            and self.source.fully_indexed
+            and not self._follow_sort_snapshot
+        ):
+            self._subset.extend(no for _, no in pairs if no >= 0)
+
+        if not self._follow_pinned or self._follow_sort_snapshot:
+            self._follow_pending += update.added
+            self._update_status()
+            if refresh_rotation_subset:
+                self._recompute_subset(preserve_window=True)
+            return
+
+        self._append_follow_rows([row for row, _ in pairs], [no for _, no in pairs])
+        if refresh_rotation_subset:
+            self._recompute_subset(preserve_window=True)
+
+    def _append_follow_rows(self, rows: List[Dict], numbers: List[int]) -> None:
+        """把一批新行追加到尾窗；无新列时不重建整张表。"""
+        if not rows:
+            self._update_status()
+            return
+        self._follow_moving = True
+        format_changed = self._format_auto_empty
+        if format_changed:
+            detected = render.detect_format(rows)
+            self.fmt = detected
+            self._format_auto_empty = False
+            self.columns = render.build_columns(rows, detected)
+            visible = set(render.default_visible_columns(self.columns, detected))
+            self._auto_hidden = set(self.columns) - visible
+
+        self.all_rows.extend(rows)
+        self._global_nos.extend(numbers)
+        overflow = max(0, len(self.all_rows) - self.cap)
+        if overflow:
+            del self.all_rows[:overflow]
+            del self._global_nos[:overflow]
+        self.view_indices = list(range(len(self.all_rows)))
+        self.win_offset = max(0, self._seq_total() - len(self.all_rows))
+        self._follow_pending = 0
+
+        if format_changed or self._merge_columns(rows):
+            self._rebuild_columns()
+        else:
+            table = self.query_one("#table", DataTable)
+            for key in self._row_keys[:overflow]:
+                table.remove_row(key)
+            if overflow:
+                del self._row_keys[:overflow]
+            vis = self._visible_columns()
+            first = len(self.all_rows) - len(rows)
+            for idx in range(max(0, first), len(self.all_rows)):
+                key = f"r{self._row_key_seq}"
+                self._row_key_seq += 1
+                self._row_keys.append(key)
+                table.add_row(*(self._cell_text(c) for c in self._cells(idx, vis)), key=key)
+            self._update_status()
+
+        self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
+        self.call_after_refresh(self._unlock_follow_move)
+
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._refresh_detail(event.cursor_row)
+        if (
+            self._follow
+            and self._follow_pinned
+            and not self._follow_moving
+            and event.cursor_row < len(self.view_indices) - 1
+        ):
+            self._follow_pinned = False
+            self._update_status()
         if self._visual_anchor is not None:  # 多选态下移动光标, 实时更新选区范围
             self._update_status()
 
@@ -1206,10 +1381,94 @@ class ViewApp(App):
         self._half_scroll(-1)
 
     def action_top(self) -> None:
-        self.query_one("#table", DataTable).move_cursor(row=0)
+        if self._follow:
+            self._follow_pinned = False
+        if self.source.has_unindexed_history:
+            self._start_history_index(lambda: self._load_window(0))
+            return
+        self._load_window(0)
 
     def action_bottom(self) -> None:
-        self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
+        if self._follow and not self._follow_sort_snapshot:
+            self._follow_pinned = True
+            self._follow_pending = 0
+            self._load_follow_latest()
+            return
+        end = max(0, self._seq_total() - self.cap)
+        self._load_window(end)
+        if self.view_indices:
+            self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
+
+    def _start_history_index(self, after: Callable[[], None]) -> None:
+        """首次访问尾窗之前的历史时，在 worker 中按需建索引。"""
+        if not self.source.has_unindexed_history:
+            after()
+            return
+        if self._busy():
+            return
+        cancel, gen = self._begin_scan()
+        self._set_scan_msg("建立历史索引 0 行 (Esc 取消)")
+
+        def progress(n: int) -> None:
+            self.call_from_thread(self._set_scan_msg, f"建立历史索引 {n} 行 (Esc 取消)")
+
+        def worker():
+            ok = self.source.ensure_index(progress_cb=progress, cancel=cancel)
+            return self._on_history_index_done, (ok, gen, after)
+
+        self._run_scan(worker, gen)
+
+    def _on_history_index_done(self, ok: bool, gen: int, after: Callable[[], None]) -> None:
+        if self._scan_superseded(gen):
+            return
+        self._end_scan()
+        if not ok:
+            self.notify("已取消历史索引")
+            self._update_status()
+            return
+        after()
+        self.notify(f"历史索引已建立（{self.source.total} 行）")
+
+    def _load_follow_latest(self) -> None:
+        if self._subset is not None and self.source.fully_indexed:
+            self._load_window(max(0, len(self._subset) - self.cap))
+        else:
+            start = max(0, self.source.total - self.cap)
+            rows = self.source.window(start, self.cap)
+            nos = self.source.row_numbers(start, len(rows))
+            if self._has_filters():
+                pairs = [
+                    (row, no)
+                    for row, no in zip(rows, nos, strict=False)
+                    if self._row_matches_constraints(row)
+                ]
+                rows = [row for row, _ in pairs]
+                nos = [no for _, no in pairs]
+            self.win_offset = start
+            self.all_rows = rows
+            self._global_nos = nos
+            self.view_indices = list(range(len(rows)))
+            if self._merge_columns(rows):
+                self._rebuild_columns()
+            else:
+                self._populate()
+        if self.view_indices:
+            self._follow_moving = True
+            self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
+            self.call_after_refresh(self._unlock_follow_move)
+        self._update_status()
+
+    def _rebase_tail_after_index(self) -> None:
+        """懒索引完成后，把尾窗的相对行号切换为绝对行号。"""
+        if (
+            self._start_at_end
+            and self.source.fully_indexed
+            and self._subset is None
+            and any(no < 0 for no in self._global_nos)
+        ):
+            self._load_window(max(0, self.source.total - self.cap))
+            if self.view_indices:
+                self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
 
     def action_sort(self) -> None:
         self._open_prompt("sort", "全量排序列名 (加 - 反向, 如 -chars; 扫全文件):")
@@ -1237,6 +1496,9 @@ class ViewApp(App):
             return
         snap = self._constraints_snapshot()
         if self._set_sort_spec(text):
+            if self._follow:
+                self._follow_pinned = False
+                self._follow_sort_snapshot = True
             self._recompute_subset(snap)
 
     def _sort_keyfn(self) -> Optional[Callable]:
@@ -1282,7 +1544,13 @@ class ViewApp(App):
         self._sort_spec = None
         self._subset = None
         self._filter_label = None
-        self._load_window(0)
+        self._follow_sort_snapshot = False
+        if self._follow:
+            self._follow_pinned = True
+            self._follow_pending = 0
+            self._load_follow_latest()
+        else:
+            self._load_window(0)
         self._rebuild_columns()  # 清列头 ▾ 标记 + 清单元格高亮
         self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
 
@@ -1356,6 +1624,8 @@ class ViewApp(App):
             return None, ["管道输入 (dt view -) 无法复现, 请用 w 导出结果文件"]
 
         skipped: List[str] = []
+        if self._follow:
+            skipped.append("实时模式只复现观察条件，不固定历史字节快照")
         wheres = [e for e, _ in self._where_specs]
         for col, kept in self._col_value_filters.items():
             bad = [v for v in kept if self._UNSAFE_VALUE.search(v)]
@@ -1367,6 +1637,10 @@ class ViewApp(App):
             wheres.append(" or ".join(f"{col}=={v}" for v in sorted(kept)))
 
         parts = ["dt", "view", shlex.quote(self.filepath)]
+        if self._start_at_end:
+            parts.append(str(-self.cap))
+        if self._follow:
+            parts.append("--follow")
         for w in wheres:
             parts.append(f"--where={shlex.quote(w)}")
         if self._search_text:
@@ -1396,14 +1670,17 @@ class ViewApp(App):
         if self._visual_anchor is not None:
             lo, hi = sorted((self._visual_anchor, self.query_one("#table", DataTable).cursor_row))
             return "选区", hi - lo + 1
+        if self.source.has_unindexed_history:
+            return "全部（将按需建历史索引，行数待定）", -1
         return ("筛选子集" if self._filter_label else "全部"), self._seq_total()
 
     def action_export(self) -> None:
         scope, n = self._export_scope()
-        if n <= 0:
+        if n == 0:
             self.notify("没有可导出的行")
             return
-        self._open_prompt("export", f"导出{scope} {n} 行到 (按扩展名定格式, 如 out.jsonl):")
+        count = "" if n < 0 else f" {n} 行"
+        self._open_prompt("export", f"导出{scope}{count}到 (按扩展名定格式, 如 out.jsonl):")
 
     def _apply_export(self, path_str: str) -> None:
         from pathlib import Path
@@ -1426,18 +1703,27 @@ class ViewApp(App):
         else:
             rows_iter = self._iter_sequence
         streaming = out.suffix.lower() in (".jsonl", ".ndjson")
-        if not streaming and n > 200_000:
+        if not streaming and (n < 0 or n > 200_000):
             self.notify(
-                escape(f"{out.suffix} 需全量载入内存 ({n} 行), 建议导出 .jsonl"), severity="warning"
+                escape(
+                    f"{out.suffix} 需在索引后全量载入内存"
+                    + (f" ({n} 行)" if n >= 0 else "")
+                    + ", 建议导出 .jsonl"
+                ),
+                severity="warning",
             )
 
         cancel, gen = self._begin_scan()
-        self._set_scan_msg(f"导出中 0/{n} (Esc 取消)")
+        self._set_scan_msg("准备导出 (Esc 取消)")
 
         def worker():
             # 导出的失败 (磁盘满/权限/格式后端缺失) 有自己的文案, 不并进 _on_scan_crashed
             try:
-                written = self._write_export(out, rows_iter, cancel, n, streaming)
+                if self._visual_anchor is None and not self._prepare_full_scan(cancel):
+                    return self._on_export_done, (out, None, None, gen)
+                total = self._export_scope()[1]
+                self.call_from_thread(self._set_scan_msg, f"导出中 0/{total} (Esc 取消)")
+                written = self._write_export(out, rows_iter, cancel, total, streaming)
             except Exception as e:  # noqa: BLE001
                 return self._on_export_done, (out, None, str(e), gen)
             return self._on_export_done, (out, written, None, gen)
@@ -1497,6 +1783,7 @@ class ViewApp(App):
             "sort": self._sort_label,
             "scope": self._export_scope()[0],
             "command": cmd,
+            "source_snapshot": self.source.snapshot_info(),
         }
         if skipped:
             params["command_incomplete"] = skipped
@@ -1510,6 +1797,7 @@ class ViewApp(App):
         if self._scan_superseded(gen):
             return  # 期间已被 r 重置或新扫描取代
         self._end_scan()
+        self._rebase_tail_after_index()
         self._update_status()
         if error is not None:
             self.notify(escape(f"导出失败: {error}"), severity="error", timeout=10)
@@ -1533,6 +1821,11 @@ class ViewApp(App):
         原始态: 位置即文件行号, 走 source.window 顺序读。
         子集态: 位置为子集内序号, 取 subset[offset:] 的全局行号经 rows_at 拉取。
         """
+        if self._follow and self._follow_sort_snapshot and self._subset is None:
+            # 轮转后旧排序快照的全局索引已经不再指向当前文件；当前可见窗口仍安全，
+            # 但不能拿旧索引去读取新 inode。r 会显式回到新文件的实时顺序。
+            self.notify("日志已轮转，排序快照只能查看当前窗口；按 r 回到实时", severity="warning")
+            return
         seq_total = self._seq_total()
         if self._subset is not None and seq_total == 0:  # 空子集: 清空视图 (0 命中)
             self.win_offset = 0
@@ -1542,13 +1835,21 @@ class ViewApp(App):
             self._populate()
             return
         offset = max(0, min(offset, seq_total - 1)) if seq_total else 0
-        if self._subset is None:
-            rows = self.source.window(offset, self.cap)
-            nos = list(range(offset, offset + len(rows)))
-        else:
-            picked = self._subset[offset : offset + self.cap]
-            rows = self.source.rows_at(picked)
-            nos = picked
+        try:
+            if self._subset is None:
+                rows = self.source.window(offset, self.cap)
+                nos = self.source.row_numbers(offset, len(rows))
+            else:
+                picked = self._subset[offset : offset + self.cap]
+                rows = self.source.rows_at(picked)
+                nos = picked
+        except OSError as e:
+            self.notify(
+                escape(f"文件已变化，当前快照无法继续读取: {e}"),
+                severity="error",
+                timeout=10,
+            )
+            return
         if not rows:
             return
         self.win_offset = offset
@@ -1570,14 +1871,27 @@ class ViewApp(App):
 
     def action_prev_window(self) -> None:
         if self.win_offset == 0:
+            if self.source.has_unindexed_history:
+                self._follow_pinned = False
+
+                def load_previous_tail() -> None:
+                    self._load_window(max(0, self.source.total - 2 * self.cap))
+
+                self._start_history_index(load_previous_tail)
+                return
             self.notify("已是第一个窗口")
             return
+        if self._follow:
+            self._follow_pinned = False
         self._load_window(max(0, self.win_offset - self.cap))
 
     def action_jump(self) -> None:
-        seq_total = self._seq_total()
         where = "子集内序号" if self._subset is not None else "行号"
-        self._open_prompt("jump", f"跳到{where} (1-{seq_total}, 负数从末尾数):")
+        if self.source.has_unindexed_history:
+            hint = "负数从尾窗末尾数，正数会按需建历史索引"
+        else:
+            hint = f"1-{self._seq_total()}, 负数从末尾数"
+        self._open_prompt("jump", f"跳到{where} ({hint}):")
 
     def _apply_jump(self, text: str) -> None:
         """跳到当前浏览序列的第 n 个位置 (原始态=文件行号, 子集态=子集内序号)。"""
@@ -1586,6 +1900,18 @@ class ViewApp(App):
         except ValueError:
             self.notify(escape(f"无效行号: {text}"), severity="error")
             return
+        if self.source.has_unindexed_history and n > 0:
+            self._follow_pinned = False
+            self._start_history_index(lambda: self._jump_indexed(n))
+            return
+        if self.source.has_unindexed_history and n < -self.source.total:
+            self._follow_pinned = False
+            self._start_history_index(lambda: self._jump_indexed(n))
+            return
+        self._jump_indexed(n)
+
+    def _jump_indexed(self, n: int) -> None:
+        """对已知序列执行跳转；尾窗内负数也可直接走这里。"""
         seq_total = self._seq_total()
         if n < 0:  # 负数从末尾数: -1 = 最后一个
             n = seq_total + n + 1
@@ -1731,7 +2057,7 @@ class ViewApp(App):
         parts += [f"{c}∈{len(v)}值" for c, v in self._col_value_filters.items()]
         return " · ".join(parts)
 
-    def _recompute_subset(self, rollback=None) -> None:
+    def _recompute_subset(self, rollback=None, preserve_window: bool = False) -> None:
         """按当前所有约束重算子集并按排序键排序; 什么都没有则回全量顺序浏览。
 
         调用方须已通过 _busy() 确认没有扫描在跑 —— 那道闸在"改约束之前", 这里再挡就晚了
@@ -1746,7 +2072,12 @@ class ViewApp(App):
         if pred is None and not colf and self._sort_spec is None:
             self._subset = None
             self._filter_label = None
-            self._load_window(0)
+            if self._follow:
+                self._follow_pinned = True
+                self._follow_sort_snapshot = False
+                self._load_follow_latest()
+            else:
+                self._load_window(0)
             self._rebuild_columns()  # 清列头标记
             return
 
@@ -1760,22 +2091,27 @@ class ViewApp(App):
                     return False
             return True
 
-        self._start_subset_scan(row_ok, label, rollback)
+        self._start_subset_scan(row_ok, label, rollback, preserve_window=preserve_window)
 
-    def _start_subset_scan(self, row_ok, label: str, rollback=None) -> None:
+    def _start_subset_scan(
+        self, row_ok, label: str, rollback=None, preserve_window: bool = False
+    ) -> None:
         cancel, gen = self._begin_scan()
         self._scan_rollback = rollback
-        total = self.source.total
         keyfn = self._sort_keyfn()
         desc = bool(self._sort_spec and self._sort_spec[1])
-        self._set_scan_msg(f"扫描中 0/{total} (Esc 取消)")
+        self._set_scan_msg("准备全量扫描 (Esc 取消)")
 
         def worker():
+            if not self._prepare_full_scan(cancel):
+                return self._on_subset_scan_done, (None, label, True, gen, preserve_window)
+            total = self.source.total
+            self.call_from_thread(self._set_scan_msg, f"扫描中 0/{total} (Esc 取消)")
             matches: List[int] = []
             keys: List = []
             for i, row in enumerate(self.source.iter_all()):
                 if cancel.is_set():
-                    return self._on_subset_scan_done, (None, label, True, gen)
+                    return self._on_subset_scan_done, (None, label, True, gen, preserve_window)
                 try:
                     if row_ok(row):
                         matches.append(i)
@@ -1792,7 +2128,7 @@ class ViewApp(App):
                 # sort 是稳定的 → 键相同的行保持原文件顺序, 结果可复现
                 order = sorted(range(len(matches)), key=lambda j: keys[j], reverse=desc)
                 matches = [matches[j] for j in order]
-            return self._on_subset_scan_done, (matches, label, False, gen)
+            return self._on_subset_scan_done, (matches, label, False, gen, preserve_window)
 
         self._run_scan(worker, gen)
 
@@ -1800,20 +2136,49 @@ class ViewApp(App):
         self._scan_msg = msg
         self._update_status()
 
-    def _on_subset_scan_done(self, matches, label: str, cancelled: bool, gen: int) -> None:
+    def _prepare_full_scan(self, cancel, label: str = "建立历史索引") -> bool:
+        """全量操作的统一高水位入口；尾窗源在此按需补全索引。"""
+        if not self.source.has_unindexed_history:
+            return True
+
+        self.call_from_thread(self._set_scan_msg, f"{label} 0 行 (Esc 取消)")
+
+        def progress(n: int) -> None:
+            self.call_from_thread(self._set_scan_msg, f"{label} {n} 行 (Esc 取消)")
+
+        return self.source.ensure_index(progress_cb=progress, cancel=cancel)
+
+    def _on_subset_scan_done(
+        self, matches, label: str, cancelled: bool, gen: int, preserve_window: bool = False
+    ) -> None:
         if self._scan_superseded(gen):
             return  # 期间已被 r 重置或新扫描取代: 丢弃, 否则会把清掉的筛选复活
         self._end_scan()
         if cancelled:
             self._rollback_constraints()  # 取消 = 什么都没发生, 条件不生效
+            if self._sort_spec is None:
+                self._follow_sort_snapshot = False
             self.notify("已取消扫描 (条件未生效)")
             self._rebuild_columns()  # 值筛选的 ▾ 标记随之回退
             return
         self._scan_rollback = None  # 结果落地: 约束就此提交
         self._subset = matches  # 可能为空 (0 命中)
         self._filter_label = label or None
-        self._load_window(0)
+        if preserve_window:
+            # 轮转时旧尾窗仍留在屏幕上；新代次的筛选索引只接管之后的导航与增量行。
+            self.win_offset = max(0, len(matches) - len(self.all_rows))
+            self._update_status()
+            self.notify(escape(f"日志轮转后已刷新筛选索引（当前文件命中 {len(matches)} 行）"))
+            return
+        start = 0
+        if self._follow and self._sort_spec is None:
+            start = max(0, len(matches) - self.cap)
+        self._load_window(start)
         self._rebuild_columns()  # 刷新列头标记 (值筛选列加 ▾) + 单元格高亮
+        if self._follow and self._sort_spec is None and self.view_indices:
+            self._follow_moving = True
+            self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
+            self.call_after_refresh(self._unlock_follow_move)
         if not label:  # 纯排序 (无筛选): 行集没变, 说排序而不是"命中"
             self.notify(escape(f"已按 {self._sort_label} 全量排序 ({len(matches)} 行)"))
         elif matches:
@@ -1873,10 +2238,13 @@ class ViewApp(App):
         # 关键: 算该列候选值时应用"除本列外"的其他约束 → 本列自己筛掉的值仍在列表里, 可加回
         other = {c: set(v) for c, v in self._col_value_filters.items() if c != col}
         cancel, gen = self._begin_scan()
-        total = self.source.total
-        self._set_scan_msg(f"扫描 {col} 值 0/{total} (Esc 取消)")
+        self._set_scan_msg(f"准备扫描 {col} 值 (Esc 取消)")
 
         def worker():
+            if not self._prepare_full_scan(cancel):
+                return self._on_value_scan_done, (col, None, "cancelled", gen)
+            total = self.source.total
+            self.call_from_thread(self._set_scan_msg, f"扫描 {col} 值 0/{total} (Esc 取消)")
             counts: Counter = Counter()
             n = 0
             for row in self.source.iter_all():
@@ -1904,6 +2272,7 @@ class ViewApp(App):
         if self._scan_superseded(gen):
             return  # 期间已被 r 重置或新扫描取代
         self._end_scan()
+        self._rebase_tail_after_index()
         self._update_status()
         if status == "cancelled":
             self.notify("已取消扫描")
@@ -1960,10 +2329,13 @@ class ViewApp(App):
         cols = self.columns
         fmt = self.fmt
         cancel, gen = self._begin_scan()
-        seq_total = self._seq_total()
-        self._set_scan_msg(f"快照扫描中 0/{seq_total} (Esc 取消)")
+        self._set_scan_msg("准备快照扫描 (Esc 取消)")
 
         def worker():
+            if not self._prepare_full_scan(cancel):
+                return self._on_snapshot_done, (col, None, True, gen)
+            seq_total = self._seq_total()
+            self.call_from_thread(self._set_scan_msg, f"快照扫描中 0/{seq_total} (Esc 取消)")
             n = nonempty = nnum = 0
             vmin = vmax = vsum = None
             for row in self._iter_sequence(cancel):
@@ -1995,6 +2367,7 @@ class ViewApp(App):
         if self._scan_superseded(gen):
             return  # 期间已被 r 重置或新扫描取代
         self._end_scan()
+        self._rebase_tail_after_index()
         if cancelled:
             self.notify("已取消快照")
             self._update_status()

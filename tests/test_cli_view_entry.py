@@ -121,3 +121,63 @@ def test_row_count_matches_for_tsv_and_ndjson(tmp_path):
     tsv = tmp_path / "d.tsv"
     tsv.write_text("a\tb\n1\tx\n2\ty\n")
     assert _count_rows_fast(str(tsv)) == 2  # 表头不算数据行
+
+
+def test_negative_num_is_accepted_without_double_dash(monkeypatch, tmp_path):
+    """Click 默认把 -100 当选项；view 必须把它作为负整数位置参数。"""
+    from typer.testing import CliRunner
+
+    import dtflow.__main__ as cli
+
+    p = tmp_path / "d.jsonl"
+    p.write_bytes(b'{"i":1}\n')
+    called = {}
+
+    def fake_view(filename, **kwargs):
+        called.update(filename=filename, **kwargs)
+
+    monkeypatch.setattr(cli, "_view", fake_view)
+    result = CliRunner().invoke(cli.app, ["view", str(p), "-100"])
+    assert result.exit_code == 0, result.output
+    assert called["cap"] == 100 and called["tail"] is True and called["follow"] is False
+
+
+def test_follow_uses_num_as_tail_capacity(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    import dtflow.__main__ as cli
+
+    p = tmp_path / "d.ndjson"
+    p.write_bytes(b'{"i":1}\n')
+    called = {}
+    monkeypatch.setattr(
+        cli,
+        "_view",
+        lambda filename, **kwargs: called.update(filename=filename, **kwargs),
+    )
+
+    result = CliRunner().invoke(cli.app, ["view", str(p), "250", "--follow"])
+    assert result.exit_code == 0, result.output
+    assert called["cap"] == 250 and called["follow"] is True
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["d.jsonl", "0"], "必须大于 0"),
+        (["d.jsonl", "-10", "--offset", "2"], "-NUM 不能与 --offset"),
+        (["d.jsonl", "--follow", "--offset", "2"], "--follow 不能与 --offset"),
+        (["d.jsonl", "--follow", "--sort=-i"], "--follow 不能与启动排序"),
+        (["d.csv", "--follow"], "--follow 仅支持 JSONL/NDJSON"),
+        (["-", "--follow"], "--follow 不支持 stdin"),
+    ],
+)
+def test_view_tail_and_follow_conflicts_are_usage_errors(args, message):
+    from typer.testing import CliRunner
+
+    from dtflow.__main__ import app
+
+    result = CliRunner().invoke(app, ["view", *args])
+    assert result.exit_code == 2
+    assert '"error": "usage_error"' in result.output
+    assert message in result.output

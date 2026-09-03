@@ -1,9 +1,19 @@
 """dt view 数据源: JSONL 偏移索引 + 随机窗口访问 + stdin 管道。"""
 
 import io
+import os
+from array import array
 from pathlib import Path
 
-from dtflow.cli.view.source import open_source, read_stdin_source
+import orjson
+import pytest
+
+from dtflow.cli.view.source import (
+    PARSE_ERROR_FIELD,
+    SourceChangedError,
+    open_source,
+    read_stdin_source,
+)
 
 
 def _write(tmp_path, name, lines):
@@ -89,3 +99,115 @@ def test_format_detection_survives_leading_bad_line(tmp_path):
     p = tmp_path / "bad.jsonl"
     p.write_bytes(b"{ broken\n" + b'{"messages":[{"role":"user","content":"hi"}]}\n')
     assert detect_format(open_source(p).window(0, 10)) == "openai_chat"
+
+
+def test_jsonl_fast_tail_is_relative_until_history_is_indexed(tmp_path):
+    p = _write(tmp_path, "tail.jsonl", [f'{{"i": {i}}}' for i in range(10)])
+    src = open_source(p, tail_size=3)
+
+    assert src.has_unindexed_history
+    assert src.total == 3
+    assert src.window(0, 3) == [{"i": 7}, {"i": 8}, {"i": 9}]
+    assert src.row_numbers(0, 3) == [-3, -2, -1]
+    assert isinstance(src._offsets, array) and src._offsets.itemsize == 8
+
+    assert src.ensure_index()
+    assert src.fully_indexed and src.total == 10
+    assert src.window(4, 3) == [{"i": 4}, {"i": 5}, {"i": 6}]
+    assert src.row_numbers(7, 3) == [7, 8, 9]
+
+
+def test_static_jsonl_snapshot_does_not_absorb_appends_and_rejects_truncate(tmp_path):
+    p = _write(tmp_path, "snapshot.jsonl", ['{"i": 0}', '{"i": 1}'])
+    src = open_source(p)
+    with p.open("ab") as f:
+        f.write(b'{"i": 2}\n')
+
+    assert src.total == 2
+    assert list(src.iter_all()) == [{"i": 0}, {"i": 1}]
+    assert src.window(0, 10) == [{"i": 0}, {"i": 1}]
+
+    p.write_bytes(b'{"new": true}\n')
+    with pytest.raises(SourceChangedError, match="截断"):
+        src.window(0, 2)
+
+
+def test_follow_waits_for_partial_line_then_commits_once(tmp_path):
+    p = Path(tmp_path) / "live.jsonl"
+    p.write_bytes(b'{"i":0}\n{"i":')
+    src = open_source(p, tail_size=3, follow=True)
+
+    assert src.window(0, 10) == [{"i": 0}]
+    waiting = src.poll()
+    assert waiting.kind == "unchanged" and waiting.pending
+
+    with p.open("ab") as f:
+        f.write(b"1}\nnot json\n")
+    update = src.poll()
+    assert [row.get("i") for row in update.rows] == [1, None]
+    assert PARSE_ERROR_FIELD in update.rows[1]
+    assert update.added == 2 and not update.pending
+    assert src.poll().added == 0  # 同一批不重复提交
+
+
+def test_follow_is_bounded_and_detects_rotation_and_copytruncate(tmp_path):
+    p = _write(tmp_path, "live.jsonl", [f'{{"i": {i}}}' for i in range(5)])
+    src = open_source(p, tail_size=3, follow=True)
+    with p.open("ab") as f:
+        f.write(b'{"i":5}\n{"i":6}\n')
+    assert src.poll().added == 2
+    assert src.total == 3
+    assert src.window(0, 3) == [{"i": 4}, {"i": 5}, {"i": 6}]
+
+    replacement = Path(tmp_path) / "next.jsonl"
+    replacement.write_bytes(b'{"generation":1}\n')
+    os.replace(replacement, p)
+    rotated = src.poll()
+    assert rotated.kind == "rotation" and rotated.generation == 1
+    assert rotated.rows == [{"generation": 1}]
+
+    # copytruncate 保持 inode，但长度退回，也应切新代。
+    p.write_bytes(b'{"g":2}\n')
+    copied = src.poll()
+    assert copied.kind == "rotation" and copied.generation == 2
+    assert copied.rows == [{"g": 2}]
+
+
+def test_tail_reader_handles_blank_lines_utf8_and_a_line_larger_than_block(tmp_path):
+    p = Path(tmp_path) / "large.jsonl"
+    huge = "中" * 100_000
+    p.write_text(
+        '{"i":0}\n\n' + orjson.dumps({"text": huge}).decode() + '\n  \n{"i":2}',
+        encoding="utf-8",
+    )
+    src = open_source(p, tail_size=2)
+    rows = src.window(0, 2)
+    assert rows[0] == {"text": huge}
+    assert rows[1] == {"i": 2}  # 静态尾窗包含无末尾换行的合法记录
+
+
+def test_full_iteration_keeps_its_high_water_while_follow_poll_adds_rows(tmp_path):
+    p = _write(tmp_path, "high-water.jsonl", [f'{{"i": {i}}}' for i in range(4)])
+    src = open_source(p, tail_size=2, follow=True)
+    assert src.ensure_index()
+
+    scan = src.iter_all()
+    assert next(scan) == {"i": 0}  # 此时捕获 total=4 / byte_end
+    with p.open("ab") as f:
+        f.write(b'{"i":4}\n')
+    assert src.poll().added == 1
+
+    assert list(scan) == [{"i": 1}, {"i": 2}, {"i": 3}]
+    assert src.total == 5 and src.window(4, 1) == [{"i": 4}]
+
+
+def test_follow_waits_through_missing_rotation_path(tmp_path):
+    p = _write(tmp_path, "live.jsonl", ['{"i":0}'])
+    src = open_source(p, tail_size=10, follow=True)
+    moved = tmp_path / "live.jsonl.1"
+    os.replace(p, moved)
+    assert src.poll().kind == "missing"
+
+    p.write_bytes(b'{"i":1}\n')
+    update = src.poll()
+    assert update.kind == "rotation" and update.rows == [{"i": 1}]

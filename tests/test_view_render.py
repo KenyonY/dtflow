@@ -27,6 +27,10 @@ def test_columns_and_cells_chat():
     assert "source" in cols  # 标量元数据列
     cells = dict(zip(cols, R.row_cells(0, rows[0], "openai_chat", cols), strict=False))
     assert cells["#"] == "1"  # 1-based
+    tail_cells = dict(
+        zip(cols, R.row_cells(0, rows[0], "openai_chat", cols, row_no=-3), strict=False)
+    )
+    assert tail_cells["#"] == "-3"  # 懒索引尾窗先显示相对行号
     assert cells["turns"] == "3"
     assert cells["roles"] == "sys→u→a"
     assert cells["first_user"] == "写快排"

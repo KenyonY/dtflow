@@ -188,7 +188,8 @@ def row_cells(
     """
     n_long = 80 if preview else None  # 长文本列 (first_user/prompt/instruction)
     n_meta = 60 if preview else None  # 普通标量列
-    derived: Dict[str, Any] = {"#": str((idx if row_no is None else row_no) + 1)}
+    display_no = idx + 1 if row_no is None else (row_no if row_no < 0 else row_no + 1)
+    derived: Dict[str, Any] = {"#": str(display_no)}
 
     if fmt in ("openai_chat", "sharegpt"):
         turns = _normalize_turns(row, fmt)
