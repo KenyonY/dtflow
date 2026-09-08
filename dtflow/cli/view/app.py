@@ -610,6 +610,7 @@ class ViewApp(App):
         self._scan_gen = 0  # 扫描代次: 迟到的结果靠它作废 (详见 _scan_superseded)
         self._scan_rollback = None  # 本次扫描发起前的约束快照 (取消/失败时退回)
         self._scan_msg: str = ""  # 扫描进度文案 (worker 线程回填, 状态栏展示)
+        self._index_navigation = False
         self.fmt = fmt
         self.filename = filename
         self.filepath = filepath  # 真实路径 (复现命令/血缘用); stdin 模式为 None
@@ -705,6 +706,7 @@ class ViewApp(App):
     def _end_scan(self) -> None:
         self._scan_cancel = None
         self._scan_msg = ""
+        self._index_navigation = False
 
     def _run_scan(self, body: Callable, gen: int) -> None:
         """起扫描 worker: body 只负责算, 算完把 (回调, 参数) 交回来, 由这里投递。
@@ -1164,7 +1166,7 @@ class ViewApp(App):
                 parts.append("[dim]尾行写入中[/dim]")
         if self.source.has_unindexed_history:
             parts.append(f"尾窗 {win} 行（历史未索引）")
-        elif self.source.has_unindexed_tail:
+        elif self.source.has_unindexed_tail and not self.source.total_known:
             parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}] / 总行数待定")
             parts.append("[dim]]/[ 按需翻窗口·G 到末尾[/dim]")
         if self._visual_anchor is not None:  # 多选态: 醒目显示选区范围
@@ -1180,10 +1182,10 @@ class ViewApp(App):
                 f"[green]{escape(self._filter_label)}: "
                 f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]"
             )
-        if seq_total > win and self.source.fully_indexed:  # 多窗口
+        if seq_total > win and self.source.total_known:  # 多窗口
             parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}")
             parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
-        elif not self._filter_label and self.source.fully_indexed:
+        elif not self._filter_label and self.source.total_known:
             parts.append(f"{total} 行")
         if self._sort_label:
             parts.append(f"排序:{escape(self._sort_label)}")
@@ -1300,7 +1302,7 @@ class ViewApp(App):
         self.win_offset = max(0, self._seq_total() - len(self.all_rows))
         self._follow_pending = 0
 
-        if format_changed or self._merge_columns(rows):
+        if format_changed or self._merge_columns(rows) or self._row_number_width_changed():
             self._rebuild_columns()
         else:
             table = self.query_one("#table", DataTable)
@@ -1384,6 +1386,7 @@ class ViewApp(App):
         self._half_scroll(-1)
 
     def action_top(self) -> None:
+        self._supersede_index_navigation()
         if self._follow:
             self._follow_pinned = False
         if self.source.has_unindexed_history:
@@ -1392,20 +1395,33 @@ class ViewApp(App):
         self._load_window(0)
 
     def action_bottom(self) -> None:
+        self._supersede_index_navigation()
         if self._follow and not self._follow_sort_snapshot:
             self._follow_pinned = True
             self._follow_pending = 0
             self._load_follow_latest()
             return
-        if self.source.has_unindexed_tail:
-            self._start_history_index(self.action_bottom)
+        if self.source.has_unindexed_tail and (
+            not self.source.total_known
+            or not self.source.window_is_indexed(max(0, self.source.total - self.cap), self.cap)
+        ):
+            self._start_history_index(self.action_bottom, tail=True)
             return
         end = max(0, self._seq_total() - self.cap)
         self._load_window(end)
         if self.view_indices:
             self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
 
-    def _start_history_index(self, after: Callable[[], None], count: Optional[int] = None) -> None:
+    def _supersede_index_navigation(self) -> None:
+        """新的导航意图取代尚未完成的跳转；不打断搜索/筛选等全量操作。"""
+        if self._index_navigation and self._scan_cancel is not None:
+            self._scan_cancel.set()
+            self._scan_gen += 1
+            self._end_scan()
+
+    def _start_history_index(
+        self, after: Callable[[], None], count: Optional[int] = None, tail: bool = False
+    ) -> None:
         """在 worker 中补全索引；count 指定正向浏览所需的最少行数。"""
         if self.source.fully_indexed:
             after()
@@ -1413,16 +1429,29 @@ class ViewApp(App):
         if self._busy():
             return
         cancel, gen = self._begin_scan()
-        self._set_scan_msg("读取行索引 0 行 (Esc 取消)")
+        self._index_navigation = True
+        self._set_scan_msg(
+            "统计总行数并读取尾窗 (Esc 取消)" if tail else "读取行索引 0 行 (Esc 取消)"
+        )
 
         def progress(n: int) -> None:
-            self.call_from_thread(self._set_scan_msg, f"读取行索引 {n} 行 (Esc 取消)")
+            def update() -> None:
+                if not self._scan_superseded(gen):
+                    self._set_scan_msg(f"读取行索引 {n} 行 (Esc 取消)")
+
+            self.call_from_thread(update)
 
         def worker():
-            if count is None:
+            if tail:
+                ok = self.source.ensure_tail(
+                    count if count is not None else self.cap, cancel=cancel
+                )
+            elif count is None:
                 ok = self.source.ensure_index(progress_cb=progress, cancel=cancel)
             else:
-                ok = self.source.ensure_rows(count, progress_cb=progress, cancel=cancel)
+                ok = self.source.ensure_window(
+                    max(0, count - self.cap), self.cap, progress_cb=progress, cancel=cancel
+                )
             return self._on_history_index_done, (ok, gen, after)
 
         self._run_scan(worker, gen)
@@ -1457,7 +1486,7 @@ class ViewApp(App):
             self.all_rows = rows
             self._global_nos = nos
             self.view_indices = list(range(len(rows)))
-            if self._merge_columns(rows):
+            if self._merge_columns(rows) or self._row_number_width_changed():
                 self._rebuild_columns()
             else:
                 self._populate()
@@ -1679,7 +1708,7 @@ class ViewApp(App):
         if self._visual_anchor is not None:
             lo, hi = sorted((self._visual_anchor, self.query_one("#table", DataTable).cursor_row))
             return "选区", hi - lo + 1
-        if not self.source.fully_indexed:
+        if not self.source.total_known:
             return "全部（将按需补全索引，行数待定）", -1
         return ("筛选子集" if self._filter_label else "全部"), self._seq_total()
 
@@ -1835,7 +1864,7 @@ class ViewApp(App):
             # 但不能拿旧索引去读取新 inode。r 会显式回到新文件的实时顺序。
             self.notify("日志已轮转，排序快照只能查看当前窗口；按 r 回到实时", severity="warning")
             return
-        if self.source.has_unindexed_tail and offset + self.cap > self.source.total:
+        if not self.source.window_is_indexed(offset, self.cap):
             self._start_history_index(
                 lambda: self._load_window(offset), count=max(0, offset) + self.cap
             )
@@ -1870,13 +1899,14 @@ class ViewApp(App):
         self.all_rows = rows
         self._global_nos = nos
         self.view_indices = list(range(len(rows)))
-        if self._merge_columns(rows):
+        if self._merge_columns(rows) or self._row_number_width_changed():
             self._rebuild_columns()
         else:
             self._populate()
         self.query_one("#table", DataTable).move_cursor(row=0)
 
     def action_next_window(self) -> None:
+        self._supersede_index_navigation()
         nxt = self.win_offset + len(self.all_rows)
         if self.source.has_unindexed_tail:
             self._start_history_index(lambda: self._show_next_window(nxt), count=nxt + self.cap)
@@ -1890,6 +1920,7 @@ class ViewApp(App):
         self._load_window(nxt)
 
     def action_prev_window(self) -> None:
+        self._supersede_index_navigation()
         if self.win_offset == 0:
             if self.source.has_unindexed_history:
                 self._follow_pinned = False
@@ -1910,7 +1941,7 @@ class ViewApp(App):
         if self.source.has_unindexed_history:
             hint = "负数从尾窗末尾数，正数会按需建历史索引"
         elif self.source.has_unindexed_tail:
-            hint = "正数按需向后读取，负数会补全索引后从末尾数"
+            hint = "正数按需读取，负数快速计数后从末尾数"
         else:
             hint = f"1-{self._seq_total()}, 负数从末尾数"
         self._open_prompt("jump", f"跳到{where} ({hint}):")
@@ -1922,10 +1953,14 @@ class ViewApp(App):
         except ValueError:
             self.notify(escape(f"无效行号: {text}"), severity="error")
             return
-        if self.source.has_unindexed_tail and (n < 0 or n > self.source.total):
+        self._supersede_index_navigation()
+        if self.source.has_unindexed_tail and n < 0:
             self._start_history_index(
-                lambda: self._jump_indexed(n), count=n + self.cap - 1 if n > 0 else None
+                lambda: self._jump_indexed(n), count=max(self.cap, -n), tail=True
             )
+            return
+        if self.source.has_unindexed_tail and n > self.source.total:
+            self._start_history_index(lambda: self._jump_indexed(n), count=n + self.cap - 1)
             return
         if self.source.has_unindexed_history and n > 0:
             self._follow_pinned = False
@@ -1987,6 +2022,18 @@ class ViewApp(App):
             self._rebuild_columns()
 
         self.push_screen(ColumnPicker(self.columns, self._hidden | self._auto_hidden), apply)
+
+    def _row_number_width_changed(self) -> bool:
+        """窗口行号位数增加时扩列，避免沿用首屏宽度截断绝对行号。"""
+        if not self._global_nos:
+            return False
+        vis = self._visible_columns()
+        if "#" not in vis:
+            return False
+        width = max(
+            len(str(n if n < 0 else n + 1)) for n in (min(self._global_nos), max(self._global_nos))
+        )
+        return self.query_one("#table", DataTable).ordered_columns[vis.index("#")].width < width
 
     def _rebuild_columns(self) -> None:
         """列可见集变化后重建表头并重填。"""

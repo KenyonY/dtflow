@@ -285,3 +285,109 @@ def test_jsonl_head_rejects_changed_snapshot_during_extension(tmp_path, replace)
     with pytest.raises(SourceChangedError):
         src.ensure_index()
     assert src.total == 2 and not src.fully_indexed
+
+
+def test_exact_tail_keeps_prefix_and_only_indexes_requested_tail(tmp_path, monkeypatch):
+    import dtflow.cli.view.source as source
+
+    p = _write(tmp_path, "tail.jsonl", [f'{{"i":{i}}}' for i in range(30)])
+    src = open_source(p, initial_size=3)
+    prefix = list(src._offsets)
+
+    def no_forward_scan(*args, **kwargs):
+        pytest.fail("G 不应建立前向全量索引")
+
+    monkeypatch.setattr(source, "_scan_offsets", no_forward_scan)
+    assert src.ensure_tail(4)
+    assert src.total == 30 and src.total_known and not src.fully_indexed
+    assert list(src._offsets) == prefix and len(src._suffix_offsets) == 4
+    assert src.window(26, 4) == [{"i": i} for i in range(26, 30)]
+    assert src.row_numbers(26, 4) == [26, 27, 28, 29]
+    assert src.rows_at([0, 29]) == [{"i": 0}, {"i": 29}]
+    assert src.window(0, 3) == [{"i": i} for i in range(3)]
+    assert not src.window_is_indexed(10, 3)
+
+    # 从尾部向前翻，只反向扩展相邻窗口；也不重复计数。
+    monkeypatch.setattr("dtflow.utils.jsonl.count_jsonl_rows", no_forward_scan)
+    assert src.ensure_window(22, 4)
+    assert len(src._suffix_offsets) == 8 and list(src._offsets) == prefix
+    assert src.window(22, 4) == [{"i": i} for i in range(22, 26)]
+
+
+def test_full_index_only_scans_gap_between_head_and_tail(tmp_path, monkeypatch):
+    import dtflow.cli.view.source as source
+
+    p = _write(tmp_path, "gap.jsonl", [f'{{"i":{i}}}' for i in range(30)])
+    src = open_source(p, initial_size=3)
+    assert src.ensure_tail(4)
+    start, end = src._indexed_end, src._suffix_offsets[0]
+    scan = source._scan_offsets
+    calls = []
+
+    def track(*args, **kwargs):
+        calls.append(args[1:3])
+        return scan(*args, **kwargs)
+
+    monkeypatch.setattr(source, "_scan_offsets", track)
+    assert src.ensure_index()
+    assert calls == [(start, end)]
+    assert src.fully_indexed and src.total == 30
+    assert len(src._offsets) == 30 and not src._suffix_offsets
+    assert list(src.iter_all()) == [{"i": i} for i in range(30)]
+
+
+def test_head_and_tail_overlap_merge_without_duplicates(tmp_path):
+    p = _write(tmp_path, "overlap.jsonl", [f'{{"i":{i}}}' for i in range(10)])
+    src = open_source(p, initial_size=6)
+    assert src.ensure_tail(6)
+    assert src.fully_indexed and src.total == 10
+    assert src.window(0, 20) == [{"i": i} for i in range(10)]
+    assert len(src._offsets) == 10
+
+
+def test_tail_count_respects_original_snapshot_and_keeps_bad_rows(tmp_path):
+    p = tmp_path / "snapshot.jsonl"
+    p.write_bytes(b'{}\n\n  \r\n{"i":1}\n\v\f\nnot json\n{"i":3}')
+    src = open_source(p, initial_size=1)
+    with p.open("ab") as f:
+        f.write(b'\n{"i":4}\n')
+    assert src.ensure_tail(2)
+    assert src.total == 4 and not src.fully_indexed
+    rows = src.window(2, 2)
+    assert PARSE_ERROR_FIELD in rows[0] and rows[1] == {"i": 3}
+    assert src.ensure_index()
+    assert src.total == 4 and len(list(src.iter_all())) == 4
+
+
+def test_tail_cancel_after_count_does_not_commit_partial_state(tmp_path, monkeypatch):
+    import threading
+
+    p = _write(tmp_path, "cancel-tail.jsonl", ['{"i":1}'] * 10)
+    src = open_source(p, initial_size=2)
+    cancel = threading.Event()
+
+    def counted(*args, **kwargs):
+        cancel.set()
+        return 10
+
+    monkeypatch.setattr("dtflow.utils.jsonl.count_jsonl_rows", counted)
+    assert not src.ensure_tail(3, cancel=cancel)
+    assert not src.total_known and src.total == 2 and not src._suffix_offsets
+
+
+@pytest.mark.parametrize("block_size", [1, 2, 7, 64])
+def test_reverse_tail_offsets_across_small_blocks(tmp_path, monkeypatch, block_size):
+    import dtflow.cli.view.source as source
+
+    data = b'\n\r\n {"a":1}\r\n \t\n' + b"x" * 200 + b'\n\n{"z":2}'
+    p = tmp_path / "blocks.jsonl"
+    p.write_bytes(data)
+    expected = []
+    offset = 0
+    for line in data.split(b"\n"):
+        if line.strip():
+            expected.append(offset)
+        offset += len(line) + 1
+    monkeypatch.setattr(source, "_TAIL_BLOCK", block_size)
+    for count in (1, 2, 3, 10):
+        assert list(source._tail_offsets(p, len(data), count)) == expected[-count:]

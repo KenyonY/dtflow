@@ -83,41 +83,42 @@ def _complete_end(path: Path, size: int) -> int:
     return 0
 
 
-def _tail_offsets(path: Path, end: int, count: int) -> array:
+def _tail_offsets(path: Path, end: int, count: int, *, expected_identity=None, cancel=None):
     """反向读取 [0, end) 中最后 count 个非空行的起始偏移。"""
     if count <= 0 or end <= 0:
         return array("Q")
 
-    chunks: List[bytes] = []
-    start = end
+    # 每个块只扫描一次。跨块的行只需记住是否含非空白字节，
+    # 无需反复拼接、重新扫描整个已读尾部（大窗口时会变成平方开销）。
     entries: List[int] = []
-    while start > 0:
-        new_start = max(0, start - _TAIL_BLOCK)
-        with open(path, "rb") as f:
-            f.seek(new_start)
-            chunks.append(f.read(start - new_start))
-        start = new_start
-        data = b"".join(reversed(chunks))
-        base = start
-        if base > 0:
-            cut = data.find(b"\n")
-            if cut < 0:
-                continue
-            base += cut + 1
-            data = data[cut + 1 :]
-
-        entries = []
-        cursor = base
-        pieces = data.split(b"\n")
-        for i, piece in enumerate(pieces):
-            line_start = cursor
-            cursor += len(piece) + (1 if i < len(pieces) - 1 else 0)
-            if piece.strip():
-                entries.append(line_start)
-        if len(entries) >= count or start == 0:
-            break
-
-    return array("Q", entries[-count:])
+    nonempty = False
+    pos = end
+    with open(path, "rb") as f:
+        if expected_identity is not None:
+            if _identity(os.fstat(f.fileno())) != expected_identity:
+                raise SourceChangedError("文件已被替换")
+        while pos > 0 and len(entries) < count:
+            if cancel is not None and cancel.is_set():
+                return None
+            start = max(0, pos - _TAIL_BLOCK)
+            f.seek(start)
+            block = f.read(pos - start)
+            if len(block) != pos - start:
+                raise SourceChangedError("文件在读取尾部期间被截断")
+            cursor = len(block)
+            while cursor > 0 and len(entries) < count:
+                newline = block.rfind(b"\n", 0, cursor)
+                nonempty = nonempty or bool(block[newline + 1 : cursor].strip())
+                if newline < 0:
+                    break
+                if nonempty:
+                    entries.append(start + newline + 1)
+                nonempty = False
+                cursor = newline
+            pos = start
+        if pos == 0 and nonempty and len(entries) < count:
+            entries.append(0)
+    return array("Q", reversed(entries))
 
 
 def _scan_offsets(
@@ -163,6 +164,10 @@ class RowSource:
     follow: bool = False
 
     @property
+    def total_known(self) -> bool:
+        return self.fully_indexed
+
+    @property
     def has_unindexed_history(self) -> bool:
         return False
 
@@ -187,6 +192,15 @@ class RowSource:
 
     def ensure_rows(self, count: int, progress_cb=None, cancel=None) -> bool:
         return True
+
+    def window_is_indexed(self, offset: int, size: int) -> bool:
+        return True
+
+    def ensure_window(self, offset: int, size: int, progress_cb=None, cancel=None) -> bool:
+        return self.ensure_rows(offset + size, progress_cb=progress_cb, cancel=cancel)
+
+    def ensure_tail(self, size: int, cancel=None) -> bool:
+        return self.ensure_index(cancel=cancel)
 
     def poll(self) -> SourceUpdate:
         return SourceUpdate("unchanged", [], [])
@@ -218,6 +232,8 @@ class _JsonlSource(RowSource):
         self._labels = array("q")
         self._next_relative = 0
         self._indexed_end = 0
+        self._known_total: Optional[int] = None
+        self._suffix_offsets = array("Q")
 
         if tail_size is None:
             self._read_end = st.st_size
@@ -242,6 +258,23 @@ class _JsonlSource(RowSource):
     @property
     def has_unindexed_tail(self) -> bool:
         return not self.fully_indexed and self._tail_size is None
+
+    @property
+    def total_known(self) -> bool:
+        return self.fully_indexed or self._known_total is not None
+
+    def window_is_indexed(self, offset: int, size: int) -> bool:
+        with self._lock:
+            if not self.has_unindexed_tail:
+                return True
+            end = offset + size
+            if self.total_known:
+                end = min(end, self.total)
+            return end <= len(self._offsets) or (
+                self._known_total is not None
+                and bool(self._suffix_offsets)
+                and offset >= self.total - len(self._suffix_offsets)
+            )
 
     @property
     def generation(self) -> int:
@@ -276,7 +309,13 @@ class _JsonlSource(RowSource):
         with self._lock:
             offset = max(0, offset)
             end = min(offset + size, self.total)
-            picked = self._offsets[offset:end]
+            if not self.window_is_indexed(offset, size):
+                raise RuntimeError("窗口偏移尚未建立")
+            if self._known_total is not None and offset >= self.total - len(self._suffix_offsets):
+                start = offset - (self.total - len(self._suffix_offsets))
+                picked = self._suffix_offsets[start : start + max(0, end - offset)]
+            else:
+                picked = self._offsets[offset:end]
         return self._rows_for_offsets(picked)
 
     def row_numbers(self, offset: int, size: int) -> List[int]:
@@ -317,7 +356,17 @@ class _JsonlSource(RowSource):
 
     def rows_at(self, indices: Sequence[int]) -> List[Dict]:
         with self._lock:
-            picked = [self._offsets[i] for i in indices if 0 <= i < self.total]
+            picked = []
+            suffix_start = self.total - len(self._suffix_offsets)
+            for i in indices:
+                if not 0 <= i < self.total:
+                    continue
+                if i < len(self._offsets):
+                    picked.append(self._offsets[i])
+                elif i >= suffix_start:
+                    picked.append(self._suffix_offsets[i - suffix_start])
+                else:
+                    raise RuntimeError("行偏移尚未建立")
         return self._rows_for_offsets(picked)
 
     def ensure_index(self, progress_cb=None, cancel=None) -> bool:
@@ -328,11 +377,79 @@ class _JsonlSource(RowSource):
     def ensure_rows(self, count: int, progress_cb=None, cancel=None) -> bool:
         """只把正向索引延伸到所需窗口，不读取后面的文件。"""
         with self._operation_lock:
-            if not self.has_unindexed_tail or count <= self.total:
+            if not self.has_unindexed_tail or count <= len(self._offsets):
                 return True
             return self._ensure_index(
-                progress_cb=progress_cb, cancel=cancel, max_rows=count - self.total
+                progress_cb=progress_cb, cancel=cancel, max_rows=count - len(self._offsets)
             )
+
+    def ensure_window(self, offset: int, size: int, progress_cb=None, cancel=None) -> bool:
+        if self.window_is_indexed(offset, size):
+            return True
+        with self._lock:
+            suffix_start = self.total - len(self._suffix_offsets)
+            from_tail = (
+                self._known_total is not None
+                and bool(self._suffix_offsets)
+                and suffix_start - offset < offset + size - len(self._offsets)
+            )
+        if from_tail:
+            return self.ensure_tail(self.total - offset, cancel=cancel)
+        return self.ensure_rows(offset + size, progress_cb=progress_cb, cancel=cancel)
+
+    def ensure_tail(self, size: int, cancel=None) -> bool:
+        """精确计数后只建立所需尾窗偏移，保留已读的前缀索引。"""
+        from ...utils.jsonl import count_jsonl_rows
+
+        if self._tail_size is not None:
+            return self.ensure_index(cancel=cancel)
+        with self._operation_lock:
+            if self.fully_indexed:
+                return True
+            with self._lock:
+                total = self._known_total
+                end = self._read_end
+                expected = self._identity
+            if total is None:
+                total = count_jsonl_rows(
+                    self._path, end=end, expected_identity=expected, cancel=cancel
+                )
+                if total is None:
+                    return False
+            size = min(size, total)
+            needed = max(0, size - len(self._suffix_offsets))
+            if needed:
+                end = self._suffix_offsets[0] if self._suffix_offsets else end
+                offsets = _tail_offsets(
+                    self._path, end, needed, expected_identity=expected, cancel=cancel
+                )
+                if offsets is None:
+                    return False
+                if len(offsets) != needed:
+                    raise SourceChangedError("文件在读取尾窗期间发生变化")
+            else:
+                offsets = array("Q")
+            with self._open_checked():
+                pass
+            if cancel is not None and cancel.is_set():
+                return False
+            with self._lock:
+                offsets.extend(self._suffix_offsets)
+                self._suffix_offsets = offsets
+                self._known_total = self.total = total
+                self._join_index_ends()
+            return True
+
+    def _join_index_ends(self) -> None:
+        """前后索引相接时合并；重叠行只保留一次。调用方持有 _lock。"""
+        if self._known_total is None or not self._suffix_offsets:
+            return
+        start = self.total - len(self._suffix_offsets)
+        if len(self._offsets) >= start:
+            self._offsets.extend(self._suffix_offsets[len(self._offsets) - start :])
+            self._suffix_offsets = array("Q")
+            self._indexed_end = self._read_end
+            self.fully_indexed = True
 
     def _ensure_index(self, progress_cb=None, cancel=None, max_rows=None) -> bool:
         with self._lock:
@@ -341,6 +458,8 @@ class _JsonlSource(RowSource):
             end = self._read_end
             expected = self._identity
             start = self._indexed_end if self._tail_size is None else 0
+            if self._suffix_offsets:
+                end = self._suffix_offsets[0]
 
         scanned = _scan_offsets(
             self._path,
@@ -364,8 +483,9 @@ class _JsonlSource(RowSource):
                 self._offsets = offsets
             self._indexed_end = indexed_end
             self._labels = array("q")
-            self.fully_indexed = indexed_end == end
-            self.total = len(self._offsets)
+            self.fully_indexed = indexed_end == self._read_end
+            self.total = self._known_total if self._known_total is not None else len(self._offsets)
+            self._join_index_ends()
         return True
 
     def poll(self) -> SourceUpdate:

@@ -1932,11 +1932,11 @@ async def test_head_jump_reads_needed_rows_or_real_end(tmp_path, target, expecte
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._global_nos == expected
-        assert app.source.fully_indexed == (target != 5)
+        assert app.source.fully_indexed == (target == 100)
 
 
 @pytest.mark.asyncio
-async def test_head_bottom_indexes_full_file_and_top_returns_to_start(tmp_path):
+async def test_head_bottom_counts_without_full_index_and_top_returns_to_start(tmp_path):
     app = _head_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.press("G")
@@ -1944,8 +1944,92 @@ async def test_head_bottom_indexes_full_file_and_top_returns_to_start(tmp_path):
         await pilot.pause()
         assert app._global_nos == [7, 8, 9]
         assert app.query_one("#table").cursor_row == 2
+        assert app.source.total == 10 and app.source.total_known
+        assert app.query_one("#table").ordered_columns[0].width >= 2
+        assert not app.source.fully_indexed and len(app.source._offsets) == 3
         await pilot.press("g")
         assert app._global_nos == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_g_then_previous_tail_window_and_export_keep_full_semantics(tmp_path):
+    import orjson
+
+    app = _head_app(tmp_path)
+    out = tmp_path / "after-g.jsonl"
+    async with app.run_test() as pilot:
+        await pilot.press("G")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._global_nos == [7, 8, 9]
+        assert "总行数待定" not in str(app.query_one("#status").render())
+        assert app._export_scope() == ("全部", 10)
+
+        await pilot.press("[")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._global_nos == [4, 5, 6]
+        assert not app.source.fully_indexed
+        assert len(app.source._offsets) == 3
+        await pilot.press("]")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._global_nos == [7, 8, 9]
+
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.source.fully_indexed
+        assert [orjson.loads(line) for line in out.read_bytes().splitlines()] == [
+            {"i": i} for i in range(10)
+        ]
+        assert app._global_nos == [7, 8, 9]
+
+
+@pytest.mark.asyncio
+async def test_g_then_filter_sort_and_reset_cover_whole_file(tmp_path):
+    app = _head_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("G")
+        await app.workers.wait_for_complete()
+        app._apply_filter("i<8")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(8)) and app.source.fully_indexed
+        app._apply_sort("-i")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == list(range(7, -1, -1))
+        await pilot.press("G")
+        assert app._global_nos == [2, 1, 0]  # 子集末尾，不是原文件末尾
+        await pilot.press("r")
+        assert app._global_nos == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["escape", "g", "r"])
+async def test_cancel_or_new_navigation_does_not_resurrect_pending_g(tmp_path, monkeypatch, key):
+    import threading
+
+    app = _head_app(tmp_path)
+    entered = threading.Event()
+
+    def delayed_count(*args, cancel=None, **kwargs):
+        entered.set()
+        assert cancel.wait(5)
+        return None
+
+    monkeypatch.setattr("dtflow.utils.jsonl.count_jsonl_rows", delayed_count)
+    async with app.run_test() as pilot:
+        await pilot.press("G")
+        await pilot.pause()
+        assert entered.is_set()
+        await pilot.press(key)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._scan_cancel is None
+        assert app._global_nos == [0, 1, 2]
+        assert not app.source.total_known
 
 
 @pytest.mark.asyncio
@@ -2058,6 +2142,23 @@ async def test_follow_filter_scans_history_then_applies_to_new_rows(tmp_path):
         await pilot.pause()
         assert app._subset == [5, 6, 7, 8, 9, 10]
         assert [row["id"] for row in app.all_rows] == [8, 9, 10]
+
+
+@pytest.mark.asyncio
+async def test_follow_expands_absolute_row_numbers_after_counting_history(tmp_path):
+    p = tmp_path / "live.jsonl"
+    p.write_text("".join(f'{{"id":{i}}}\n' for i in range(9)))
+    app = _file_app(p, follow=True)
+    async with app.run_test() as pilot:
+        app._apply_filter("id>=0")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        with p.open("a") as f:
+            f.write('{"id":9}\n')
+        app._on_follow_update(app.source.poll())
+        await pilot.pause()
+        assert app._global_nos[-1] == 9
+        assert app.query_one("#table").ordered_columns[0].width >= 2
 
 
 @pytest.mark.asyncio

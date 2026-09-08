@@ -67,9 +67,9 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
 
     try:
         if fmt == "jsonl":
-            # JSONL/NDJSON: 直接数换行符
-            with open(filepath, "rb") as f:
-                return sum(1 for line in f if line.strip())
+            from .utils.jsonl import count_jsonl_rows
+
+            return count_jsonl_rows(path)
         elif fmt in ("csv", "tsv"):
             # CSV/TSV: Polars LazyFrame
             sep = "\t" if fmt == "tsv" else ","
