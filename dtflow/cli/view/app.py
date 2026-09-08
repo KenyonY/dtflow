@@ -921,7 +921,10 @@ class ViewApp(App):
         remaining, nrem = budget, len(vis)
         for i in sorted(range(len(vis)), key=lambda i: naturals[i]):
             share = remaining // nrem
-            floor = min(naturals[i], max(MIN_COL_W, header_widths[i]))
+            # 行号必须完整显示；空间不足时允许横向滚动，不截断数字或负号。
+            floor = (
+                naturals[i] if vis[i] == "#" else min(naturals[i], max(MIN_COL_W, header_widths[i]))
+            )
             widths[i] = naturals[i] if naturals[i] <= share else max(share, floor)
             remaining -= widths[i]
             nrem -= 1

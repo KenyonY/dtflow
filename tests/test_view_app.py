@@ -750,6 +750,24 @@ async def test_hash_column_width_fits_max_global_row_no():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("last_no", [1_000_000, 10_000_000, 100_000_000, -100_000_000])
+async def test_row_numbers_keep_all_digits_when_columns_are_compressed(last_no):
+    rows = [{f"c{i}": "x" * 30 for i in range(12)} for _ in range(3)]
+    app = _make_app(rows, fmt="generic")
+    app._global_nos = (
+        [last_no - 3, last_no - 2, last_no - 1]
+        if last_no > 0
+        else [last_no, last_no + 1, last_no + 2]
+    )
+    async with app.run_test(size=(40, 20)) as pilot:
+        table = app.query_one("#table")
+        column = table.ordered_columns[app._visible_columns().index("#")]
+        assert column.width >= len(str(last_no))
+        await pilot.resize_terminal(30, 20)
+        assert table.ordered_columns[app._visible_columns().index("#")].width >= len(str(last_no))
+
+
+@pytest.mark.asyncio
 async def test_compressed_col_min_width_and_narrow_exempt():
     # 一个天然仅 2 宽的列 + 一堆宽列 → 触发压缩
     long_header = "moderately_long_header"
