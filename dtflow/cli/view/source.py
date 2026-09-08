@@ -2,7 +2,7 @@
 dt view 的行数据源: 稳定快照、快速尾窗与 JSONL 增量追尾。
 
 JSONL 的两种打开方式:
-- 普通浏览在打开时建索引，之后所有读取都限定在该快照高水位。
+- 普通浏览先索引首窗口，翻页继续向后扫描；读取限定在打开时的快照高水位。
 - 尾窗 / follow 先反向读取最后 N 行，历史导航或全量操作时再按需建索引。
 
 follow 只提交以换行结束的完整记录；正在写的尾行保持 pending，不会被
@@ -127,31 +127,32 @@ def _scan_offsets(
     expected_identity: Tuple[int, int],
     progress_cb: Optional[Callable[[int], None]] = None,
     cancel=None,
-) -> Optional[array]:
-    """建立 [start, end) 非空行偏移。返回 None 表示取消。"""
+    max_rows: Optional[int] = None,
+) -> Optional[Tuple[array, int]]:
+    """建立 [start, end) 非空行偏移，返回偏移和续扫位置；None 表示取消。"""
     offsets = array("Q")
     with open(path, "rb") as f:
         if _identity(os.fstat(f.fileno())) != expected_identity:
             raise SourceChangedError("文件已被替换")
         f.seek(start)
         pos = start
-        while pos < end:
+        while pos < end and (max_rows is None or len(offsets) < max_rows):
             if cancel is not None and cancel.is_set():
                 return None
             line_start = pos
             line = f.readline(end - pos)
             if not line:
-                break
+                raise SourceChangedError("文件在扫描期间被截断")
             pos += len(line)
             if line.strip():
                 offsets.append(line_start)
                 if progress_cb is not None and len(offsets) % 5000 == 0:
                     progress_cb(len(offsets))
-        if pos < end:
+        if os.fstat(f.fileno()).st_size < end:
             raise SourceChangedError("文件在扫描期间被截断")
     if progress_cb is not None:
         progress_cb(len(offsets))
-    return offsets
+    return offsets, pos
 
 
 class RowSource:
@@ -163,6 +164,10 @@ class RowSource:
 
     @property
     def has_unindexed_history(self) -> bool:
+        return False
+
+    @property
+    def has_unindexed_tail(self) -> bool:
         return False
 
     def window(self, offset: int, size: int) -> List[Dict]:
@@ -180,6 +185,9 @@ class RowSource:
     def ensure_index(self, progress_cb=None, cancel=None) -> bool:
         return True
 
+    def ensure_rows(self, count: int, progress_cb=None, cancel=None) -> bool:
+        return True
+
     def poll(self) -> SourceUpdate:
         return SourceUpdate("unchanged", [], [])
 
@@ -190,7 +198,13 @@ class RowSource:
 class _JsonlSource(RowSource):
     """JSONL 字节偏移数据源，支持稳定快照和 follow。"""
 
-    def __init__(self, path: Path, tail_size: Optional[int] = None, follow: bool = False):
+    def __init__(
+        self,
+        path: Path,
+        tail_size: Optional[int] = None,
+        follow: bool = False,
+        initial_size: Optional[int] = None,
+    ):
         self._path = path
         self.follow = follow
         self._tail_size = tail_size
@@ -203,13 +217,14 @@ class _JsonlSource(RowSource):
         self._missing = False
         self._labels = array("q")
         self._next_relative = 0
+        self._indexed_end = 0
 
         if tail_size is None:
             self._read_end = st.st_size
-            scanned = _scan_offsets(path, 0, self._read_end, self._identity)
+            scanned = _scan_offsets(path, 0, self._read_end, self._identity, max_rows=initial_size)
             assert scanned is not None
-            self._offsets = scanned
-            self.fully_indexed = True
+            self._offsets, self._indexed_end = scanned
+            self.fully_indexed = self._indexed_end == self._read_end
         else:
             # follow 不把正在写的未换行尾巴当成记录；静态 -N 则保留
             # 无末尾换行的合法 JSONL，与原有静态语义一致。
@@ -222,7 +237,11 @@ class _JsonlSource(RowSource):
 
     @property
     def has_unindexed_history(self) -> bool:
-        return not self.fully_indexed
+        return not self.fully_indexed and self._tail_size is not None
+
+    @property
+    def has_unindexed_tail(self) -> bool:
+        return not self.fully_indexed and self._tail_size is None
 
     @property
     def generation(self) -> int:
@@ -263,7 +282,7 @@ class _JsonlSource(RowSource):
     def row_numbers(self, offset: int, size: int) -> List[int]:
         with self._lock:
             end = min(offset + size, self.total)
-            if self.fully_indexed:
+            if not self.has_unindexed_history:
                 return list(range(offset, end))
             return list(self._labels[offset:end])
 
@@ -306,33 +325,47 @@ class _JsonlSource(RowSource):
         with self._operation_lock:
             return self._ensure_index(progress_cb=progress_cb, cancel=cancel)
 
-    def _ensure_index(self, progress_cb=None, cancel=None) -> bool:
+    def ensure_rows(self, count: int, progress_cb=None, cancel=None) -> bool:
+        """只把正向索引延伸到所需窗口，不读取后面的文件。"""
+        with self._operation_lock:
+            if not self.has_unindexed_tail or count <= self.total:
+                return True
+            return self._ensure_index(
+                progress_cb=progress_cb, cancel=cancel, max_rows=count - self.total
+            )
+
+    def _ensure_index(self, progress_cb=None, cancel=None, max_rows=None) -> bool:
         with self._lock:
             if self.fully_indexed:
                 return True
             end = self._read_end
             expected = self._identity
+            start = self._indexed_end if self._tail_size is None else 0
 
         scanned = _scan_offsets(
             self._path,
-            0,
+            start,
             end,
             expected,
             progress_cb=progress_cb,
             cancel=cancel,
+            max_rows=max_rows,
         )
         if scanned is None:
             return False
+        offsets, indexed_end = scanned
 
         with self._lock:
             if self._identity != expected:
                 raise SourceChangedError("建索引期间发生了日志轮转")
-            newer = [offset for offset in self._offsets if offset >= end]
-            scanned.extend(newer)
-            self._offsets = scanned
+            if self._tail_size is None:
+                self._offsets.extend(offsets)
+            else:
+                self._offsets = offsets
+            self._indexed_end = indexed_end
             self._labels = array("q")
-            self.fully_indexed = True
-            self.total = len(scanned)
+            self.fully_indexed = indexed_end == end
+            self.total = len(self._offsets)
         return True
 
     def poll(self) -> SourceUpdate:
@@ -385,8 +418,9 @@ class _JsonlSource(RowSource):
             was_indexed = self.fully_indexed
             old_total = self.total
 
-        new_offsets = _scan_offsets(self._path, start, complete_end, expected)
-        assert new_offsets is not None
+        scanned = _scan_offsets(self._path, start, complete_end, expected)
+        assert scanned is not None
+        new_offsets, _ = scanned
         rows = self._rows_for_new_offsets(new_offsets, complete_end, expected)
 
         with self._lock:
@@ -503,10 +537,15 @@ def read_stdin_source() -> RowSource:
     return _MemorySource(rows)
 
 
-def open_source(filepath: Path, tail_size: Optional[int] = None, follow: bool = False) -> RowSource:
+def open_source(
+    filepath: Path,
+    tail_size: Optional[int] = None,
+    follow: bool = False,
+    initial_size: Optional[int] = None,
+) -> RowSource:
     """按扩展名选择数据源实现。"""
     if filepath.suffix.lower() in (".jsonl", ".ndjson"):
-        return _JsonlSource(filepath, tail_size=tail_size, follow=follow)
+        return _JsonlSource(filepath, tail_size=tail_size, follow=follow, initial_size=initial_size)
     from ...storage.io import load_data
 
     return _MemorySource(load_data(str(filepath)))

@@ -181,3 +181,20 @@ def test_view_tail_and_follow_conflicts_are_usage_errors(args, message):
     assert result.exit_code == 2
     assert '"error": "usage_error"' in result.output
     assert message in result.output
+
+
+@pytest.mark.parametrize("offset", [0, 5, 100])
+def test_view_opens_only_through_requested_window(monkeypatch, tmp_path, offset):
+    from dtflow.cli.view.app import ViewApp
+
+    p = tmp_path / "d.jsonl"
+    p.write_text("".join(f'{{"i":{i}}}\n' for i in range(20)))
+    opened = []
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(ViewApp, "run", lambda app: opened.append(app))
+    view(str(p), cap=3, offset=offset)
+    app = opened[0]
+    assert app.source.total == min(offset + 3, 20)
+    assert app.source.fully_indexed == (offset + 3 >= 20)
+    start = min(offset, 19)
+    assert app.all_rows == [{"i": i} for i in range(start, min(start + 3, 20))]

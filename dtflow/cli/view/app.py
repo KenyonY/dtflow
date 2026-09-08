@@ -1164,6 +1164,9 @@ class ViewApp(App):
                 parts.append("[dim]尾行写入中[/dim]")
         if self.source.has_unindexed_history:
             parts.append(f"尾窗 {win} 行（历史未索引）")
+        elif self.source.has_unindexed_tail:
+            parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}] / 总行数待定")
+            parts.append("[dim]]/[ 按需翻窗口·G 到末尾[/dim]")
         if self._visual_anchor is not None:  # 多选态: 醒目显示选区范围
             cur = self.query_one("#table", DataTable).cursor_row
             lo, hi = sorted((self._visual_anchor, cur))
@@ -1177,10 +1180,10 @@ class ViewApp(App):
                 f"[green]{escape(self._filter_label)}: "
                 f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]"
             )
-        if seq_total > win and not self.source.has_unindexed_history:  # 多窗口
+        if seq_total > win and self.source.fully_indexed:  # 多窗口
             parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}")
             parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
-        elif not self._filter_label and not self.source.has_unindexed_history:
+        elif not self._filter_label and self.source.fully_indexed:
             parts.append(f"{total} 行")
         if self._sort_label:
             parts.append(f"排序:{escape(self._sort_label)}")
@@ -1394,26 +1397,32 @@ class ViewApp(App):
             self._follow_pending = 0
             self._load_follow_latest()
             return
+        if self.source.has_unindexed_tail:
+            self._start_history_index(self.action_bottom)
+            return
         end = max(0, self._seq_total() - self.cap)
         self._load_window(end)
         if self.view_indices:
             self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
 
-    def _start_history_index(self, after: Callable[[], None]) -> None:
-        """首次访问尾窗之前的历史时，在 worker 中按需建索引。"""
-        if not self.source.has_unindexed_history:
+    def _start_history_index(self, after: Callable[[], None], count: Optional[int] = None) -> None:
+        """在 worker 中补全索引；count 指定正向浏览所需的最少行数。"""
+        if self.source.fully_indexed:
             after()
             return
         if self._busy():
             return
         cancel, gen = self._begin_scan()
-        self._set_scan_msg("建立历史索引 0 行 (Esc 取消)")
+        self._set_scan_msg("读取行索引 0 行 (Esc 取消)")
 
         def progress(n: int) -> None:
-            self.call_from_thread(self._set_scan_msg, f"建立历史索引 {n} 行 (Esc 取消)")
+            self.call_from_thread(self._set_scan_msg, f"读取行索引 {n} 行 (Esc 取消)")
 
         def worker():
-            ok = self.source.ensure_index(progress_cb=progress, cancel=cancel)
+            if count is None:
+                ok = self.source.ensure_index(progress_cb=progress, cancel=cancel)
+            else:
+                ok = self.source.ensure_rows(count, progress_cb=progress, cancel=cancel)
             return self._on_history_index_done, (ok, gen, after)
 
         self._run_scan(worker, gen)
@@ -1423,11 +1432,11 @@ class ViewApp(App):
             return
         self._end_scan()
         if not ok:
-            self.notify("已取消历史索引")
+            self.notify("已取消行索引")
             self._update_status()
             return
         after()
-        self.notify(f"历史索引已建立（{self.source.total} 行）")
+        self._update_status()
 
     def _load_follow_latest(self) -> None:
         if self._subset is not None and self.source.fully_indexed:
@@ -1670,8 +1679,8 @@ class ViewApp(App):
         if self._visual_anchor is not None:
             lo, hi = sorted((self._visual_anchor, self.query_one("#table", DataTable).cursor_row))
             return "选区", hi - lo + 1
-        if self.source.has_unindexed_history:
-            return "全部（将按需建历史索引，行数待定）", -1
+        if not self.source.fully_indexed:
+            return "全部（将按需补全索引，行数待定）", -1
         return ("筛选子集" if self._filter_label else "全部"), self._seq_total()
 
     def action_export(self) -> None:
@@ -1826,6 +1835,11 @@ class ViewApp(App):
             # 但不能拿旧索引去读取新 inode。r 会显式回到新文件的实时顺序。
             self.notify("日志已轮转，排序快照只能查看当前窗口；按 r 回到实时", severity="warning")
             return
+        if self.source.has_unindexed_tail and offset + self.cap > self.source.total:
+            self._start_history_index(
+                lambda: self._load_window(offset), count=max(0, offset) + self.cap
+            )
+            return
         seq_total = self._seq_total()
         if self._subset is not None and seq_total == 0:  # 空子集: 清空视图 (0 命中)
             self.win_offset = 0
@@ -1864,6 +1878,12 @@ class ViewApp(App):
 
     def action_next_window(self) -> None:
         nxt = self.win_offset + len(self.all_rows)
+        if self.source.has_unindexed_tail:
+            self._start_history_index(lambda: self._show_next_window(nxt), count=nxt + self.cap)
+            return
+        self._show_next_window(nxt)
+
+    def _show_next_window(self, nxt: int) -> None:
         if nxt >= self._seq_total():
             self.notify("已是最后一个窗口")
             return
@@ -1889,6 +1909,8 @@ class ViewApp(App):
         where = "子集内序号" if self._subset is not None else "行号"
         if self.source.has_unindexed_history:
             hint = "负数从尾窗末尾数，正数会按需建历史索引"
+        elif self.source.has_unindexed_tail:
+            hint = "正数按需向后读取，负数会补全索引后从末尾数"
         else:
             hint = f"1-{self._seq_total()}, 负数从末尾数"
         self._open_prompt("jump", f"跳到{where} ({hint}):")
@@ -1899,6 +1921,11 @@ class ViewApp(App):
             n = int(text)
         except ValueError:
             self.notify(escape(f"无效行号: {text}"), severity="error")
+            return
+        if self.source.has_unindexed_tail and (n < 0 or n > self.source.total):
+            self._start_history_index(
+                lambda: self._jump_indexed(n), count=n + self.cap - 1 if n > 0 else None
+            )
             return
         if self.source.has_unindexed_history and n > 0:
             self._follow_pinned = False
@@ -2136,9 +2163,9 @@ class ViewApp(App):
         self._scan_msg = msg
         self._update_status()
 
-    def _prepare_full_scan(self, cancel, label: str = "建立历史索引") -> bool:
-        """全量操作的统一高水位入口；尾窗源在此按需补全索引。"""
-        if not self.source.has_unindexed_history:
+    def _prepare_full_scan(self, cancel, label: str = "补全行索引") -> bool:
+        """全量操作的统一高水位入口；首窗和尾窗源均在此补全索引。"""
+        if self.source.fully_indexed:
             return True
 
         self.call_from_thread(self._set_scan_msg, f"{label} 0 行 (Esc 取消)")

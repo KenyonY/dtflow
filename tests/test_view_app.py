@@ -1887,7 +1887,125 @@ async def test_static_tail_export_does_not_claim_tail_size_is_full_history(tmp_p
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app._export_scope() == ("全部（将按需建历史索引，行数待定）", -1)
+        assert app._export_scope() == ("全部（将按需补全索引，行数待定）", -1)
+
+
+def _head_app(tmp_path, **kwargs):
+    from dtflow.cli.view.source import open_source
+
+    p = tmp_path / "head.jsonl"
+    p.write_text("".join(f'{{"i":{i}}}\n' for i in range(10)))
+    src = open_source(p, initial_size=3)
+    return ViewApp(src, src.window(0, 3), 0, 3, "generic", p.name, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_head_paging_extends_index_and_preserves_absolute_rows(tmp_path):
+    app = _head_app(tmp_path)
+    async with app.run_test() as pilot:
+        assert app.source.total == 3 and not app.source.fully_indexed
+        assert "总行数待定" in str(app.query_one("#status").render())
+        await pilot.press("j", "]")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.source.total == 6 and not app.source.fully_indexed
+        assert app._global_nos == [3, 4, 5]
+        await pilot.press("[")
+        assert app._global_nos == [0, 1, 2]
+        assert app.source.total == 6
+        for _ in range(3):
+            await pilot.press("]")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert app.source.total == 10 and app.source.fully_indexed
+        assert app._global_nos == [9]
+        await pilot.press("]")
+        assert app._global_nos == [9]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target,expected", [(5, [4, 5, 6]), (-1, [9]), (100, [9])])
+async def test_head_jump_reads_needed_rows_or_real_end(tmp_path, target, expected):
+    app = _head_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press(":", *str(target), "enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._global_nos == expected
+        assert app.source.fully_indexed == (target != 5)
+
+
+@pytest.mark.asyncio
+async def test_head_bottom_indexes_full_file_and_top_returns_to_start(tmp_path):
+    app = _head_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("G")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._global_nos == [7, 8, 9]
+        assert app.query_one("#table").cursor_row == 2
+        await pilot.press("g")
+        assert app._global_nos == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_head_initial_search_and_sort_cover_rows_outside_first_window(tmp_path):
+    app = _head_app(tmp_path, where=["i>=6"], sort="-i")
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.source.fully_indexed
+        assert app._subset == [9, 8, 7, 6]
+        assert app._global_nos == [9, 8, 7]
+        await pilot.press("r")
+        assert app._global_nos == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_head_export_includes_whole_file(tmp_path):
+    import orjson
+
+    app = _head_app(tmp_path)
+    out = tmp_path / "export.jsonl"
+    async with app.run_test() as pilot:
+        assert app._export_scope()[1] == -1
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [orjson.loads(line) for line in out.read_bytes().splitlines()] == [
+            {"i": i} for i in range(10)
+        ]
+        assert app._global_nos == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_head_cancel_index_keeps_window_and_allows_retry(tmp_path, monkeypatch):
+    import threading
+
+    app = _head_app(tmp_path)
+    entered = threading.Event()
+    ensure = app.source.ensure_rows
+
+    def wait_for_cancel(count, progress_cb=None, cancel=None):
+        entered.set()
+        assert cancel.wait(5)
+        return False
+
+    monkeypatch.setattr(app.source, "ensure_rows", wait_for_cancel)
+    async with app.run_test() as pilot:
+        await pilot.press("]")
+        await pilot.pause()
+        assert entered.is_set()
+        await pilot.press("escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._scan_cancel is None
+        assert app._global_nos == [0, 1, 2] and app.source.total == 3
+        monkeypatch.setattr(app.source, "ensure_rows", ensure)
+        await pilot.press("]")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._global_nos == [3, 4, 5]
 
 
 @pytest.mark.asyncio

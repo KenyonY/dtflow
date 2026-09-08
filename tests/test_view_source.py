@@ -211,3 +211,77 @@ def test_follow_waits_through_missing_rotation_path(tmp_path):
     p.write_bytes(b'{"i":1}\n')
     update = src.poll()
     assert update.kind == "rotation" and update.rows == [{"i": 1}]
+
+
+def test_jsonl_head_indexes_only_requested_rows_and_resumes(tmp_path, monkeypatch):
+    import dtflow.cli.view.source as source
+
+    p = _write(tmp_path, "head.jsonl", [f'{{"i":{i}}}' for i in range(100)])
+    scans = []
+    scan_offsets = source._scan_offsets
+
+    def track(*args, **kwargs):
+        result = scan_offsets(*args, **kwargs)
+        scans.append((args[1], result[1], len(result[0])))
+        return result
+
+    monkeypatch.setattr(source, "_scan_offsets", track)
+    src = open_source(p, initial_size=3)
+    assert src.total == 3 and src.has_unindexed_tail and not src.has_unindexed_history
+    assert src.row_numbers(0, 3) == [0, 1, 2]
+    assert src.window(0, 3) == [{"i": 0}, {"i": 1}, {"i": 2}]
+    assert scans == [(0, 24, 3)]  # 首窗不读后面的 97 行
+
+    assert src.ensure_rows(6)
+    assert scans[-1] == (24, 48, 3)  # 下一窗接着读，不重扫文件头
+    assert src.window(3, 3) == [{"i": 3}, {"i": 4}, {"i": 5}]
+    assert src.ensure_rows(4)
+    assert len(scans) == 2
+    assert src.ensure_index()
+    assert scans[-1][0] == 48
+    assert src.total == 100 and src.fully_indexed
+    assert list(src.iter_all()) == [{"i": i} for i in range(100)]
+
+
+def test_jsonl_head_cancel_keeps_prefix_and_snapshot_excludes_appends(tmp_path):
+    import threading
+
+    p = _write(tmp_path, "snapshot-head.jsonl", [f'{{"i":{i}}}' for i in range(6)])
+    src = open_source(p, initial_size=2)
+    cancel = threading.Event()
+    cancel.set()
+    assert not src.ensure_rows(4, cancel=cancel)
+    assert not src.ensure_index(cancel=cancel)
+    assert src.total == 2 and src.window(0, 2) == [{"i": 0}, {"i": 1}]
+    with p.open("ab") as f:
+        f.write(b'{"i":6}\n')
+    assert src.ensure_index()
+    assert src.total == 6
+    assert list(src.iter_all()) == [{"i": i} for i in range(6)]
+
+
+def test_jsonl_head_blanks_bad_lines_and_unterminated_last_row(tmp_path):
+    p = tmp_path / "head.ndjson"
+    p.write_bytes(b' \r\n{"i":0}\r\n\t\r\nbad json\r\n{"i":2}')
+    src = open_source(p, initial_size=1)
+    assert src.window(0, 1) == [{"i": 0}]
+    assert src.ensure_rows(2)
+    assert PARSE_ERROR_FIELD in src.window(1, 1)[0]
+    assert src.ensure_rows(3)
+    assert src.fully_indexed and src.total == 3
+    assert src.window(2, 1) == [{"i": 2}]
+    assert src.row_numbers(0, 3) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("replace", [True, False])
+def test_jsonl_head_rejects_changed_snapshot_during_extension(tmp_path, replace):
+    p = _write(tmp_path, "head.jsonl", [f'{{"i":{i}}}' for i in range(10)])
+    src = open_source(p, initial_size=2)
+    if replace:
+        replacement = _write(tmp_path, "replacement.jsonl", ['{"new":true}'] * 10)
+        os.replace(replacement, p)
+    else:
+        p.write_bytes(b'{"i":0}\n')
+    with pytest.raises(SourceChangedError):
+        src.ensure_index()
+    assert src.total == 2 and not src.fully_indexed

@@ -14,7 +14,7 @@ from typing import List, Optional
 
 # 单个窗口默认加载行数; 只 parse 这么多行, 其余靠偏移索引按需翻页。
 # 首屏/翻页耗时随行数线性 (add_row 成本), 主瓶颈的逐格 measure 已由 FastDataTable
-# 消除; 1 万行是流畅度与窗口内搜索/排序覆盖面的平衡点, 可用 --cap 调整。
+# 消除; 保留 1 万行的浏览窗口，搜索/筛选/排序始终覆盖全文件。
 _DEFAULT_CAP = 10000
 
 
@@ -155,6 +155,7 @@ def view(
         filepath,
         tail_size=cap if tail or follow else None,
         follow=follow,
+        initial_size=max(0, offset) + cap,
     )
     if tail or follow:
         offset = (
