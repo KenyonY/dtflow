@@ -11,6 +11,8 @@ from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 import orjson
 from rich.markup import escape
 from rich.rule import Rule
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -20,6 +22,7 @@ from textual.css.query import NoMatches
 from textual.geometry import Size
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
@@ -170,10 +173,76 @@ class FastDataTable(DataTable):
             super().__init__()
             self.index, self.width = index, width
 
+    # 表头上常驻的列分隔线: 不画出来用户根本看不到"有条线可以拖"; 鼠标压上去换成粗体高亮,
+    # 这是终端里唯一能表达"此处可拖"的手段 (改不了鼠标指针形状)。
+    DIVIDER, DIVIDER_HOT = "│", "┃"
+
+    class EdgeHover(Message):
+        """鼠标进入/离开分隔线判定区, 供状态栏出提示。"""
+
+        def __init__(self, active: bool) -> None:
+            super().__init__()
+            self.active = active
+
     _drag_col: Optional[int] = None  # 正在拖的列下标
     _drag_x0: int = 0  # 按下时的屏幕 x, 拖动量按它算
     _drag_w0: int = 0  # 按下时的列宽
     _drag_guard: bool = False  # 刚拖完: 吞掉紧随其后的 Click, 免得顺手选中行/开筛选面板
+    _hover_edge: Optional[int] = None  # 鼠标所在 (或正在拖) 的分隔线, 画成高亮
+
+    def _divider_cells(self) -> List[Tuple[int, int]]:
+        """[(分隔线的屏幕 x, 归属列下标)]。末列右边界就是表格右缘, 不画。"""
+        out: List[Tuple[int, int]] = []
+        cols = self.ordered_columns
+        fixed = self._row_label_column_width + sum(
+            c.get_render_width(self) for c in cols[: self.fixed_columns]
+        )
+        edge = self._row_label_column_width
+        for i, col in enumerate(cols[:-1]):
+            edge += col.get_render_width(self)
+            x = edge - 1  # 本列右内边距那一格: 必为空白, 画线不遮字
+            if i >= self.fixed_columns:
+                x -= int(self.scroll_x)
+                if x < fixed:  # 被固定列盖住了
+                    continue
+            if 0 <= x < self.size.width:
+                out.append((x, i))
+        return out
+
+    def render_line(self, y: int) -> Strip:
+        """在表头行叠画列分隔线。只改那几格, 其余片段连样式原样保留。"""
+        strip = super().render_line(y)
+        if not self.show_header or y >= self.header_height:
+            return strip
+        cells = self._divider_cells()
+        if not cells:
+            return strip
+        length = strip.cell_length
+        cuts = [c for x, _ in cells for c in (x, x + 1)] + [length]
+        pieces = strip.divide(cuts)
+        segments: List[Segment] = []
+        for k, piece in enumerate(pieces):
+            if k % 2 == 0:  # 偶数段是原内容, 奇数段才是被切出来的那一格分隔线
+                segments.extend(piece)
+                continue
+            hot = cells[k // 2][1] == self._hover_edge
+            base = next((seg.style for seg in piece if seg.style), Style())
+            segments.append(
+                Segment(
+                    self.DIVIDER_HOT if hot else self.DIVIDER,
+                    base + (Style(bold=True, reverse=True) if hot else Style(bold=False, dim=True)),
+                )
+            )
+        return Strip(segments, length)
+
+    def _set_hover_edge(self, i: Optional[int]) -> None:
+        if i == self._hover_edge:
+            return
+        was = self._hover_edge is not None
+        self._hover_edge = i
+        self.refresh()
+        if (i is not None) != was:
+            self.post_message(self.EdgeHover(i is not None))
 
     def _edge_at(self, event: events.MouseEvent) -> Optional[int]:
         """鼠标落在表头某列右分隔线上 (2 格判定区) 时返回该列下标, 否则 None。
@@ -216,13 +285,15 @@ class FastDataTable(DataTable):
             return
         self._drag_col, self._drag_x0 = i, event.screen_x
         self._drag_w0 = self.ordered_columns[i].width
+        self._set_hover_edge(i)  # 拖动全程保持高亮 (鼠标此时未必还压在线上)
         self.capture_mouse()  # 拖出表格范围也继续收事件
         event.stop()
         event.prevent_default()
 
     def _on_mouse_move(self, event: events.MouseMove) -> None:
         if self._drag_col is None:
-            return  # 交给 DataTable 自己的 hover 处理
+            self._set_hover_edge(self._edge_at(event))
+            return  # 其余交给 DataTable 自己的 hover 处理
         self.set_column_width(
             self._drag_col, max(self.MIN_DRAG_W, self._drag_w0 + event.screen_x - self._drag_x0)
         )
@@ -234,12 +305,16 @@ class FastDataTable(DataTable):
             return
         i, self._drag_col = self._drag_col, None
         self.release_mouse()
+        self._set_hover_edge(self._edge_at(event))
         self._drag_guard = True  # 无论有没有真拖动, 这次 Click 都得吞掉
         width = self.ordered_columns[i].width
         if width != self._drag_w0:  # 只按了一下没拖: 不该把这列就此钉死成手动宽
             self.post_message(self.ColumnResized(i, width))
         event.stop()
         event.prevent_default()
+
+    def _on_leave(self, event: events.Leave) -> None:
+        self._set_hover_edge(None)
 
     def _on_click(self, event: events.Click) -> None:
         # guard 只在刚拖/刚按过分隔线时为真, 所以双击分隔线必定命中这里
@@ -285,8 +360,8 @@ _HELP = """[b]dt view 快捷键[/b]
                  点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
-  拖表头分隔线  改列宽 (Excel 式, 鼠标按住列与列之间那道竖线左右拖)
-                 双击分隔线该列恢复自适应; 列宽记在列名上, 翻窗口/改筛选后依然保留
+  拖表头的 │   改列宽 (Excel 式): 表头上列与列之间那道 │ 即分隔线, 鼠标压上去变 ┃
+                 按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
   z            切换 上下 / 左右 布局
   +/-          调整表格/详情两区大小
   c            选列 (勾选面板, 同时作用于表格和详情)
@@ -752,6 +827,7 @@ class ViewApp(App):
         )
         # 用户拖出来的列宽 {列名: 内容宽}: 只认名字, 所以换窗口/改可见列/改格式后依然保留
         self._manual_widths: Dict[str, int] = {}
+        self._edge_hint = False  # 鼠标压在列分隔线上: 状态栏说明这条线能干什么
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示真实全局行号 (两种浏览模式统一)。"""
@@ -994,7 +1070,8 @@ class ViewApp(App):
         naturals = []
         header_widths = []
         for ci, name in enumerate(vis):
-            header_w = cell_len(self._header_plain(name))
+            # +1: 给表头右边的列分隔线留一格, 否则列名恰好占满时会被挤成 "turns│ roles"
+            header_w = cell_len(self._header_plain(name)) + 1
             header_widths.append(header_w)
             if name == "#":
                 # # 列是全局行号, 最大值取当前窗口的真实全局行号 (子集态可能很大), 不靠采样——
@@ -1303,6 +1380,8 @@ class ViewApp(App):
         cur_field = self._current_field()
         if cur_field:
             parts.append(f"[cyan]字段:{escape(cur_field)}[/cyan]")
+        if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
+            parts.append("[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]")
         parts.append("[dim]? 帮助[/dim]")
         status.update(Text.from_markup("  ·  ".join(parts)))
 
@@ -2144,6 +2223,10 @@ class ViewApp(App):
             len(str(n if n < 0 else n + 1)) for n in (min(self._global_nos), max(self._global_nos))
         )
         return self.query_one("#table", DataTable).ordered_columns[vis.index("#")].width < width
+
+    def on_fast_data_table_edge_hover(self, msg: FastDataTable.EdgeHover) -> None:
+        self._edge_hint = msg.active
+        self._update_status()
 
     def on_fast_data_table_column_resized(self, msg: FastDataTable.ColumnResized) -> None:
         """记住拖出来的列宽 (width=None 为双击分隔线, 该列恢复自适应并重排全表)。"""

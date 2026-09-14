@@ -781,8 +781,8 @@ async def test_compressed_col_min_width_and_narrow_exempt():
         w = dict(zip(vis, app._column_widths(vis), strict=False))
         # 被压的宽文本列下限 8 (不再是 4)
         assert min(w[c] for c in vis if c.startswith("c")) >= 8
-        # 天然窄列不被硬撑到 8, 保持自然宽 2
-        assert w["nw"] == 2
+        # 天然窄列不被硬撑到 8, 保持自然宽 (2 字列名 + 1 格给表头分隔线)
+        assert w["nw"] == 3
         # 长列名在压缩时仍完整显示，不再按统一下限 8 截断
         assert w[long_header] >= len(long_header)
 
@@ -2370,3 +2370,53 @@ async def test_manual_width_survives_narrow_budget():
         vis = app._visible_columns()
         app._manual_widths["first_user"] = 40
         assert app._column_widths(vis)[vis.index("first_user")] == 40
+
+
+@pytest.mark.asyncio
+async def test_header_shows_dividers_and_highlights_on_hover():
+    # 分隔线常驻表头 (看得见才知道有得拖), 鼠标压上去换粗体符号 + 状态栏出提示
+    from dtflow.cli.view.app import FastDataTable
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#table")
+        vis = app._visible_columns()
+        header = t.render_line(0).text
+        assert header.count(FastDataTable.DIVIDER) == len(vis) - 1  # 末列右缘不画
+        assert FastDataTable.DIVIDER_HOT not in header
+        assert t.render_line(1).text.count(FastDataTable.DIVIDER) == 0  # 数据行保持干净
+
+        ci = vis.index("turns")
+        await pilot.hover(t, offset=(_divider_x(app, ci), t.gutter.top))
+        await pilot.pause()
+        assert t._hover_edge == ci and app._edge_hint
+        assert t.render_line(0).text.count(FastDataTable.DIVIDER_HOT) == 1
+
+        await pilot.hover(t, offset=(_divider_x(app, ci) + 4, t.gutter.top))
+        await pilot.pause()
+        assert t._hover_edge is None and not app._edge_hint
+        assert FastDataTable.DIVIDER_HOT not in t.render_line(0).text
+
+
+@pytest.mark.asyncio
+async def test_divider_position_follows_horizontal_scroll():
+    # 横向滚动后分隔线仍画在真实列边界上, 固定的 # 列不跟着滚
+    from dtflow.cli.view.app import FastDataTable
+
+    app = _chat_app(10)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#table")
+        app._manual_widths["turns"] = 50  # 撑到溢出屏幕, 逼出横向滚动
+        app._rebuild_columns()
+        await pilot.pause()
+        t.scroll_x = 20
+        await pilot.pause()
+        xs = [x for x, _ in t._divider_cells()]
+        fixed = t.ordered_columns[0].get_render_width(t)
+        assert xs[0] == fixed - 1  # # 列是固定列, 边界不随 scroll_x 移动
+        assert all(0 <= x < t.size.width for x in xs)
+        line = t.render_line(0).text
+        for x in xs:
+            assert line[x] == FastDataTable.DIVIDER
