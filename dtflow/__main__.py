@@ -339,17 +339,19 @@ def view(
     where: Optional[List[str]] = typer.Option(
         None,
         "--where",
+        "-w",
         help="启动即筛选，列名取表头所见，可多次使用（与关系）；单条内可用 and/or",
     ),
     search: Optional[str] = typer.Option(
-        None, "--search", help="启动即全字段搜索（不分大小写；re: 前缀走正则），命中处高亮"
+        None, "--search", "-s", help="启动即全字段搜索（不分大小写；re: 前缀走正则），命中处高亮"
     ),
     sort: Optional[str] = typer.Option(
-        None, "--sort", help="启动即全量排序，列名前加 - 为降序（如 -chars）"
+        None, "--sort", "-S", help="启动即全量排序，列名前加 - 为降序（如 -chars）"
     ),
     follow: bool = typer.Option(
         False,
         "--follow",
+        "-f",
         help="实时追踪 JSONL/NDJSON 追加与日志轮转，从最新尾窗开始",
     ),
 ):
@@ -366,13 +368,13 @@ def view(
         dt view data.jsonl                       # 打开浏览器（顺序从第 1 行）
         dt view data.jsonl 100                   # 从开头浏览，窗口 100 行
         dt view data.jsonl -100                  # 快速从倒数 100 行开始
-        dt view app.jsonl -100 --follow          # 看最新 100 行并持续追踪
+        dt view app.jsonl -100 -f                # 追踪最新 100 行 (-f=--follow)
         dt view data.jsonl --format=dpo          # 强制按 dpo 渲染
         dt view big.jsonl --offset=20000         # 从第 2 万行开始（默认每窗口 1 万行）
         dt view big.jsonl --cap=50000            # 每窗口加载 5 万行
-        dt view data.jsonl --sort=-chars         # 最长的样本排在最前（全量排序）
-        dt view data.jsonl --where="turns>=6" --where="source==alpaca"   # 多条为与关系
-        dt view data.jsonl --search=报错          # 命中子集 + 详情里黄底高亮
+        dt view data.jsonl -S -chars             # 按长度降序 (-S=--sort)
+        dt view data.jsonl -w "turns>=6" -w "source==alpaca"   # 多条为与关系
+        dt view data.jsonl -s 报错               # 全量搜索并高亮 (-s=--search)
         dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果
     """
     from pathlib import Path

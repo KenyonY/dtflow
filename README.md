@@ -368,12 +368,12 @@ dt sample data.jsonl --where="messages.#>=2"      # 多条件筛选
 # 交互式浏览（表格 + 详情联动 TUI，需交互式终端）
 dt view data.jsonl                                # 打开浏览器，按 ? 看快捷键
 dt view data.jsonl -100                           # 快速从倒数 100 行开始
-dt view app.jsonl -100 --follow                   # 持续追踪最新 100 行及日志轮转
+dt view app.jsonl -100 -f                         # 持续追踪最新 100 行及日志轮转 (-f=--follow)
 dt view data.csv                                  # CSV/Parquet 等表格数据
 dt view data.jsonl --format=dpo                   # 强制按指定格式渲染详情
 dt view big.jsonl --cap=50000                     # 提高大文件加载上限（默认 1 万行）
-dt view data.jsonl --sort=-chars                  # 启动即全量排序（最长的排前面）
-dt view data.jsonl --where="turns>=6" --search=报错 # 启动即筛选 + 搜索（可多个 --where）
+dt view data.jsonl -S -chars                      # 启动即全量排序（-S=--sort，最长的排前面）
+dt view data.jsonl -w "turns>=6" -s 报错          # 启动即筛选 + 搜索（-w=--where 可多次，-s=--search）
 
 # 静态预览（--pretty 走格式感知渲染：对话气泡/dpo对比/alpaca分段/表格）
 dt head data.jsonl --pretty                       # 前 N 条，格式化渲染
