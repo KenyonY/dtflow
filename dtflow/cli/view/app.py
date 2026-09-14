@@ -18,6 +18,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.geometry import Size
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
@@ -157,6 +158,101 @@ class FastDataTable(DataTable):
             self._total_row_height + header_height,
         )
 
+    # -------------------------------------------------------------- #
+    # 拖拽列宽 (Excel 式): 按住表头的列分隔线左右拖, 双击恢复自适应
+    # -------------------------------------------------------------- #
+    MIN_DRAG_W = 3  # 拖到底也留 3 格内容, 否则列头彻底消失就没法再拖回来
+
+    class ColumnResized(Message):
+        """拖拽结束 (width=新内容宽) 或双击分隔线 (width=None 表示恢复自适应)。"""
+
+        def __init__(self, index: int, width: Optional[int]) -> None:
+            super().__init__()
+            self.index, self.width = index, width
+
+    _drag_col: Optional[int] = None  # 正在拖的列下标
+    _drag_x0: int = 0  # 按下时的屏幕 x, 拖动量按它算
+    _drag_w0: int = 0  # 按下时的列宽
+    _drag_guard: bool = False  # 刚拖完: 吞掉紧随其后的 Click, 免得顺手选中行/开筛选面板
+
+    def _edge_at(self, event: events.MouseEvent) -> Optional[int]:
+        """鼠标落在表头某列右分隔线上 (2 格判定区) 时返回该列下标, 否则 None。
+
+        判定区取的是"本列右内边距 + 下列左内边距"这两格, 都不含文字, 不会误伤点列头筛选。
+        """
+        if not self.show_header:
+            return None
+        y = event.y - self.gutter.top
+        if not 0 <= y < self.header_height:
+            return None
+        x = event.x - self.gutter.left
+        # 固定列不随横向滚动, 超出固定区的部分才加 scroll_x
+        fixed = self._row_label_column_width + sum(
+            c.get_render_width(self) for c in self.ordered_columns[: self.fixed_columns]
+        )
+        if x >= fixed:
+            x += int(self.scroll_x)
+        edge = self._row_label_column_width
+        for i, col in enumerate(self.ordered_columns):
+            edge += col.get_render_width(self)
+            if edge - 1 <= x <= edge:
+                return i
+        return None
+
+    def set_column_width(self, index: int, width: int) -> None:
+        """就地改列宽并重绘。绕开 clear+重填 (2 万行重填在拖动中根本跟不上帧)。"""
+        col = self.ordered_columns[index]
+        if col.width == width:
+            return
+        col.width = width
+        self._clear_caches()
+        self._update_count += 1  # 行渲染缓存以它为 key, 不 +1 会拿到旧宽度的缓存行
+        self._update_dimensions(())
+        self.refresh()
+
+    def _on_mouse_down(self, event: events.MouseDown) -> None:
+        i = self._edge_at(event)
+        if i is None:
+            return
+        self._drag_col, self._drag_x0 = i, event.screen_x
+        self._drag_w0 = self.ordered_columns[i].width
+        self.capture_mouse()  # 拖出表格范围也继续收事件
+        event.stop()
+        event.prevent_default()
+
+    def _on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_col is None:
+            return  # 交给 DataTable 自己的 hover 处理
+        self.set_column_width(
+            self._drag_col, max(self.MIN_DRAG_W, self._drag_w0 + event.screen_x - self._drag_x0)
+        )
+        event.stop()
+        event.prevent_default()
+
+    def _on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._drag_col is None:
+            return
+        i, self._drag_col = self._drag_col, None
+        self.release_mouse()
+        self._drag_guard = True  # 无论有没有真拖动, 这次 Click 都得吞掉
+        width = self.ordered_columns[i].width
+        if width != self._drag_w0:  # 只按了一下没拖: 不该把这列就此钉死成手动宽
+            self.post_message(self.ColumnResized(i, width))
+        event.stop()
+        event.prevent_default()
+
+    def _on_click(self, event: events.Click) -> None:
+        # guard 只在刚拖/刚按过分隔线时为真, 所以双击分隔线必定命中这里
+        if not self._drag_guard:
+            return
+        self._drag_guard = False
+        if event.chain >= 2:
+            i = self._edge_at(event)
+            if i is not None:
+                self.post_message(self.ColumnResized(i, None))
+        event.stop()
+        event.prevent_default()
+
 
 _HELP = """[b]dt view 快捷键[/b]
 
@@ -189,6 +285,8 @@ _HELP = """[b]dt view 快捷键[/b]
                  点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
+  拖表头分隔线  改列宽 (Excel 式, 鼠标按住列与列之间那道竖线左右拖)
+                 双击分隔线该列恢复自适应; 列宽记在列名上, 翻窗口/改筛选后依然保留
   z            切换 上下 / 左右 布局
   +/-          调整表格/详情两区大小
   c            选列 (勾选面板, 同时作用于表格和详情)
@@ -652,6 +750,8 @@ class ViewApp(App):
         self._visual_anchor: Optional[int] = (
             None  # visual 多选起点 (view_indices 位置); None=非选择态
         )
+        # 用户拖出来的列宽 {列名: 内容宽}: 只认名字, 所以换窗口/改可见列/改格式后依然保留
+        self._manual_widths: Dict[str, int] = {}
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示真实全局行号 (两种浏览模式统一)。"""
@@ -907,6 +1007,11 @@ class ViewApp(App):
                 w = max(w, cell_len(cells[ci]))
             naturals.append(min(max(w, 1), CAP))
 
+        # 用户拖过的列: 宽度即用户意图, 既不按自然宽估也不参与后面的压缩
+        for i, name in enumerate(vis):
+            if name in self._manual_widths:
+                naturals[i] = self._manual_widths[name]
+
         # 预算 = 屏宽 - 表格边框(2) - 竖直滚动条(2) - 每列内边距(2×列数)
         # 漏掉滚动条会让列宽总和正好等于内容区, 竖条再占 2 列 → 触发横向滚动条(溢出一点点)
         avail = self.size.width or 120
@@ -923,7 +1028,9 @@ class ViewApp(App):
             share = remaining // nrem
             # 行号必须完整显示；空间不足时允许横向滚动，不截断数字或负号。
             floor = (
-                naturals[i] if vis[i] == "#" else min(naturals[i], max(MIN_COL_W, header_widths[i]))
+                naturals[i]
+                if vis[i] == "#" or vis[i] in self._manual_widths
+                else min(naturals[i], max(MIN_COL_W, header_widths[i]))
             )
             widths[i] = naturals[i] if naturals[i] <= share else max(share, floor)
             remaining -= widths[i]
@@ -2031,12 +2138,28 @@ class ViewApp(App):
         if not self._global_nos:
             return False
         vis = self._visible_columns()
-        if "#" not in vis:
+        if "#" not in vis or "#" in self._manual_widths:
             return False
         width = max(
             len(str(n if n < 0 else n + 1)) for n in (min(self._global_nos), max(self._global_nos))
         )
         return self.query_one("#table", DataTable).ordered_columns[vis.index("#")].width < width
+
+    def on_fast_data_table_column_resized(self, msg: FastDataTable.ColumnResized) -> None:
+        """记住拖出来的列宽 (width=None 为双击分隔线, 该列恢复自适应并重排全表)。"""
+        vis = self._visible_columns()
+        if not 0 <= msg.index < len(vis):
+            return
+        name = vis[msg.index]
+        if msg.width is not None:
+            self._manual_widths[name] = msg.width
+            return
+        self._manual_widths.pop(name, None)
+        # 让出去的空间要还给别的列, 所以整表重算一遍宽度 (不重填行, 帧内就能改完)
+        table = self.query_one("#table", FastDataTable)
+        for i, w in enumerate(self._column_widths(vis)):
+            table.set_column_width(i, w)
+        self.notify(f"{name} 列宽已恢复自适应")
 
     def _rebuild_columns(self) -> None:
         """列可见集变化后重建表头并重填。"""

@@ -2257,3 +2257,116 @@ async def test_follow_rotation_does_not_read_new_file_through_old_sort_indices(t
         await pilot.press("r")
         await pilot.pause()
         assert app.all_rows == [{"id": 100}]
+
+
+def _divider_x(app, col_index: int) -> int:
+    """第 col_index 列右分隔线的屏幕 x (含表格边框偏移, 未横向滚动时)。"""
+    t = app.query_one("#table")
+    return (
+        t.gutter.left + sum(c.get_render_width(t) for c in t.ordered_columns[: col_index + 1]) - 1
+    )
+
+
+def _drag(t, x0: int, x1: int, y: int):
+    """构造一次拖动中的 MouseMove (按住左键从 x0 移到 x1)。"""
+    from textual import events
+
+    return events.MouseMove(
+        widget=t,
+        x=x1,
+        y=y,
+        delta_x=x1 - x0,
+        delta_y=0,
+        button=1,
+        shift=False,
+        meta=False,
+        ctrl=False,
+        screen_x=x1,
+        screen_y=y,
+        style=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_column_drag_resize():
+    # 拖表头分隔线改列宽: 实时生效, 松手后记在列名上, 重建列表头也不丢
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        t = app.query_one("#table")
+        vis = app._visible_columns()
+        ci = vis.index("turns")
+        x, y = _divider_x(app, ci), t.gutter.top
+        w0 = t.ordered_columns[ci].width
+
+        await pilot.mouse_down(t, offset=(x, y))
+        t.post_message(_drag(t, x, x + 9, y))
+        await pilot.pause()
+        assert t.ordered_columns[ci].width == w0 + 9  # 拖动中即时改宽, 不等松手
+
+        await pilot.mouse_up(t, offset=(x + 9, y))
+        await pilot.pause()
+        assert app._manual_widths == {"turns": w0 + 9}
+
+        app._rebuild_columns()
+        await pilot.pause()
+        assert t.ordered_columns[vis.index("turns")].width == w0 + 9
+
+
+@pytest.mark.asyncio
+async def test_column_drag_min_width_and_click_does_not_open_filter():
+    # 拖到底留最小宽度; 只点分隔线(不拖)既不弹值筛选面板, 也不把该列钉成手动宽
+    from dtflow.cli.view.app import FastDataTable, ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        t = app.query_one("#table")
+        ci = app._visible_columns().index("first_user")
+        x, y = _divider_x(app, ci), t.gutter.top
+
+        await pilot.mouse_down(t, offset=(x, y))
+        t.post_message(_drag(t, x, x - 500, y))
+        await pilot.pause()
+        await pilot.mouse_up(t, offset=(0, y))
+        await pilot.pause()
+        assert t.ordered_columns[ci].width == FastDataTable.MIN_DRAG_W
+
+        await pilot.click(t, offset=(_divider_x(app, ci), y))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert not isinstance(app.screen, ValueFilterScreen)
+        assert set(app._manual_widths) == {"first_user"}  # 单击没有新增手动列
+
+
+@pytest.mark.asyncio
+async def test_column_double_click_divider_restores_auto_width():
+    # 双击分隔线 → 该列恢复自适应, 让出的宽度回流给其它列
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        t = app.query_one("#table")
+        vis = app._visible_columns()
+        ci = vis.index("turns")
+        auto = app._column_widths(vis)[ci]
+        x, y = _divider_x(app, ci), t.gutter.top
+
+        await pilot.mouse_down(t, offset=(x, y))
+        t.post_message(_drag(t, x, x + 20, y))
+        await pilot.pause()
+        await pilot.mouse_up(t, offset=(x + 20, y))
+        await pilot.pause()
+        assert "turns" in app._manual_widths
+
+        await pilot.click(t, offset=(_divider_x(app, ci), y), times=2)
+        await pilot.pause()
+        assert app._manual_widths == {}
+        assert t.ordered_columns[ci].width == auto
+
+
+@pytest.mark.asyncio
+async def test_manual_width_survives_narrow_budget():
+    # 手动宽度不参与"挤不下就压缩"的公平分配, 其它列让路 (溢出则横向滚动)
+    app = _chat_app(10)
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause()
+        vis = app._visible_columns()
+        app._manual_widths["first_user"] = 40
+        assert app._column_widths(vis)[vis.index("first_user")] == 40
