@@ -319,11 +319,8 @@ class _FieldStatic(Static):
 
     def on_click(self, event) -> None:
         self.app.select_detail_field(self)  # 通知 app 选中本字段
-        if event.chain >= 2:
-            # 双击选整块/三击选整屏由 Widget._on_click 设选区, 之后不再发 MouseUp, 光等
-            # TextSelected 会撞上时序 (双击到底复不复制要看消息循环快慢)。这里显式收口,
-            # 排到本帧之后跑: 同一个 Click 的两个 handler 谁先谁后不由我们决定。
-            self.app.call_after_refresh(self.app.copy_selection)
+        if event.chain >= 2:  # 双击选整块: 连击的复制统一交给 app 去抖收口
+            self.app.schedule_copy_selection()
         event.stop()
 
     # -------------------------------------------------------------- #
@@ -796,6 +793,7 @@ class ViewApp(App):
         self._visual_anchor: Optional[int] = (
             None  # visual 多选起点 (view_indices 位置); None=非选择态
         )
+        self._copy_timer = None  # 连击复制的去抖定时器 (见 schedule_copy_selection)
         # 用户拖出来的列宽 {列名: 内容宽}: 只认名字, 所以换窗口/改可见列/改格式后依然保留
         self._manual_widths: Dict[str, int] = {}
         self._edge_hint = False  # 鼠标压在列分隔线上: 状态栏说明这条线能干什么
@@ -1749,6 +1747,27 @@ class ViewApp(App):
         这里的 passthrough 版本。"""
         self._clipboard = text
         self._copy_clipboard(text)
+
+    def schedule_copy_selection(self) -> None:
+        """连击 (双击选整块 / 三击选整屏) 的复制入口: 等连击窗口过去再复制。
+
+        双击选整块、三击选整屏都是 Widget._on_click 同步做掉的, 不再发 MouseUp, 光等
+        TextSelected 会撞上"选区先设好还是事件先到"的时序。改成这里显式收口, 并按连击
+        窗口去抖 —— 三击是 chain=2、chain=3 两个 Click, 不去抖就会先复制字段块再复制
+        整屏, 弹两次通知、往终端发两条 OSC52。
+        """
+        if self._copy_timer is not None:
+            self._copy_timer.stop()
+        self._copy_timer = self.set_timer(self.CLICK_CHAIN_TIME_THRESHOLD, self.copy_selection)
+
+    def on_click(self, event: events.Click) -> None:
+        """详情空白处的连击 (选中整个详情区) 也要复制。
+
+        字段块上的那份在 _FieldStatic.on_click —— 它 stop 掉了 Click, 到不了这里;
+        表格区的连击也会落进来, 但那边没有选区, copy_selection 自然什么都不做。
+        """
+        if event.chain >= 2:
+            self.schedule_copy_selection()
 
     def copy_selection(self) -> None:
         """把当前选区写进剪贴板 (详情区拖选/双击/三击都走这里)。"""

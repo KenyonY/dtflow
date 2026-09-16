@@ -2631,10 +2631,38 @@ async def test_double_click_copies_whole_field_once():
         await pilot.pause()
         f = _first_field(app)
         await pilot.double_click(f, offset=(1, 0))
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(ViewApp.CLICK_CHAIN_TIME_THRESHOLD + 0.2)  # 连击复制是去抖的
         assert copied == [app.screen.get_selected_text()]
         assert copied[0].startswith("[user]")  # 整个字段块, 不是点到的那一行
+
+
+@pytest.mark.asyncio
+async def test_triple_click_copies_whole_detail_once():
+    # 三击 (chain=2 选块 + chain=3 选整屏) 去抖成一次复制, 内容是最终选区
+    app = _chat_app(3)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.triple_click(_first_field(app), offset=(1, 0))
+        await pilot.pause(ViewApp.CLICK_CHAIN_TIME_THRESHOLD + 0.2)
+        assert copied == [app.screen.get_selected_text()]
+        assert "[assistant]" in copied[0]  # 整屏详情, 不止第一个字段块
+
+
+@pytest.mark.asyncio
+async def test_double_click_on_detail_blank_copies():
+    # 双击详情区空白处 = 全选整个详情: 高亮了就得进剪贴板, 不能只亮不复制
+    app = _chat_app(3)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail")
+        await pilot.double_click(detail, offset=(1, detail.content_region.height - 1))
+        await pilot.pause(ViewApp.CLICK_CHAIN_TIME_THRESHOLD + 0.2)
+        assert copied == [app.screen.get_selected_text()]
+        assert copied[0]
 
 
 @pytest.mark.asyncio
