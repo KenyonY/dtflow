@@ -9,7 +9,7 @@ import pytest
 
 from dtflow.cli.view import scan
 from dtflow.cli.view.scan import ScanSpec
-from dtflow.cli.view.source import open_source
+from dtflow.cli.view.source import SourceChangedError, open_source
 
 FMT = "openai_chat"
 
@@ -59,7 +59,7 @@ def test_parallel_ranges_cover_every_row_once(tmp_path):
     assert ranges[0][0] == 0 and ranges[0][2] == 0
     rows = []
     for a, b, first in ranges:
-        rows.extend(i for i, _ in scan._iter_chunk(str(src.path), a, b, first))
+        rows.extend(i for i, _ in scan._iter_chunk(str(src.path), a, b, first, src.identity))
     assert rows == list(range(200))
     assert [b for _, b, _ in ranges][:-1] == [a for a, _, _ in ranges][1:]
 
@@ -127,6 +127,35 @@ def test_serial_cancel(tmp_path):
     cancel = threading.Event()
     cancel.set()
     assert scan.scan_rows(src, ScanSpec(fmt=FMT, search="q"), cancel=cancel) is None
+
+
+def test_parallel_detects_rotation(tmp_path, parallel):
+    # 分片是脱离 source 按字节偏移直接读的; 文件被换掉时必须报错, 不能安静地扫出个错子集
+    src = _source(tmp_path, 200)
+    spec = ScanSpec(fmt=FMT, search="ans")
+    assert scan.scan_rows(src, spec)  # 正常情况先跑通
+    (tmp_path / "sub").mkdir()
+    _write(tmp_path / "sub", 300).replace(src.path)  # 换成另一个 inode
+    with pytest.raises(SourceChangedError):
+        scan.scan_rows(src, spec)
+
+
+def test_parallel_detects_truncation(tmp_path, parallel):
+    # 读不满分片区间 = 文件在扫描期间被截断, 不能把半截子集当结果提交
+    src = _source(tmp_path, 200)
+    with open(src.path, "r+b") as f:
+        f.truncate(src.parallel_ranges(4)[1][0])  # 砍掉第二个分片起点之后的全部内容
+    with pytest.raises(SourceChangedError):
+        scan.scan_rows(src, ScanSpec(fmt=FMT, search="ans"))
+
+
+def test_serial_detects_rotation(tmp_path):
+    # 串行路径 (iter_all) 本就有这道校验; 两条路径的行为必须一致
+    src = _source(tmp_path, 200)
+    (tmp_path / "sub").mkdir()
+    _write(tmp_path / "sub", 300).replace(src.path)
+    with pytest.raises(SourceChangedError):
+        scan.scan_rows(src, ScanSpec(fmt=FMT, search="ans"))
 
 
 # --------------------------------------------------------------------------- #

@@ -37,11 +37,6 @@ def _fmt_num(x: float) -> str:
     return f"{x:.2f}"
 
 
-# 表达式/搜索词的编译与扫描调度统一收在 scan 里 (主进程与扫描子进程同源); 这里保留
-# 旧名 _compile_where, 它是 view 内被直接引用的老入口。
-_compile_where = scan.compile_where
-
-
 class FastDataTable(DataTable):
     """定宽列 + 定高行专用: 跳过 textual 对每个 cell 的 measure。
 
@@ -964,7 +959,7 @@ class ViewApp(App):
         empty = self._constraints_snapshot()
         for expr in self._init_where:
             try:
-                _compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
+                scan.compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
                 self._wheres.append(expr)
             except ValueError as e:
                 self.notify(escape(f"--where {expr}: {e}"), severity="error")
@@ -2278,7 +2273,7 @@ class ViewApp(App):
             return
         snap = self._constraints_snapshot()
         try:
-            _compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
+            scan.compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
         except ValueError as e:
             self.notify(escape(str(e)), severity="error")
             return

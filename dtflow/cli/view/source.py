@@ -163,6 +163,7 @@ class RowSource:
     fully_indexed: bool = True
     follow: bool = False
     path: Optional[Path] = None
+    identity = None  # (dev, ino): 分片扫描据此确认读的还是同一个文件
 
     def parallel_ranges(self, chunks: int):
         """可并行扫描的字节分片 [(起始字节, 结束字节, 首行全局行号)]; 不支持返回 None。"""
@@ -259,6 +260,10 @@ class _JsonlSource(RowSource):
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def identity(self) -> Tuple[int, int]:
+        return self._identity
 
     def parallel_ranges(self, chunks: int):
         """按行号等分成 chunks 段, 换算成字节区间 —— 每段都从完整行首开始。

@@ -903,7 +903,7 @@ async def test_markup_like_content_does_not_crash():
 
 def test_compile_where_derived_vs_field_path():
     # 派生列名 (chars/turns) → 按表格显示值比较; 其余名字 → 真实字段路径, 无需任何包裹符
-    from dtflow.cli.view.app import _compile_where
+    from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {
         "messages": [
@@ -926,7 +926,7 @@ def test_compile_where_derived_vs_field_path():
 
 def test_compile_where_and_or_multi_column():
     # 多列组合: and 全满足 / or 任一满足; and 优先级高于 or; 值内 "and" 子串不误分
-    from dtflow.cli.view.app import _compile_where
+    from dtflow.cli.view.scan import compile_where as _compile_where
 
     def mk(nchars, src):
         return {
@@ -1064,7 +1064,7 @@ async def test_rapid_refresh_no_duplicate_ids():
 # --------------------------------------------------------------------------- #
 def test_contains_operator_on_derived_column_matches_full_text():
     # first_user 表格里只显示前 80 字, 但 ~= 必须搜全文, 否则靠后的词被静默漏掉
-    from dtflow.cli.view.app import _compile_where
+    from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {
         "messages": [
@@ -1084,7 +1084,7 @@ def test_contains_operator_on_derived_column_matches_full_text():
 
 def test_contains_operator_never_numeric():
     # chars~=200 是子串语义 ("200" in "2003"), 不能被当成数值比较而炸掉
-    from dtflow.cli.view.app import _compile_where
+    from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {"messages": [{"role": "user", "content": "x" * 2003}]}
     assert _compile_where("chars~=200", "openai_chat")(row)
@@ -1271,7 +1271,7 @@ def test_contains_operator_is_case_insensitive():
     要区分大小写用 == / !=。此前 ~= 敏感而另两个不敏感, 同一个词换个入口就 0 命中。
     """
     from dtflow.cli.sample import _parse_where
-    from dtflow.cli.view.app import _compile_where
+    from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {"messages": [{"role": "user", "content": "A" * 100 + "TAIL_Key"}], "source": "Alpaca_ZH"}
     assert _compile_where("first_user~=tail_key", "openai_chat")(row)  # 派生列

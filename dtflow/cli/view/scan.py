@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Pattern, Sequence, Tuple
 
 from . import render
-from .source import _loads
+from .source import SourceChangedError, _identity, _loads
 
 # 行数低于此值时进程池的启动与调度开销盖过收益 (串行约 6μs/行), 直接串行
 PARALLEL_MIN_ROWS = 50_000
@@ -265,6 +265,13 @@ def is_refinement(old: Optional[ScanSpec], new: ScanSpec) -> bool:
 
 # --------------------------------------------------------------------------- #
 # 进程池 (fork: 子进程直接继承已 import 的模块, 无需重新导入)
+#
+# 为什么是 fork 而不是 spawn/forkserver: 子进程要用的 render/orjson 已经在父进程里,
+# fork 直接继承, 每次扫描省掉一整轮 import; spawn 则要为每个 worker 重新导入一遍 dtflow。
+# 代价是 TUI 进程里有 Textual 的线程在跑, CPython 3.12 起会对"多线程进程 fork"发
+# DeprecationWarning。这里子进程 fork 出来只跑纯函数 (open/seek/orjson/re), 不碰父进程
+# 线程持有的任何锁, 且 glibc 的 malloc 与 CPython 都注册了 atfork 处理; 真要出问题,
+# DTFLOW_VIEW_WORKERS=1 就退回串行。
 # --------------------------------------------------------------------------- #
 _pool: Optional[ProcessPoolExecutor] = None
 _pool_size = 0
@@ -310,16 +317,25 @@ def _get_pool(n: int) -> ProcessPoolExecutor:
 # --------------------------------------------------------------------------- #
 # 分片任务 (子进程执行; 必须是模块级函数才能 pickle)
 # --------------------------------------------------------------------------- #
-def _iter_chunk(path: str, start: int, end: int, first_row: int) -> Iterator[Tuple[int, dict]]:
-    """读 [start, end) 字节区间的行; 产出 (全局行号, 行)。区间边界即行边界。"""
+def _iter_chunk(
+    path: str, start: int, end: int, first_row: int, expected
+) -> Iterator[Tuple[int, dict]]:
+    """读 [start, end) 字节区间的行; 产出 (全局行号, 行)。区间边界即行边界。
+
+    每个分片自己认一遍 (dev, ino) 并盯着读满区间: 分片是脱离 source 直接按字节偏移
+    open+seek 的, 若期间文件被轮转或截断, 这些偏移指向的就是别人的字节 —— 界面会安静地
+    显示一个张冠李戴的子集。串行的 iter_all 一直有这道校验, 并行不能把它丢掉。
+    """
     i = first_row
     with open(path, "rb") as f:
+        if expected is not None and _identity(os.fstat(f.fileno())) != expected:
+            raise SourceChangedError("文件已被替换")
         f.seek(start)
         pos = start
         while pos < end:
             line = f.readline(end - pos)
             if not line:
-                break
+                raise SourceChangedError("文件在扫描期间被截断")
             pos += len(line)
             line = line.strip()
             if not line:
@@ -330,13 +346,13 @@ def _iter_chunk(path: str, start: int, end: int, first_row: int) -> Iterator[Tup
 
 def chunk_filter(task):
     """一个分片的筛选结果: (命中行号, 排序键, 扫过的行数)。"""
-    path, start, end, first_row, spec = task
+    path, start, end, first_row, expected, spec = task
     row_ok = build_row_ok(spec)
     keyfn = build_keyfn(spec)
     matches: List[int] = []
     keys: List = []
     n = 0
-    for i, row in _iter_chunk(path, start, end, first_row):
+    for i, row in _iter_chunk(path, start, end, first_row, expected):
         n += 1
         try:
             if row_ok is None or row_ok(row):
@@ -350,12 +366,12 @@ def chunk_filter(task):
 
 def chunk_values(task):
     """一个分片里某列的 值 → 行号表 (行号升序); 扫过的行数一并带回。"""
-    path, start, end, first_row, spec, col = task
+    path, start, end, first_row, expected, spec, col = task
     row_ok = build_row_ok(spec)
     fmt = spec.fmt
     buckets: Dict[str, array] = {}
     n = 0
-    for i, row in _iter_chunk(path, start, end, first_row):
+    for i, row in _iter_chunk(path, start, end, first_row, expected):
         n += 1
         if not isinstance(row, dict):
             continue
@@ -389,7 +405,12 @@ def _run_chunks(fn, tasks, total: int, progress, cancel):
             return None
         done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
         for f in done:
-            result = f.result()
+            try:
+                result = f.result()
+            except Exception:
+                for p in pending:  # 一个分片报错, 其余的结果已无意义
+                    p.cancel()
+                raise
             results[futures[f]] = result
             done_rows += result[-1]
             if progress is not None:
@@ -410,7 +431,9 @@ def scan_rows(source, spec: ScanSpec, *, progress=None, cancel=None) -> Optional
     ranges = source.parallel_ranges(worker_count() * CHUNKS_PER_WORKER)
     if ranges is not None and parallel_available() and source.total >= PARALLEL_MIN_ROWS:
         try:
-            tasks = [(str(source.path), a, b, first, spec) for a, b, first in ranges]
+            tasks = [
+                (str(source.path), a, b, first, source.identity, spec) for a, b, first in ranges
+            ]
             results = _run_chunks(chunk_filter, tasks, source.total, progress, cancel)
             if results is None:
                 return None
@@ -420,6 +443,8 @@ def scan_rows(source, spec: ScanSpec, *, progress=None, cancel=None) -> Optional
                 matches.extend(m)
                 keys.extend(k)
             return _sorted_matches(matches, keys, spec)
+        except SourceChangedError:
+            raise  # 文件在扫描期间被换掉/截断: 串行重跑也是同样的结果, 直接交给上层回滚
         except Exception:  # noqa: BLE001  进程池不可用 (容器限制/内存/被杀) → 串行兜底
             shutdown_pool()
 
@@ -485,11 +510,16 @@ def scan_values(
     """某列的 值 → 行号表 (行号升序), 施加 spec 里的其他约束。取消返回 None。
 
     带上行号而不只是频次: 勾选确定后子集 = 选中各值行号表的归并, 无需再扫一遍文件。
+    代价是每行 8 字节 (array("q"), 全唯一值的列上 30 万行约 100MB), 只在值面板打开
+    期间常驻, 关掉即随闭包一起释放。
     """
     ranges = source.parallel_ranges(worker_count() * CHUNKS_PER_WORKER)
     if ranges is not None and parallel_available() and source.total >= PARALLEL_MIN_ROWS:
         try:
-            tasks = [(str(source.path), a, b, first, spec, col) for a, b, first in ranges]
+            tasks = [
+                (str(source.path), a, b, first, source.identity, spec, col)
+                for a, b, first in ranges
+            ]
             results = _run_chunks(chunk_values, tasks, source.total, progress, cancel)
             if results is None:
                 return None
@@ -501,6 +531,8 @@ def scan_values(
                     else:
                         merged[value] = rows
             return merged
+        except SourceChangedError:
+            raise
         except Exception:  # noqa: BLE001
             shutdown_pool()
 
