@@ -2772,6 +2772,7 @@ async def test_ctrl_c_in_input_copies_input_selection():
 async def test_ctrl_c_in_value_filter_search_copies_selection():
     # 值筛选面板的搜索框同理 (它也是 Input, 只是在模态屏里)
     app = _chat_app(6)
+    app._copy_clipboard = lambda text: None  # 别在测试里真写系统剪贴板
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app._start_value_scan("source")
