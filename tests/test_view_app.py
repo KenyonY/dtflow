@@ -393,15 +393,15 @@ async def test_sort_stacks_with_filter():
 async def test_resize_step_5pct_and_bounds():
     app = _chat_app(3)
     async with app.run_test() as pilot:
-        assert app._split == 13  # 默认表格 65%
+        assert app._split == 65  # 默认表格 65%
         await pilot.press("plus")
-        assert app._split == 14  # +5%
+        assert app._split == 70  # +5%
         for _ in range(20):
             await pilot.press("plus")
-        assert app._split == 16  # 上限 80%
+        assert app._split == 80  # 上限 80%
         for _ in range(30):
             await pilot.press("minus")
-        assert app._split == 4  # 下限 20%
+        assert app._split == 20  # 下限 20%
 
 
 @pytest.mark.asyncio
@@ -668,16 +668,17 @@ def test_clipboard_osc52_wrapping(monkeypatch):
     # OSC52 序列: 裸 / tmux passthrough / screen passthrough (tmux 下须穿透, 否则被拦)
     import base64
 
-    app = _make_app([{"a": 1}], fmt="generic")
+    from dtflow.utils import clipboard
+
     b64 = base64.b64encode("hi".encode()).decode()
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("STY", raising=False)
-    assert app._clipboard_osc52("hi") == f"\x1b]52;c;{b64}\a"
+    assert clipboard.osc52("hi") == f"\x1b]52;c;{b64}\a"
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
-    assert app._clipboard_osc52("hi") == f"\x1bPtmux;\x1b\x1b]52;c;{b64}\a\x1b\\"
+    assert clipboard.osc52("hi") == f"\x1bPtmux;\x1b\x1b]52;c;{b64}\a\x1b\\"
     monkeypatch.delenv("TMUX")
     monkeypatch.setenv("STY", "12345.pts-0")
-    assert app._clipboard_osc52("hi") == f"\x1bP\x1b]52;c;{b64}\a\x1b\\"
+    assert clipboard.osc52("hi") == f"\x1bP\x1b]52;c;{b64}\a\x1b\\"
 
 
 @pytest.mark.asyncio
@@ -2500,8 +2501,8 @@ def _first_field(app):
 
 
 @pytest.mark.asyncio
-async def test_detail_drag_select_copies_what_is_highlighted():
-    # 详情区拖选: 选到的文本 == 屏幕上高亮的文本, 松手即进剪贴板 (中文宽字符不错位)
+async def test_detail_drag_select_highlights_what_ctrl_c_copies():
+    # 详情区拖选: 选到的文本 == 屏幕上高亮的文本 (中文宽字符不错位), Ctrl+c 才进剪贴板
     from rich.cells import cell_len
 
     rows = [{"messages": [{"role": "user", "content": "abcdefghij 中文字符测试 klmnopqr"}]}]
@@ -2520,12 +2521,17 @@ async def test_detail_drag_select_copies_what_is_highlighted():
 
         selected = app.screen.get_selected_text()
         assert selected.startswith("defghij 中文字符测")
-        assert copied == [selected]  # 松手即复制, 不用再按键
-        # 高亮的正是被复制的那段
+        assert copied == []  # 选中不自动复制
+        # 高亮的正是待复制的那段
         sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
         strip = f.render_line(y)
         highlighted = "".join(s.text for s in strip if s.style and s.style.bgcolor == sel_bg)
         assert highlighted == selected
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert copied == [selected]
+        assert app.screen.get_selected_text() is None  # 复制后清除选区, 高亮不残留
 
 
 @pytest.mark.asyncio
@@ -2550,26 +2556,14 @@ async def test_detail_drag_select_spans_fields():
         )
         selected = app.screen.get_selected_text()
         assert "\n" in selected  # 跨行跨字段
+        await pilot.press("ctrl+c")
+        await pilot.pause()
         assert copied == [selected]
 
 
 @pytest.mark.asyncio
-async def test_click_without_drag_copies_nothing():
-    # 纯点击 (选字段) 不该往剪贴板里写空串
-    app = _chat_app(3)
-    copied = []
-    app._copy_clipboard = lambda text: copied.append(text)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        f = _first_field(app)
-        await pilot.click(f, offset=(1, 0))
-        await pilot.pause()
-        assert copied == []
-
-
-@pytest.mark.asyncio
 async def test_detail_drag_select_after_scroll():
-    # 详情滚动后拖选: 选到的仍是屏幕上高亮的那段 (坐标按可见行算, 不被滚动偏移带歪)
+    # 详情滚动后拖选: 高亮的仍是屏幕上那段 (坐标按可见行算, 不被滚动偏移带歪), Ctrl+c 拿到同一段
     long_text = "\n".join(f"line{i:03d} content" for i in range(60))
     rows = [{"messages": [{"role": "user", "content": long_text}]}]
     app = _make_app(rows)
@@ -2587,87 +2581,52 @@ async def test_detail_drag_select_after_scroll():
         )
 
         selected = app.screen.get_selected_text()
-        assert selected and copied == [selected]
         sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
         row = y - f.content_region.y  # 该屏幕行在字段内的行号
         highlighted = "".join(
-            s.text for s in f.render_line(row) if s.style and s.style.bgcolor == sel_bg
+            seg.text for seg in f.render_line(row) if seg.style and seg.style.bgcolor == sel_bg
         )
         assert highlighted == selected
 
-
-@pytest.mark.asyncio
-async def test_unrelated_drag_does_not_replay_copy():
-    # 拖列宽/拖滚动条这类与选择无关的松手不该把陈旧选区重新写进剪贴板
-    # (textual 每次 MouseUp 都发 TextSelected, 只看"有没有选区"会静默覆盖用户刚复制的东西)
-    app = _chat_app(5)
-    copied = []
-    app._copy_clipboard = lambda text: copied.append(text)
-    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("ctrl+c")
         await pilot.pause()
-        f = _first_field(app)
-        y = f.content_region.y
-        await _drag_select(pilot, app, f.content_region.x + 1, y, f.content_region.x + 5, y)
-        assert len(copied) == 1
-
-        await pilot.press("y")  # 复制整条样本 JSON: 剪贴板现在归 y 管
-        await pilot.pause()
-        assert len(copied) == 2
-
-        t = app.query_one("#table")  # 拖表头分隔线改列宽 (选区没动)
-        ci = app._visible_columns().index("turns")
-        x = _divider_x(app, ci) + t.content_region.x
-        await _drag_select(pilot, app, x, t.content_region.y, x + 6, t.content_region.y)
-        assert len(copied) == 2  # 没有第三次: 剪贴板还是 y 复制的样本
+        assert copied == [selected]
 
 
 @pytest.mark.asyncio
-async def test_double_click_copies_whole_field_once():
-    # 双击选整块 -> 恰好复制一次 (两次松手 + select-all 三条路径不能各复制一遍)
+async def test_ctrl_c_without_selection_copies_nothing():
+    # 没有选区时 Ctrl+c 不写剪贴板 (让位给原本的 ctrl+c 行为), 也不报错
     app = _chat_app(3)
     copied = []
     app._copy_clipboard = lambda text: copied.append(text)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        f = _first_field(app)
-        await pilot.double_click(f, offset=(1, 0))
-        await pilot.pause(ViewApp.CLICK_CHAIN_TIME_THRESHOLD + 0.2)  # 连击复制是去抖的
-        assert copied == [app.screen.get_selected_text()]
-        assert copied[0].startswith("[user]")  # 整个字段块, 不是点到的那一行
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert copied == []
 
 
 @pytest.mark.asyncio
-async def test_triple_click_copies_whole_detail_once():
-    # 三击 (chain=2 选块 + chain=3 选整屏) 去抖成一次复制, 内容是最终选区
+async def test_double_click_selects_field_and_ctrl_c_copies_it():
+    # 双击选整块 -> Ctrl+c 复制整块 (不是点到的那一行)
     app = _chat_app(3)
     copied = []
     app._copy_clipboard = lambda text: copied.append(text)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        await pilot.triple_click(_first_field(app), offset=(1, 0))
-        await pilot.pause(ViewApp.CLICK_CHAIN_TIME_THRESHOLD + 0.2)
-        assert copied == [app.screen.get_selected_text()]
-        assert "[assistant]" in copied[0]  # 整屏详情, 不止第一个字段块
-
-
-@pytest.mark.asyncio
-async def test_double_click_on_detail_blank_copies():
-    # 双击详情区空白处 = 全选整个详情: 高亮了就得进剪贴板, 不能只亮不复制
-    app = _chat_app(3)
-    copied = []
-    app._copy_clipboard = lambda text: copied.append(text)
-    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.double_click(_first_field(app), offset=(1, 0))
         await pilot.pause()
-        detail = app.query_one("#detail")
-        await pilot.double_click(detail, offset=(1, detail.content_region.height - 1))
-        await pilot.pause(ViewApp.CLICK_CHAIN_TIME_THRESHOLD + 0.2)
-        assert copied == [app.screen.get_selected_text()]
-        assert copied[0]
+        assert copied == []  # 双击只选中, 不复制
+        selected = app.screen.get_selected_text()
+        assert selected.startswith("[user]")
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert copied == [selected]
 
 
 @pytest.mark.asyncio
-async def test_scrollbar_drag_does_not_replay_copy():
-    # 拖详情滚动条会让 textual 重算选区偏移并照发 TextSelected, 但那不是一次拖选
+async def test_unrelated_drag_leaves_clipboard_alone():
+    # 拖列宽/拖滚动条这类与选择无关的拖拽不碰剪贴板 (选区还在, 但没人按 Ctrl+c)
     rows = [{"messages": [{"role": "user", "content": "\n".join(f"line{i}" for i in range(80))}]}]
     app = _make_app(rows)
     copied = []
@@ -2677,10 +2636,105 @@ async def test_scrollbar_drag_does_not_replay_copy():
         f = _first_field(app)
         y = f.content_region.y + 1
         await _drag_select(pilot, app, f.content_region.x + 1, y, f.content_region.x + 5, y)
+        await pilot.press("ctrl+c")
+        await pilot.pause()
         assert len(copied) == 1
 
         detail = app.query_one("#detail")
         assert detail.scrollbars_enabled[0]  # 真有滚动条
         sb = detail.vertical_scrollbar
         await _drag_select(pilot, app, sb.region.x, sb.region.y + 1, sb.region.x, sb.region.y + 8)
-        assert len(copied) == 1  # 滚动条拖动不重放复制
+
+        t = app.query_one("#table")
+        ci = app._visible_columns().index("turns")
+        x = _divider_x(app, ci) + t.content_region.x
+        await _drag_select(pilot, app, x, t.content_region.y, x + 6, t.content_region.y)
+        assert len(copied) == 1  # 剪贴板没被这些拖拽动过
+
+
+# ---------------------------------------------------------------------- #
+# 拖两区分界调大小
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_split_drag_resizes_panes():
+    # 竖排: 按住分界往下拖, 表格变高; 拖动是按格连续的, 不是 5% 一档
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#table")
+        edge_y = table.region.bottom - 1
+        assert app._on_split_edge(table.region.x + 5, edge_y)  # 表格下边框
+        assert app._on_split_edge(table.region.x + 5, edge_y + 1)  # 详情上边框
+        assert not app._on_split_edge(table.region.x + 5, edge_y - 1)
+
+        h0 = table.region.height  # region 是实时的, 先取值再拖
+        await _drag_select(pilot, app, table.region.x + 5, edge_y, table.region.x + 5, edge_y + 3)
+        assert app._split not in (65, 70)  # 落在格上, 不对齐 5% 档
+        assert table.region.height > h0
+
+
+@pytest.mark.asyncio
+async def test_split_drag_clamps_and_ignores_zoom():
+    # 拖过头被夹在 20~80; 详情放大态没有分界
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#table")
+        main = app.query_one("#main")
+        x = table.region.x + 5
+        await _drag_select(pilot, app, x, table.region.bottom - 1, x, main.region.bottom - 1)
+        assert app._split == app.SPLIT_MAX
+        edge = app.query_one("#table").region.bottom - 1
+        await _drag_select(pilot, app, x, edge, x, main.region.y)
+        assert app._split == app.SPLIT_MIN
+
+        app.action_zoom()  # 放大态只剩详情一个区
+        await pilot.pause()
+        assert not app._on_split_edge(x, app.query_one("#detail").region.y)
+
+
+@pytest.mark.asyncio
+async def test_split_drag_horizontal_layout():
+    # 横排 (z 切换) 时分界是竖的两列, 左右拖改宽度
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("z")
+        await pilot.pause()
+        table = app.query_one("#table")
+        edge_x = table.region.right - 1
+        w0 = table.region.width
+        assert app._on_split_edge(edge_x, table.region.y + 3)
+        await _drag_select(pilot, app, edge_x, table.region.y + 3, edge_x - 20, table.region.y + 3)
+        assert table.region.width < w0
+
+
+@pytest.mark.asyncio
+async def test_split_drag_does_not_select_or_copy():
+    # 分界压在详情容器的边框上, 拖它不该顺手拖出一片选区
+    app = _chat_app(30)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#table")
+        x, edge_y = table.region.x + 5, table.region.bottom - 1
+        await _drag_select(pilot, app, x, edge_y, x, edge_y + 4)
+        assert app.screen.get_selected_text() is None
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert copied == []
+
+
+@pytest.mark.asyncio
+async def test_split_double_click_restores_default():
+    # 双击分界回默认 65:35 (同双击列分隔线恢复自适应)
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._set_split(30)
+        await pilot.pause()
+        table = app.query_one("#table")
+        await pilot.click(table, offset=(5, table.region.height - 1), times=2)
+        await pilot.pause()
+        assert app._split == app.SPLIT_DEFAULT

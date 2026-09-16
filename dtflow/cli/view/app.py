@@ -4,7 +4,6 @@ dt view 的 Textual TUI: 表格 + 详情 master-detail 联动浏览器。
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 
@@ -15,6 +14,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -26,6 +26,7 @@ from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
+from ...utils import clipboard
 from . import render, scan
 from .scan import ScanSpec, compile_search
 
@@ -242,9 +243,9 @@ _HELP = """[b]dt view 快捷键[/b]
   n / N        详情下/上一字段 (对话按条走: msg0/msg1…; 亦可鼠标点击选中)
   *            跳到详情中下一处搜索命中 (命中处画黄底)
   y            复制当前样本 JSON 到剪贴板
-  鼠标拖选     详情区按住左键拖选文本 (所见即所选, 自动换行处不错位), 松手即进剪贴板;
+  鼠标拖选     详情区按住左键拖选文本 (所见即所选, 自动换行处不错位), 再按 Ctrl+c 复制;
                  双击选中整个字段块, 三击选整屏详情; Esc 或点一下清除选区
-                 Ctrl+c 再复制一次当前选区 (选区还在就能反复取)
+                 复制走 OSC52 + 本地 wl-copy/xclip/xsel 双通道 (SSH/tmux 下也进本机剪贴板)
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
   w            导出当前浏览序列 (或多选选区) 到文件, 按扩展名定格式
                  .jsonl 流式写, 几十万行不占内存; 同时写血缘, dt history 可查来源与条件
@@ -268,7 +269,9 @@ _HELP = """[b]dt view 快捷键[/b]
   拖表头的 │   改列宽 (Excel 式): 表头上列与列之间那道 │ 即分隔线, 鼠标压上去变 ┃
                  按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
   z            切换 上下 / 左右 布局
-  +/-          调整表格/详情两区大小
+  +/-          调整表格/详情两区大小 (每档 5%)
+  拖两区分界   表格与详情之间那两行(横排时是两列)边框即分界, 鼠标压上去边框变亮,
+                 按住拖到哪分界就到哪; 双击恢复默认 65:35
   c            选列 (勾选面板, 同时作用于表格和详情)
   r            清除全部筛选/搜索/排序, 回到全量浏览
   ?            帮助      q  退出
@@ -319,12 +322,10 @@ class _FieldStatic(Static):
 
     def on_click(self, event) -> None:
         self.app.select_detail_field(self)  # 通知 app 选中本字段
-        if event.chain >= 2:  # 双击选整块: 连击的复制统一交给 app 去抖收口
-            self.app.schedule_copy_selection()
         event.stop()
 
     # -------------------------------------------------------------- #
-    # 鼠标拖选 (松手即复制, 见 ViewApp.on_text_selected)
+    # 鼠标拖选 (选区靠 Ctrl+c 复制, 见 ViewApp.action_copy_selection)
     # -------------------------------------------------------------- #
     def _plain_lines(self) -> List[str]:
         """渲染行的纯文本; 行尾补白不是内容, 去掉免得复制出一串空格。"""
@@ -630,6 +631,9 @@ class ViewApp(App):
     #detail { height: 3fr; border: round $secondary; padding: 0 1; }
     #main.horizontal #detail { width: 1fr; height: 1fr; }
     #detail.zoomed { height: 1fr; }
+    /* 鼠标压在两区分界上: 把贴着分界的那圈边框点亮, 告诉用户这条线能拖 */
+    #table.split-hot { border: round $accent; }
+    #detail.split-hot { border: round $accent; }
     #table.hidden { display: none; }
     #prompt { dock: bottom; display: none; }
     #prompt.active { display: block; }
@@ -703,6 +707,7 @@ class ViewApp(App):
         # *: 只在含搜索命中的字段间跳 (n/N 的过滤版, 长对话里直奔命中那条消息)
         Binding("asterisk", "next_match", "下一命中", show=False),
         # 复制到剪贴板: y 复制当前样本 JSON; v 多选样本后 y 复制
+        Binding("ctrl+c", "copy_selection", "复制选区", show=False, priority=True),
         Binding("y", "yank", "复制", show=False),
         Binding("v", "visual", "多选", show=False),
         # 落地: w 导出当前子集到文件, C 复制可复现当前视图的命令
@@ -782,7 +787,9 @@ class ViewApp(App):
         self._row_key_seq = 0
         self._field_texts: List[str] = []  # 详情各字段的纯文本, 供 * 找命中
         self._prompt_mode: Optional[str] = None
-        self._split = 13  # 表格占比 (总 20 份, 每份 5%), 默认表格 65% : 详情 35%
+        self._split = 65  # 表格占比 (%), 默认 65:35; 键盘 +/- 走 5% 档, 鼠标拖分界是连续的
+        self._split_drag = False  # 正在拖两区分界
+        self._split_hint = False  # 鼠标压在分界上: 状态栏说明这条线能拖
         # 详情每字段一个 Static widget (真实布局, 无测量误差); 锚点 {字段名: 起始行} 由布局算出
         self._field_widgets: List[Static] = []
         self._cur_anchors: Dict[str, int] = {}
@@ -793,7 +800,6 @@ class ViewApp(App):
         self._visual_anchor: Optional[int] = (
             None  # visual 多选起点 (view_indices 位置); None=非选择态
         )
-        self._copy_timer = None  # 连击复制的去抖定时器 (见 schedule_copy_selection)
         # 用户拖出来的列宽 {列名: 内容宽}: 只认名字, 所以换窗口/改可见列/改格式后依然保留
         self._manual_widths: Dict[str, int] = {}
         self._edge_hint = False  # 鼠标压在列分隔线上: 状态栏说明这条线能干什么
@@ -1080,7 +1086,7 @@ class ViewApp(App):
         main = self.query_one("#main", Vertical)
         table = self.query_one("#table", DataTable)
         detail = self.query_one("#detail", VerticalScroll)
-        t, d = self._split, 20 - self._split
+        t, d = self._split, 100 - self._split
         if main.has_class("horizontal"):
             table.styles.width, table.styles.height = f"{t}fr", "1fr"
             detail.styles.width, detail.styles.height = f"{d}fr", "1fr"
@@ -1089,12 +1095,78 @@ class ViewApp(App):
             detail.styles.height, detail.styles.width = f"{d}fr", "1fr"
 
     def action_grow_table(self) -> None:
-        self._split = min(16, self._split + 1)  # 上限表格 80%
-        self._apply_split()
+        self._set_split(self._split + 5)
 
     def action_shrink_table(self) -> None:
-        self._split = max(4, self._split - 1)  # 下限表格 20%
-        self._apply_split()
+        self._set_split(self._split - 5)
+
+    # ------------------------------------------------------------------ #
+    # 拖两区分界调大小 (同列宽拖拽: 能看见的边界就该能直接拖)
+    # ------------------------------------------------------------------ #
+    SPLIT_MIN, SPLIT_MAX = 20, 80  # 表格占比上下限 (%): 两边都至少留得下几行/几列
+    SPLIT_DEFAULT = 65
+
+    def _set_split(self, split: int) -> None:
+        split = max(self.SPLIT_MIN, min(self.SPLIT_MAX, split))
+        if split != self._split:
+            self._split = split
+            self._apply_split()
+
+    def _on_split_edge(self, x: int, y: int) -> bool:
+        """屏幕坐标是否压在两区分界上。
+
+        分界不是一条线而是两格: 表格那圈边框的下(右)缘 + 详情那圈边框的上(左)缘,
+        两格都算, 手感与拖列宽的 2 格判定区一致。
+        """
+        if self.query_one("#table", DataTable).has_class("hidden"):
+            return False  # 详情放大态只有一个区, 没有分界
+        table = self.query_one("#table", DataTable).region
+        detail = self.query_one("#detail", VerticalScroll).region
+        if self.query_one("#main", Vertical).has_class("horizontal"):
+            return table.right - 1 <= x <= detail.x and table.y <= y < table.bottom
+        return table.bottom - 1 <= y <= detail.y and table.x <= x < table.right
+
+    def _set_split_hint(self, active: bool) -> None:
+        if active == self._split_hint:
+            return
+        self._split_hint = active
+        for wid in ("#table", "#detail"):
+            self.query_one(wid).set_class(active, "split-hot")
+        self._update_status()
+
+    def _drag_split_to(self, x: int, y: int) -> None:
+        """把分界拖到鼠标所在处 —— 按格算而不是按 5% 档, 否则拖起来一跳一跳。"""
+        main = self.query_one("#main", Vertical)
+        region = main.region
+        if main.has_class("horizontal"):
+            frac = (x - region.x + 1) / max(1, region.width)
+        else:
+            frac = (y - region.y + 1) / max(1, region.height)
+        self._set_split(round(frac * 100))
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if not self._on_split_edge(event.screen_x, event.screen_y):
+            return
+        self._split_drag = True
+        # 边框属于详情容器 (allow_select), 不清掉选择状态会顺手拖出一片选区, 松手还自动复制
+        self.screen.clear_selection()
+        self.screen.capture_mouse()  # 拖到两区之外也继续收事件
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._split_drag:
+            self._set_split_hint(self._on_split_edge(event.screen_x, event.screen_y))
+            return
+        self._drag_split_to(event.screen_x, event.screen_y)
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._split_drag:
+            return
+        self._split_drag = False
+        self.screen.release_mouse()
+        self._set_split_hint(self._on_split_edge(event.screen_x, event.screen_y))
+        event.stop()
 
     # ------------------------------------------------------------------ #
     # 表格填充 / 详情刷新
@@ -1344,6 +1416,8 @@ class ViewApp(App):
             parts.append(f"[cyan]字段:{escape(cur_field)}[/cyan]")
         if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
             parts.append("[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]")
+        if self._split_hint:
+            parts.append("[reverse] 拖动调两区大小 · 双击恢复默认 [/reverse]")
         parts.append("[dim]? 帮助[/dim]")
         status.update(Text.from_markup("  ·  ".join(parts)))
 
@@ -1718,79 +1792,42 @@ class ViewApp(App):
         self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
 
     # ------------------------------------------------------------------ #
-    # 复制到剪贴板 (y 当前样本; v 多选后 y 复制多条; 走 OSC52, 支持 SSH)
+    # 复制到剪贴板 (Ctrl+c 鼠标选区; y 当前样本; v 多选后 y 复制多条)
     # ------------------------------------------------------------------ #
-    def _clipboard_osc52(self, text: str) -> str:
-        """构造 OSC52 序列; 在 tmux/screen 内包 DCS passthrough 直穿到外层终端。
+    def _copy_clipboard(self, text: str) -> Optional[str]:
+        """写系统剪贴板, 两条通道都发: OSC52 (本机/SSH 都行, 终端需支持, tmux/screen 自动
+        passthrough) + 本地工具 (wl-copy/xclip/xsel, 覆盖吞掉 OSC52 的终端)。
 
-        Textual 只发裸 OSC52, 会被 tmux 拦截; 这里检测复用环境做穿透包装
-        (需 tmux ``set -g allow-passthrough on``), 让 Ghostty 等支持 OSC52 的终端收到。
+        返回本地通道用了哪个工具, 没有则 None (只靠 OSC52)。
         """
-        import base64
-
-        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        seq = f"\x1b]52;c;{b64}\a"
-        if os.environ.get("TMUX"):  # tmux: \ePtmux;<每个 ESC 翻倍的原序列>\e\\
-            return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
-        if os.environ.get("STY"):  # GNU screen: \eP<原序列>\e\\
-            return "\x1bP" + seq + "\x1b\\"
-        return seq
-
-    def _copy_clipboard(self, text: str) -> None:
-        """写系统剪贴板 (OSC52, 支持 SSH); tmux/screen 下自动 passthrough。"""
         driver = getattr(self, "_driver", None)
         if driver is not None:
-            driver.write(self._clipboard_osc52(text))
+            driver.write(clipboard.osc52(text))
+        return clipboard.copy_external(text)
 
     def copy_to_clipboard(self, text: str) -> None:
-        """覆盖 textual 的实现 (它发裸 OSC52, tmux 下被吞), 让内建的 ctrl+c 复制选区也走
-        这里的 passthrough 版本。"""
+        """覆盖 textual 的实现 (它只发裸 OSC52, tmux 下被吞), 统一走上面那条双通道。"""
         self._clipboard = text
         self._copy_clipboard(text)
 
-    def schedule_copy_selection(self) -> None:
-        """连击 (双击选整块 / 三击选整屏) 的复制入口: 等连击窗口过去再复制。
+    def action_copy_selection(self) -> None:
+        """Ctrl+c: 把鼠标选中的文本复制走。
 
-        双击选整块、三击选整屏都是 Widget._on_click 同步做掉的, 不再发 MouseUp, 光等
-        TextSelected 会撞上"选区先设好还是事件先到"的时序。改成这里显式收口, 并按连击
-        窗口去抖 —— 三击是 chain=2、chain=3 两个 Click, 不去抖就会先复制字段块再复制
-        整屏, 弹两次通知、往终端发两条 OSC52。
+        选中不自动复制 —— 拖选也是"看"的手段 (对照两处字段、量一段长度都会顺手拖),
+        自动复制会把剪贴板搅成拖动记录。没有选区时抛 SkipAction, 让位给原本的 ctrl+c。
         """
-        if self._copy_timer is not None:
-            self._copy_timer.stop()
-        self._copy_timer = self.set_timer(self.CLICK_CHAIN_TIME_THRESHOLD, self.copy_selection)
+        text = self.screen.get_selected_text()
+        if not text:
+            raise SkipAction()
+        used = self._copy_clipboard(text)
+        self.screen.clear_selection()
+        self.notify(f"已复制选中的 {len(text)} 字符 ({used or 'OSC52'})")
 
     def on_click(self, event: events.Click) -> None:
-        """详情空白处的连击 (选中整个详情区) 也要复制。
-
-        字段块上的那份在 _FieldStatic.on_click —— 它 stop 掉了 Click, 到不了这里;
-        表格区的连击也会落进来, 但那边没有选区, copy_selection 自然什么都不做。
-        """
-        if event.chain >= 2:
-            self.schedule_copy_selection()
-
-    def copy_selection(self) -> None:
-        """把当前选区写进剪贴板 (详情区拖选/双击/三击都走这里)。"""
-        text = self.screen.get_selected_text()
-        if text:
-            self._copy_clipboard(text)
-            self.notify(f"已复制选中的 {len(text)} 字符")
-
-    def on_text_selected(self, event: events.TextSelected) -> None:
-        """拖选松手即复制 —— 拖完还要再按一次键才进剪贴板不合直觉。
-
-        必须先认出"这次松手结束的确实是一次拖选": textual 在每一次 MouseUp 都发
-        TextSelected, 拖列宽、拖滚动条这种压根没在选的松手也照发 (滚动还会顺带重算选区
-        偏移), 只看"当前有没有选区"会把上一次的陈旧选区静默写回剪贴板 —— tmux/SSH 下
-        用户根本看不见剪贴板被换掉。screen._select_state 只在按下那一刻落在可选内容上才
-        建立 (滚动条/表格都是 allow_select=False), end 只在拖动之后才有, 正好是这个信号。
-        (textual 8 的内部字段, 升级 textual 时需复核。)
-
-        表格区不参与 (DataTable 关了 textual 选择: 拖拽在那里是改列宽/选行), 整条样本用 y。
-        """
-        state = self.screen._select_state
-        if state is not None and state.end is not None:
-            self.copy_selection()
+        """双击两区分界: 回默认比例 (同双击列分隔线恢复自适应)。"""
+        if event.chain >= 2 and self._on_split_edge(event.screen_x, event.screen_y):
+            self._set_split(self.SPLIT_DEFAULT)
+            event.stop()
 
     def _copy_samples(self, positions) -> None:
         """把 view_indices 中若干位置的样本按 NDJSON (每行一条) 复制到剪贴板。"""
