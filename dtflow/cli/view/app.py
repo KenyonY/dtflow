@@ -244,6 +244,7 @@ _HELP = """[b]dt view 快捷键[/b]
   y            复制当前样本 JSON 到剪贴板
   鼠标拖选     详情区按住左键拖选文本 (所见即所选, 自动换行处不错位), 松手即进剪贴板;
                  双击选中整个字段块, 三击选整屏详情; Esc 或点一下清除选区
+                 Ctrl+c 再复制一次当前选区 (选区还在就能反复取)
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
   w            导出当前浏览序列 (或多选选区) 到文件, 按扩展名定格式
                  .jsonl 流式写, 几十万行不占内存; 同时写血缘, dt history 可查来源与条件
@@ -318,6 +319,11 @@ class _FieldStatic(Static):
 
     def on_click(self, event) -> None:
         self.app.select_detail_field(self)  # 通知 app 选中本字段
+        if event.chain >= 2:
+            # 双击选整块/三击选整屏由 Widget._on_click 设选区, 之后不再发 MouseUp, 光等
+            # TextSelected 会撞上时序 (双击到底复不复制要看消息循环快慢)。这里显式收口,
+            # 排到本帧之后跑: 同一个 Click 的两个 handler 谁先谁后不由我们决定。
+            self.app.call_after_refresh(self.app.copy_selection)
         event.stop()
 
     # -------------------------------------------------------------- #
@@ -1744,15 +1750,28 @@ class ViewApp(App):
         self._clipboard = text
         self._copy_clipboard(text)
 
-    def on_text_selected(self, event: events.TextSelected) -> None:
-        """详情区鼠标松手即复制选区 —— 拖完还要再按一次键才进剪贴板不合直觉。
-
-        表格区不参与 (DataTable 关了 textual 选择: 拖拽在那里是改列宽/选行), 整条样本用 y。
-        """
+    def copy_selection(self) -> None:
+        """把当前选区写进剪贴板 (详情区拖选/双击/三击都走这里)。"""
         text = self.screen.get_selected_text()
         if text:
             self._copy_clipboard(text)
             self.notify(f"已复制选中的 {len(text)} 字符")
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        """拖选松手即复制 —— 拖完还要再按一次键才进剪贴板不合直觉。
+
+        必须先认出"这次松手结束的确实是一次拖选": textual 在每一次 MouseUp 都发
+        TextSelected, 拖列宽、拖滚动条这种压根没在选的松手也照发 (滚动还会顺带重算选区
+        偏移), 只看"当前有没有选区"会把上一次的陈旧选区静默写回剪贴板 —— tmux/SSH 下
+        用户根本看不见剪贴板被换掉。screen._select_state 只在按下那一刻落在可选内容上才
+        建立 (滚动条/表格都是 allow_select=False), end 只在拖动之后才有, 正好是这个信号。
+        (textual 8 的内部字段, 升级 textual 时需复核。)
+
+        表格区不参与 (DataTable 关了 textual 选择: 拖拽在那里是改列宽/选行), 整条样本用 y。
+        """
+        state = self.screen._select_state
+        if state is not None and state.end is not None:
+            self.copy_selection()
 
     def _copy_samples(self, positions) -> None:
         """把 view_indices 中若干位置的样本按 NDJSON (每行一条) 复制到剪贴板。"""

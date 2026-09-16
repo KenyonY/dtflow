@@ -2594,3 +2594,65 @@ async def test_detail_drag_select_after_scroll():
             s.text for s in f.render_line(row) if s.style and s.style.bgcolor == sel_bg
         )
         assert highlighted == selected
+
+
+@pytest.mark.asyncio
+async def test_unrelated_drag_does_not_replay_copy():
+    # 拖列宽/拖滚动条这类与选择无关的松手不该把陈旧选区重新写进剪贴板
+    # (textual 每次 MouseUp 都发 TextSelected, 只看"有没有选区"会静默覆盖用户刚复制的东西)
+    app = _chat_app(5)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        y = f.content_region.y
+        await _drag_select(pilot, app, f.content_region.x + 1, y, f.content_region.x + 5, y)
+        assert len(copied) == 1
+
+        await pilot.press("y")  # 复制整条样本 JSON: 剪贴板现在归 y 管
+        await pilot.pause()
+        assert len(copied) == 2
+
+        t = app.query_one("#table")  # 拖表头分隔线改列宽 (选区没动)
+        ci = app._visible_columns().index("turns")
+        x = _divider_x(app, ci) + t.content_region.x
+        await _drag_select(pilot, app, x, t.content_region.y, x + 6, t.content_region.y)
+        assert len(copied) == 2  # 没有第三次: 剪贴板还是 y 复制的样本
+
+
+@pytest.mark.asyncio
+async def test_double_click_copies_whole_field_once():
+    # 双击选整块 -> 恰好复制一次 (两次松手 + select-all 三条路径不能各复制一遍)
+    app = _chat_app(3)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        await pilot.double_click(f, offset=(1, 0))
+        await pilot.pause()
+        await pilot.pause()
+        assert copied == [app.screen.get_selected_text()]
+        assert copied[0].startswith("[user]")  # 整个字段块, 不是点到的那一行
+
+
+@pytest.mark.asyncio
+async def test_scrollbar_drag_does_not_replay_copy():
+    # 拖详情滚动条会让 textual 重算选区偏移并照发 TextSelected, 但那不是一次拖选
+    rows = [{"messages": [{"role": "user", "content": "\n".join(f"line{i}" for i in range(80))}]}]
+    app = _make_app(rows)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        y = f.content_region.y + 1
+        await _drag_select(pilot, app, f.content_region.x + 1, y, f.content_region.x + 5, y)
+        assert len(copied) == 1
+
+        detail = app.query_one("#detail")
+        assert detail.scrollbars_enabled[0]  # 真有滚动条
+        sb = detail.vertical_scrollbar
+        await _drag_select(pilot, app, sb.region.x, sb.region.y + 1, sb.region.x, sb.region.y + 8)
+        assert len(copied) == 1  # 滚动条拖动不重放复制
