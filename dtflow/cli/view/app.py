@@ -14,6 +14,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -1815,13 +1816,17 @@ class ViewApp(App):
         选中不自动复制 —— 拖选也是"看"的手段 (对照两处字段、量一段长度都会顺手拖),
         自动复制会把剪贴板搅成拖动记录。
 
-        没选区时必须自己给个回应: ctrl+c 在 app 上只存得下一条绑定, 我们这条顶掉了
-        textual 自带的 help_quit ("按 q 退出"的提示), SkipAction 也没有第二条可接力 ——
-        按 ctrl+c 的两种意图 (想复制 / 反射性地想退出) 都在这句提示里答复, 否则界面毫无
-        反应, 用户会以为卡死。
+        没有屏幕选区时分两种去处:
+        - 焦点在输入框且框里有选中 (搜索词、筛选表达式) —— 抛 SkipAction 交回 Input 自己的
+          复制。SkipAction 对同一 node 上被顶掉的绑定无效, 但 Input 是另一个 node, 接得住。
+        - 否则自己答复一句: ctrl+c 在 app 上只存得下一条绑定, 我们这条顶掉了 textual 自带的
+          help_quit ("按 q 退出"的提示), 静默会让反射性按 ctrl+c 想退出的人以为卡死。
         """
         text = self.screen.get_selected_text()
         if not text:
+            focused = self.focused
+            if isinstance(focused, Input) and focused.selected_text:
+                raise SkipAction()
             self.notify("没有选中内容: 详情区拖选文本后再按 Ctrl+c 复制 · 退出按 q")
             return
         used = self._copy_clipboard(text)

@@ -2742,3 +2742,49 @@ async def test_split_double_click_restores_default():
         await pilot.click(table, offset=(5, table.region.height - 1), times=2)
         await pilot.pause()
         assert app._split == app.SPLIT_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_in_input_copies_input_selection():
+    # 焦点在搜索/筛选输入框且框里有选中时, Ctrl+c 归 Input 自己的复制, 别被 app 这条绑定吃掉
+    app = _chat_app(3)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("slash")  # 打开搜索 prompt
+        await pilot.pause()
+        prompt = app.query_one("#prompt")
+        prompt.value = "abc"
+        prompt.action_home()
+        prompt.action_cursor_right(select=True)
+        prompt.action_cursor_right(select=True)
+        await pilot.pause()
+        assert prompt.selected_text == "ab"
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.clipboard == "ab"  # Input.action_copy 走的是 app.copy_to_clipboard
+        assert not [n for n in app._notifications if "没有选中内容" in n.message]
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_in_value_filter_search_copies_selection():
+    # 值筛选面板的搜索框同理 (它也是 Input, 只是在模态屏里)
+    app = _chat_app(6)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        box = app.screen.query_one("#vf-search")
+        box.value = "xy"
+        box.action_home()
+        box.action_cursor_right(select=True)
+        await pilot.pause()
+        assert box.selected_text == "x"
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.clipboard == "x"
+        assert not [n for n in app._notifications if "没有选中内容" in n.message]
