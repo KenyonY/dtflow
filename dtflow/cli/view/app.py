@@ -26,7 +26,8 @@ from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
-from . import render
+from . import render, scan
+from .scan import ScanSpec, compile_search
 
 
 def _fmt_num(x: float) -> str:
@@ -36,103 +37,9 @@ def _fmt_num(x: float) -> str:
     return f"{x:.2f}"
 
 
-def _compile_atom(expr: str, fmt: str):
-    """编译单个条件 ``字段 运算符 值`` → predicate(row)->bool。
-
-    字段直接用表格里看到的列名 (turns/roles/chars/source 等):
-    - 若是**派生列** (计算列, 无字段路径, 如 chars/turns/first_user) → 按该列的值比较;
-      ``~=`` (包含) 匹配未截断的完整文本, 不是表格里那 80 字的预览。
-    - 否则当**真实字段路径**交给 _parse_where (标量列名 source, 或深层 messages.#>=2)。
-    """
-    import operator
-
-    from ..sample import _parse_where
-
-    ops = [
-        (">=", operator.ge),
-        ("<=", operator.le),
-        ("!=", operator.ne),
-        # 包含; 必须排在 "=" 之前。不区分大小写, 与 _parse_where、/ 搜索、值面板搜索框一致
-        ("~=", lambda cell, v: v.lower() in cell.lower()),
-        ("==", operator.eq),
-        (">", operator.gt),
-        ("<", operator.lt),
-        ("=", operator.eq),
-    ]
-    field = op = value = None
-    token = ""
-    for token, _op in ops:
-        if token in expr:
-            field, _, value = expr.partition(token)
-            op = _op
-            break
-    field_s = (field or "").strip()
-    if field_s not in render.derived_columns(fmt):
-        return _parse_where(expr)  # 标量列名 / 深层字段路径, 走原生解析
-
-    col = field_s
-    value = (value or "").strip()
-    if token == "~=":  # 包含永远是字符串语义, 不能把 "2000" 当数字比
-        numeric, cmp_value = False, value
-    else:
-        try:
-            cmp_value = float(value)
-            numeric = True
-        except ValueError:
-            cmp_value = value
-            numeric = False
-    # 包含筛选要看全文 (预览只有 80 字, 截断会静默漏掉靠后的关键词)
-    preview = token != "~="
-
-    def predicate(row) -> bool:
-        if not isinstance(row, dict):
-            return False
-        cell = render.row_cells(0, row, fmt, [col], preview=preview)[0]
-        if cell == "":
-            return False
-        if numeric:
-            try:
-                return op(float(cell), cmp_value)
-            except (ValueError, TypeError):
-                return False
-        return op(str(cell), str(cmp_value))
-
-    return predicate
-
-
-def _compile_where(expr: str, fmt: str):
-    """把筛选表达式编译成 predicate(row)->bool, 支持 ``and``/``or`` 多条件组合。
-
-    用带空格的 `` and `` / `` or `` 分隔 (避免误伤值内子串如 source==android);
-    ``and`` 优先级高于 ``or`` (标准语义, 不支持括号)。每个子条件形如 ``列名 运算符 值``,
-    列名取表头所见 —— 这样 ``turns>=6 and chars<2000`` 这类多列筛选直接可写。
-
-    不支持括号是刻意的: 需要 ``(a or b) and (c or d)`` 时改用多条 where
-    (TUI 内连按两次 f, 命令行传两个 --where), 多条之间是 AND。
-    """
-    or_groups = []
-    for or_part in re.split(r"\s+or\s+", expr, flags=re.IGNORECASE):
-        ands = [
-            _compile_atom(a.strip(), fmt)
-            for a in re.split(r"\s+and\s+", or_part, flags=re.IGNORECASE)
-        ]
-        or_groups.append(ands)
-
-    def predicate(row) -> bool:
-        return any(all(p(row) for p in ands) for ands in or_groups)
-
-    return predicate
-
-
-def compile_search(text: str) -> Pattern:
-    """搜索词 → 正则。默认按字面子串 (转义), ``re:`` 前缀走正则; 一律不分大小写。
-
-    编译出的 pattern 同时用于两处, 必须同源: 筛选出命中子集, 以及给命中处画黄底。
-    非法正则原样抛 re.error, 由调用方提示用户。
-    """
-    if text.startswith("re:"):
-        return re.compile(text[3:], re.IGNORECASE)
-    return re.compile(re.escape(text), re.IGNORECASE)
+# 表达式/搜索词的编译与扫描调度统一收在 scan 里 (主进程与扫描子进程同源); 这里保留
+# 旧名 _compile_where, 它是 view 内被直接引用的老入口。
+_compile_where = scan.compile_where
 
 
 class FastDataTable(DataTable):
@@ -775,10 +682,14 @@ class ViewApp(App):
         # 统一约束模型: 子集 = 全文件中满足 (搜索 且 每条 where 且 每列值约束) 的行, 再按排序键排。
         # 三类约束分开存而不是塞进一个槽: 各自可独立增删/回显, 且能逐条翻译成 --where 复现。
         self._col_value_filters: Dict[str, set] = {}  # 列 → 保留值集 (故某列可反复调整/加回)
-        self._where_specs: List[Tuple[str, Callable]] = []  # [(原始表达式, predicate)], 多条 AND
+        self._wheres: List[str] = []  # where 表达式原文, 多条 AND (谓词由 spec 现编, 不另存)
         self._search_text: Optional[str] = None  # 原始搜索词 (含 re: 前缀), 供复现命令
         self._search_re: Optional[Pattern] = None  # 编译后的 pattern: 既筛选也用于高亮
         self._sort_spec: Optional[Tuple[str, bool]] = None  # (列名, 是否降序)
+        # 已落地的约束 spec + 由它编译的谓词: 前者用于判断新约束是不是"收紧"(可只扫子集),
+        # 后者供 follow 增量行复用 (不必每行重编译)
+        self._applied_spec: Optional[ScanSpec] = None
+        self._row_ok: Optional[Callable] = None
         self._scan_cancel: Optional[object] = None  # 扫描中的取消 Event (threading.Event)
         self._scan_gen = 0  # 扫描代次: 迟到的结果靠它作废 (详见 _scan_superseded)
         self._scan_rollback = None  # 本次扫描发起前的约束快照 (取消/失败时退回)
@@ -924,7 +835,7 @@ class ViewApp(App):
         return (
             self._search_text,
             self._search_re,
-            list(self._where_specs),
+            list(self._wheres),
             {c: set(v) for c, v in self._col_value_filters.items()},
             self._sort_spec,
         )
@@ -941,7 +852,7 @@ class ViewApp(App):
         (
             self._search_text,
             self._search_re,
-            self._where_specs,
+            self._wheres,
             self._col_value_filters,
             self._sort_spec,
         ) = self._scan_rollback
@@ -949,27 +860,18 @@ class ViewApp(App):
 
     def _has_filters(self) -> bool:
         """是否存在"筛掉行"的约束 (排序不算 —— 它只重排, 不改变行集)。"""
-        return bool(self._search_re or self._where_specs or self._col_value_filters)
+        return bool(self._search_text or self._wheres or self._col_value_filters)
 
-    def _filter_pred(self) -> Optional[Callable]:
-        """搜索 + 各条 where 合成的单个 predicate; 都没有则 None。
+    def _spec(self) -> ScanSpec:
+        """当前约束的不可变快照。扫描、跨进程传递、"是否收紧"的比较都以它为准。"""
+        return scan.make_spec(
+            self.fmt, self._search_text, self._wheres, self._col_value_filters, self._sort_spec
+        )
 
-        值约束不并进来: 值面板算候选值时要排除"本列"的约束, 那里只能用这个部分谓词。
-        """
-        pat, wheres = self._search_re, [p for _, p in self._where_specs]
-
-        def matches_search(row) -> bool:
-            # 搜整条记录而非表格列: 列只是派生摘要, 搜不到 assistant 回复和后续轮次。
-            # 也因此与隐藏列无关 —— 折叠一列不该悄悄改变搜索范围。
-            return bool(pat.search(render.row_text(row)))
-
-        if pat is None and not wheres:
-            return None
-        if pat is None:
-            return lambda row: all(w(row) for w in wheres)
-        if not wheres:
-            return matches_search
-        return lambda row: matches_search(row) and all(w(row) for w in wheres)
+    def _commit_spec(self, spec: ScanSpec) -> None:
+        """扫描结果落地时记下这一版约束 (供下次判断收紧) 并编译好谓词 (供 follow 增量行)。"""
+        self._applied_spec = spec
+        self._row_ok = scan.build_row_ok(spec)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -1003,7 +905,8 @@ class ViewApp(App):
         empty = self._constraints_snapshot()
         for expr in self._init_where:
             try:
-                self._where_specs.append((expr, _compile_where(expr, self.fmt)))
+                _compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
+                self._wheres.append(expr)
             except ValueError as e:
                 self.notify(escape(f"--where {expr}: {e}"), severity="error")
         if self._init_search:
@@ -1369,6 +1272,7 @@ class ViewApp(App):
                 f"[green]{escape(self._filter_label)}: "
                 f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]"
             )
+            parts.append("[dim]r 清筛选[/dim]")
         if seq_total > win and self.source.total_known:  # 多窗口
             parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}")
             parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
@@ -1409,15 +1313,10 @@ class ViewApp(App):
         self.notify(escape(f"追尾读取失败: {message}"), severity="error", timeout=10)
 
     def _row_matches_constraints(self, row) -> bool:
-        if not isinstance(row, dict):
-            return False
-        pred = self._filter_pred()
-        if pred is not None and not pred(row):
-            return False
-        for col, kept in self._col_value_filters.items():
-            if render.row_cells(0, row, self.fmt, [col])[0] not in kept:
-                return False
-        return True
+        """follow 新行是否落进当前子集。谓词取已落地那版 (轮询与扫描互斥, 二者一致)。"""
+        if self._row_ok is None:
+            return isinstance(row, dict)
+        return self._row_ok(row)
 
     def _on_follow_update(self, update) -> None:
         self._follow_polling = False
@@ -1728,29 +1627,6 @@ class ViewApp(App):
                 self._follow_sort_snapshot = True
             self._recompute_subset(snap)
 
-    def _sort_keyfn(self) -> Optional[Callable]:
-        """按排序列取键 ``keyfn(全局行号, 行)``: 数值优先 (0, float), 非数值退化为 (1, str)。
-
-        分层元组保证数值行整体排在字符串行之前, 不会 float 与 str 相比报错。
-        ``#`` 列必须用传进来的全局行号: 它是"第几行"这一事实, 不在行数据里
-        (row_cells 拿到的 # 恒为占位值), 按它排会全部同键 → 扫了一遍却纹丝不动。
-        """
-        if self._sort_spec is None:
-            return None
-        col = self._sort_spec[0]
-        fmt = self.fmt
-
-        def keyfn(idx: int, row):
-            if col == "#":
-                return (0, float(idx), "")
-            v = render.row_cells(0, row, fmt, [col])[0] if isinstance(row, dict) else ""
-            try:
-                return (0, float(v), "")
-            except (ValueError, TypeError):
-                return (1, 0.0, str(v))
-
-        return keyfn
-
     def action_reset(self) -> None:
         """清除所有约束 (搜索/where/列值/排序), 回到文件开头的原始顺序浏览。
 
@@ -1764,8 +1640,10 @@ class ViewApp(App):
         self._scan_gen += 1  # 它的结果就此作废
         self._end_scan()
         self._scan_rollback = None  # 已经清空到底, 无需回滚
+        self._applied_spec = None
+        self._row_ok = None
         self._col_value_filters = {}
-        self._where_specs = []
+        self._wheres = []
         self._search_text = None
         self._search_re = None
         self._sort_spec = None
@@ -1776,9 +1654,9 @@ class ViewApp(App):
             self._follow_pinned = True
             self._follow_pending = 0
             self._load_follow_latest()
+            self._rebuild_columns()  # 清列头 ▾ 标记 + 清单元格高亮
         else:
-            self._load_window(0)
-        self._rebuild_columns()  # 清列头 ▾ 标记 + 清单元格高亮
+            self._load_window(0, rebuild_columns=True)
         self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
 
     # ------------------------------------------------------------------ #
@@ -1853,7 +1731,7 @@ class ViewApp(App):
         skipped: List[str] = []
         if self._follow:
             skipped.append("实时模式只复现观察条件，不固定历史字节快照")
-        wheres = [e for e, _ in self._where_specs]
+        wheres = list(self._wheres)
         for col, kept in self._col_value_filters.items():
             bad = [v for v in kept if self._UNSAFE_VALUE.search(v)]
             if bad:
@@ -2005,7 +1883,7 @@ class ViewApp(App):
         params = {
             "format": self.fmt,
             "search": self._search_text,
-            "where": [e for e, _ in self._where_specs],
+            "where": list(self._wheres),
             "value_filters": {c: sorted(v) for c, v in self._col_value_filters.items()},
             "sort": self._sort_label,
             "scope": self._export_scope()[0],
@@ -2042,11 +1920,14 @@ class ViewApp(App):
     # ------------------------------------------------------------------ #
     # 大文件窗口翻页 (偏移索引 → 任意位置秒开, 内存 O(窗口))
     # ------------------------------------------------------------------ #
-    def _load_window(self, offset: int) -> None:
+    def _load_window(self, offset: int, rebuild_columns: bool = False) -> None:
         """加载"当前浏览序列"中以位置 offset 为起点的窗口, 重置排序并重填表格。
 
         原始态: 位置即文件行号, 走 source.window 顺序读。
         子集态: 位置为子集内序号, 取 subset[offset:] 的全局行号经 rows_at 拉取。
+        rebuild_columns: 调用方还要清/改列头 (筛选的 ▾ 标记、命中高亮) 时置位 —— 让列头
+        与行在同一趟里重建。否则填完一遍表再 _rebuild_columns() 又清空重填, 一万行的窗口
+        白白多花一倍时间。
         """
         if self._follow and self._follow_sort_snapshot and self._subset is None:
             # 轮转后旧排序快照的全局索引已经不再指向当前文件；当前可见窗口仍安全，
@@ -2088,7 +1969,9 @@ class ViewApp(App):
         self.all_rows = rows
         self._global_nos = nos
         self.view_indices = list(range(len(rows)))
-        if self._merge_columns(rows) or self._row_number_width_changed():
+        # _merge_columns 有副作用 (并入新列), 不能被 rebuild_columns 短路掉
+        columns_changed = self._merge_columns(rows) or self._row_number_width_changed()
+        if rebuild_columns or columns_changed:
             self._rebuild_columns()
         else:
             self._populate()
@@ -2320,11 +2203,11 @@ class ViewApp(App):
             return
         snap = self._constraints_snapshot()
         try:
-            fn = _compile_where(expr, self.fmt)
+            _compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
         except ValueError as e:
             self.notify(escape(str(e)), severity="error")
             return
-        self._where_specs.append((expr, fn))
+        self._wheres.append(expr)
         self._recompute_subset(snap)
 
     # ------------------------------------------------------------------ #
@@ -2336,7 +2219,7 @@ class ViewApp(App):
         parts = []
         if self._search_text:
             parts.append(f"搜索'{self._search_text}'")
-        parts += [f"筛选'{e}'" for e, _ in self._where_specs]
+        parts += [f"筛选'{e}'" for e in self._wheres]
         parts += [f"{c}∈{len(v)}值" for c, v in self._col_value_filters.items()]
         return " · ".join(parts)
 
@@ -2347,71 +2230,53 @@ class ViewApp(App):
         (状态已经改过, 屏幕却停在旧子集)。
         rollback: 改约束之前的快照; 扫描被取消或失败时退回它 (见 _rollback_constraints)。
         """
-        pred = self._filter_pred()
-        colf = {c: set(v) for c, v in self._col_value_filters.items()}
-        fmt = self.fmt
+        spec = self._spec()
         label = self._constraint_label()
         # 排序也算"需要扫描"的理由: 无筛选但要排序时, 子集 = 全部行号按键重排
-        if pred is None and not colf and self._sort_spec is None:
+        if not spec.has_filters and spec.sort_col is None:
             self._subset = None
             self._filter_label = None
+            self._applied_spec = None
+            self._row_ok = None
             if self._follow:
                 self._follow_pinned = True
                 self._follow_sort_snapshot = False
                 self._load_follow_latest()
+                self._rebuild_columns()  # 清列头标记
             else:
-                self._load_window(0)
-            self._rebuild_columns()  # 清列头标记
+                self._load_window(0, rebuild_columns=True)
             return
 
-        def row_ok(row) -> bool:
-            if not isinstance(row, dict):
-                return False
-            if pred is not None and not pred(row):
-                return False
-            for c, kept in colf.items():
-                if render.row_cells(0, row, fmt, [c])[0] not in kept:
-                    return False
-            return True
-
-        self._start_subset_scan(row_ok, label, rollback, preserve_window=preserve_window)
+        self._start_subset_scan(spec, label, rollback, preserve_window=preserve_window)
 
     def _start_subset_scan(
-        self, row_ok, label: str, rollback=None, preserve_window: bool = False
+        self, spec: ScanSpec, label: str, rollback=None, preserve_window: bool = False
     ) -> None:
+        """扫出满足 spec 的行号。新约束只是把旧约束收紧时, 只扫现有子集, 不重读文件。"""
         cancel, gen = self._begin_scan()
         self._scan_rollback = rollback
-        keyfn = self._sort_keyfn()
-        desc = bool(self._sort_spec and self._sort_spec[1])
-        self._set_scan_msg("准备全量扫描 (Esc 取消)")
+        base = scan.refine_base(self._applied_spec, spec, self._subset, self.source.total)
+        self._set_scan_msg(
+            "准备收紧子集 (Esc 取消)" if base is not None else "准备全量扫描 (Esc 取消)"
+        )
+
+        def progress(done: int, total: int) -> None:
+            if not self._scan_superseded(gen):
+                self.call_from_thread(self._set_scan_msg, f"扫描中 {done}/{total} (Esc 取消)")
 
         def worker():
-            if not self._prepare_full_scan(cancel):
-                return self._on_subset_scan_done, (None, label, True, gen, preserve_window)
-            total = self.source.total
-            self.call_from_thread(self._set_scan_msg, f"扫描中 0/{total} (Esc 取消)")
-            matches: List[int] = []
-            keys: List = []
-            for i, row in enumerate(self.source.iter_all()):
-                if cancel.is_set():
-                    return self._on_subset_scan_done, (None, label, True, gen, preserve_window)
-                try:
-                    if row_ok(row):
-                        matches.append(i)
-                        if keyfn is not None:
-                            keys.append(keyfn(i, row))  # i 是全局行号, # 列排序靠它
-                except Exception:  # noqa: BLE001  单行畸形不该中断整轮扫描
-                    pass
-                if i % 5000 == 0:
-                    self.call_from_thread(
-                        self._set_scan_msg,
-                        f"扫描中 {i + 1}/{total} · 命中 {len(matches)} (Esc 取消)",
-                    )
-            if keyfn is not None:
-                # sort 是稳定的 → 键相同的行保持原文件顺序, 结果可复现
-                order = sorted(range(len(matches)), key=lambda j: keys[j], reverse=desc)
-                matches = [matches[j] for j in order]
-            return self._on_subset_scan_done, (matches, label, False, gen, preserve_window)
+            cancelled = (None, spec, label, True, gen, preserve_window)
+            if base is None:
+                if not self._prepare_full_scan(cancel):
+                    return self._on_subset_scan_done, cancelled
+                matches = scan.scan_rows(self.source, spec, progress=progress, cancel=cancel)
+            else:
+                matches = scan.refine_rows(
+                    self.source, base, spec, progress=progress, cancel=cancel
+                )
+            if matches is None:
+                return self._on_subset_scan_done, cancelled
+            return self._on_subset_scan_done, (matches, spec, label, False, gen, preserve_window)
 
         self._run_scan(worker, gen)
 
@@ -2432,7 +2297,13 @@ class ViewApp(App):
         return self.source.ensure_index(progress_cb=progress, cancel=cancel)
 
     def _on_subset_scan_done(
-        self, matches, label: str, cancelled: bool, gen: int, preserve_window: bool = False
+        self,
+        matches,
+        spec: ScanSpec,
+        label: str,
+        cancelled: bool,
+        gen: int,
+        preserve_window: bool = False,
     ) -> None:
         if self._scan_superseded(gen):
             return  # 期间已被 r 重置或新扫描取代: 丢弃, 否则会把清掉的筛选复活
@@ -2445,29 +2316,36 @@ class ViewApp(App):
             self._rebuild_columns()  # 值筛选的 ▾ 标记随之回退
             return
         self._scan_rollback = None  # 结果落地: 约束就此提交
-        self._subset = matches  # 可能为空 (0 命中)
-        self._filter_label = label or None
         if preserve_window:
             # 轮转时旧尾窗仍留在屏幕上；新代次的筛选索引只接管之后的导航与增量行。
+            self._subset = matches
+            self._filter_label = label or None
+            self._commit_spec(spec)
             self.win_offset = max(0, len(matches) - len(self.all_rows))
             self._update_status()
             self.notify(escape(f"日志轮转后已刷新筛选索引（当前文件命中 {len(matches)} 行）"))
             return
+        self._commit_subset(matches, label, spec)
+        if not label:  # 纯排序 (无筛选): 行集没变, 说排序而不是"命中"
+            self.notify(escape(f"已按 {self._sort_label} 全量排序 ({len(matches)} 行)"))
+        elif matches:
+            self.notify(escape(f"{label}: {len(matches)} 命中 (全量) · r 清筛选"))
+        else:
+            self.notify(escape(f"{label}: 0 命中 (r 重置, 或点列头/F 放宽该列)"))
+
+    def _commit_subset(self, matches: List[int], label: str, spec: ScanSpec) -> None:
+        """子集落地: 记下这一版约束, 定位到窗口并刷新列头标记。"""
+        self._subset = matches  # 可能为空 (0 命中)
+        self._filter_label = label or None
+        self._commit_spec(spec)
         start = 0
         if self._follow and self._sort_spec is None:
             start = max(0, len(matches) - self.cap)
-        self._load_window(start)
-        self._rebuild_columns()  # 刷新列头标记 (值筛选列加 ▾) + 单元格高亮
+        self._load_window(start, rebuild_columns=True)  # 列头标记 (▾) 与命中高亮同趟重建
         if self._follow and self._sort_spec is None and self.view_indices:
             self._follow_moving = True
             self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
             self.call_after_refresh(self._unlock_follow_move)
-        if not label:  # 纯排序 (无筛选): 行集没变, 说排序而不是"命中"
-            self.notify(escape(f"已按 {self._sort_label} 全量排序 ({len(matches)} 行)"))
-        elif matches:
-            self.notify(escape(f"{label}: {len(matches)} 命中 (全量)"))
-        else:
-            self.notify(escape(f"{label}: 0 命中 (r 重置, 或点列头/F 放宽该列)"))
 
     # ------------------------------------------------------------------ #
     # 列快照: 对当前浏览序列的某列给一行 n·min·max·mean·非空率 (即时决策用)
@@ -2503,8 +2381,6 @@ class ViewApp(App):
     # 唯一值再多也不拒绝筛选 (候选值已截断 ≤80 字符, 内存有界); 渲染开销由
     # ValueFilterScreen._MAX_SHOW 兜底 —— 只显示前 N 项, 搜索框仍在全量值上过滤。
     def _start_value_scan(self, col: str) -> None:
-        from collections import Counter
-
         col = col.strip()
         if col == "#":
             self.notify("行号列不支持值筛选")
@@ -2516,51 +2392,37 @@ class ViewApp(App):
             return
         if self._busy():
             return
-        fmt = self.fmt
-        expr = self._filter_pred()  # 搜索 + 各条 where
         # 关键: 算该列候选值时应用"除本列外"的其他约束 → 本列自己筛掉的值仍在列表里, 可加回
-        other = {c: set(v) for c, v in self._col_value_filters.items() if c != col}
+        spec = self._spec().without_column(col)
         cancel, gen = self._begin_scan()
         self._set_scan_msg(f"准备扫描 {col} 值 (Esc 取消)")
 
+        def progress(done: int, total: int) -> None:
+            if not self._scan_superseded(gen):
+                self.call_from_thread(
+                    self._set_scan_msg, f"扫描 {col} 值 {done}/{total} (Esc 取消)"
+                )
+
         def worker():
             if not self._prepare_full_scan(cancel):
-                return self._on_value_scan_done, (col, None, "cancelled", gen)
-            total = self.source.total
-            self.call_from_thread(self._set_scan_msg, f"扫描 {col} 值 0/{total} (Esc 取消)")
-            counts: Counter = Counter()
-            n = 0
-            for row in self.source.iter_all():
-                if cancel.is_set():
-                    return self._on_value_scan_done, (col, None, "cancelled", gen)
-                n += 1
-                if n % 5000 == 0:
-                    self.call_from_thread(
-                        self._set_scan_msg, f"扫描 {col} 值 {n}/{total} (Esc 取消)"
-                    )
-                if not isinstance(row, dict):
-                    continue
-                if expr is not None and not expr(row):
-                    continue
-                if any(
-                    render.row_cells(0, row, fmt, [c])[0] not in kept for c, kept in other.items()
-                ):
-                    continue
-                counts[render.row_cells(0, row, fmt, [col])[0]] += 1
-            return self._on_value_scan_done, (col, counts, "ok", gen)
+                return self._on_value_scan_done, (col, spec, None, gen)
+            value_rows = scan.scan_values(self.source, col, spec, progress=progress, cancel=cancel)
+            return self._on_value_scan_done, (col, spec, value_rows, gen)
 
         self._run_scan(worker, gen)
 
-    def _on_value_scan_done(self, col, counts, status: str, gen: int) -> None:
+    def _on_value_scan_done(self, col: str, spec: ScanSpec, value_rows, gen: int) -> None:
         if self._scan_superseded(gen):
             return  # 期间已被 r 重置或新扫描取代
         self._end_scan()
         self._rebase_tail_after_index()
         self._update_status()
-        if status == "cancelled":
+        if value_rows is None:
             self.notify("已取消扫描")
             return
-        items = counts.most_common()  # [(值, 频次)] 按频次降序
+        # 值 → 行号表随闭包留给 apply: 勾完 (其他约束没变且未排序) 直接拼子集, 免二次全扫
+        items = sorted(value_rows.items(), key=lambda kv: -len(kv[1]))  # [(值, 频次)] 频次降序
+        items = [(v, len(rows)) for v, rows in items]
         total = len(items)
         prior = self._col_value_filters.get(col)  # 上次保留集 (None=该列未筛→默认全选)
 
@@ -2575,12 +2437,34 @@ class ViewApp(App):
             snap = self._constraints_snapshot()
             if len(selected) == total:  # 全选 = 清除该列筛选 (Excel 语义)
                 self._col_value_filters.pop(col, None)
+                picked = value_rows.keys()
             else:
                 self._col_value_filters[col] = selected
+                picked = selected
+            if self._apply_value_rows(col, spec, value_rows, picked):
+                return
             self._recompute_subset(snap)
 
         anchor = self._column_anchor(col)
         self.push_screen(ValueFilterScreen(col, items, total, prior, anchor), apply)
+
+    def _apply_value_rows(self, col: str, spec: ScanSpec, value_rows, picked) -> bool:
+        """用刚扫出来的 值→行号表 直接拼出子集; 前提不成立时返回 False 交给全量重算。
+
+        成立条件: 其他约束与扫这张表时一模一样 (否则表已过期), 且没有排序 (排序键不在表里)。
+        """
+        new_spec = self._spec()
+        if (
+            not new_spec.has_filters
+            or new_spec.sort_col is not None
+            or new_spec.without_column(col) != spec
+        ):
+            return False
+        matches = scan.merge_value_rows(value_rows, picked)
+        self._commit_subset(matches, self._constraint_label(), new_spec)
+        label = self._filter_label or ""
+        self.notify(escape(f"{label}: {len(matches)} 命中 (全量) · r 清筛选"))
+        return True
 
     def _column_anchor(self, col: str):
         """被点列头正下方的屏幕坐标 (x, y), 供值面板贴着该列弹出; 拿不到则 None (居中)。"""

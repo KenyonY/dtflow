@@ -145,7 +145,49 @@ async def test_value_filter_stacks_with_expr():
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(0, 30, 2))
-        assert app._where_specs and app._col_value_filters == {"source": {"b"}}
+        assert app._wheres and app._col_value_filters == {"source": {"b"}}
+
+
+@pytest.mark.asyncio
+async def test_value_apply_skips_second_scan():
+    # 点列头扫一遍值就够了: 勾选确定时直接用扫出来的 值→行号表 拼子集, 不再扫第二遍文件
+    from dtflow.cli.view import scan
+
+    app = _chat_app(30)
+    async with app.run_test() as pilot:
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        calls = []
+        orig = scan.scan_rows
+        scan.scan_rows = lambda *a, **k: calls.append(1) or orig(*a, **k)
+        try:
+            app.screen.dismiss({"b"})
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        finally:
+            scan.scan_rows = orig
+        assert calls == []  # 一次都没重扫
+        assert app._subset == list(range(0, 30, 2))
+        assert app._col_value_filters == {"source": {"b"}}
+
+
+@pytest.mark.asyncio
+async def test_refined_subset_equals_full_rescan():
+    # 叠加条件走"只扫旧子集"这条路, 结果必须与全量重扫逐位相同
+    from dtflow.cli.view import scan
+
+    app = _chat_app(30)
+    async with app.run_test() as pilot:
+        app._apply_filter("source==a")  # 奇数 idx, 15 条 = 全量的一半
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._applied_spec is not None
+        app._apply_filter("chars>=2")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._subset == scan.scan_rows(app.source, app._applied_spec)
+        assert app._subset  # 非空, 否则这条用例是空跑
 
 
 @pytest.mark.asyncio
@@ -1280,7 +1322,7 @@ async def test_multiple_filters_stack_with_and():
         app._apply_filter("chars>=6")  # 再叠一条
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert len(app._where_specs) == 2
+        assert len(app._wheres) == 2
         assert app._subset == [i for i in range(1, 30, 2) if _chars(i) >= 6]
 
 
@@ -1297,7 +1339,7 @@ async def test_search_and_filter_do_not_overwrite_each_other():
         await pilot.pause()
         expected = [i for i in range(30) if i % 2 == 1 and "q1" in f"q{i}"]
         assert app._subset == expected  # 两个约束同时生效
-        assert app._where_specs and app._search_re is not None
+        assert app._wheres and app._search_re is not None
 
 
 @pytest.mark.asyncio
@@ -1502,7 +1544,7 @@ async def test_startup_bad_where_does_not_crash():
     app = ViewApp(src, src.window(0, 100), 0, 100, "openai_chat", "t.jsonl", where=["bad@@expr"])
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app._where_specs == []  # 非法条件不入约束
+        assert app._wheres == []  # 非法条件不入约束
 
 
 @pytest.mark.asyncio
@@ -1599,7 +1641,7 @@ async def test_filter_during_scan_is_refused_not_half_applied():
         await pilot.pause()
         assert app._scan_cancel is not None  # 扫描确实在跑
         app._apply_filter("id<5")  # 扫描中的第二条: 应被拒绝
-        assert [e for e, _ in app._where_specs] == ["id<100"]
+        assert app._wheres == ["id<100"]
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(app._subset) == 100
@@ -1631,7 +1673,7 @@ async def test_reset_during_scan_is_not_revived_by_late_result():
         await app.workers.wait_for_complete()
         for _ in range(5):
             await pilot.pause()  # 让迟到的完成回调有机会落地
-        assert app._subset is None and app._filter_label is None and app._where_specs == []
+        assert app._subset is None and app._filter_label is None and app._wheres == []
         assert app._scan_cancel is None  # 槽位已释放, 不会把后续操作卡死
         app._apply_filter("id<7")  # 重置后仍可正常使用
         await app.workers.wait_for_complete()
@@ -1677,7 +1719,7 @@ async def test_cancelled_filter_leaves_no_trace(tmp_path):
     app = _slow_app()
     async with app.run_test() as pilot:
         await _cancel_scan(app, pilot, ["f", *"id<100", "enter"])
-        assert app._where_specs == [] and app._subset is None
+        assert app._wheres == [] and app._subset is None
         cmd, _ = app._build_command()
         assert "id<100" not in cmd
         out = tmp_path / "o.jsonl"
@@ -1709,7 +1751,7 @@ async def test_cancelled_condition_is_not_silently_revived():
             await pilot.press(k)
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert [e for e, _ in app._where_specs] == ["id>=200"]
+        assert app._wheres == ["id>=200"]
         assert len(app._subset) == 100  # 200..299, 而非 id<100 and id>=200 的 0 命中
 
 
@@ -1771,7 +1813,7 @@ async def test_scan_worker_error_is_reported_not_fatal():
             await pilot.pause()
         assert app.is_running  # 没被打死
         assert app._scan_cancel is None  # 槽位没泄漏
-        assert app._where_specs == [] and app._subset is None  # 失败 → 回滚
+        assert app._wheres == [] and app._subset is None  # 失败 → 回滚
 
 
 @pytest.mark.asyncio

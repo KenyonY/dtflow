@@ -162,6 +162,11 @@ class RowSource:
     total: int = 0
     fully_indexed: bool = True
     follow: bool = False
+    path: Optional[Path] = None
+
+    def parallel_ranges(self, chunks: int):
+        """可并行扫描的字节分片 [(起始字节, 结束字节, 首行全局行号)]; 不支持返回 None。"""
+        return None
 
     @property
     def total_known(self) -> bool:
@@ -250,6 +255,31 @@ class _JsonlSource(RowSource):
             if not self.fully_indexed:
                 self._labels = array("q", range(-len(self._offsets), 0))
         self.total = len(self._offsets)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def parallel_ranges(self, chunks: int):
+        """按行号等分成 chunks 段, 换算成字节区间 —— 每段都从完整行首开始。
+
+        只在全量索引就绪后可用: 分片起点取自偏移表, 行号由此天然对齐, 子进程各扫各的
+        区间即可给出全局行号, 不必回传行内容。
+        """
+        with self._lock:
+            if not self.fully_indexed or self.total <= 0 or chunks < 1:
+                return None
+            n = min(chunks, self.total)
+            step = -(-self.total // n)  # 向上取整, 保证段数不超过 n
+            bounds = list(range(0, self.total, step)) + [self.total]
+            return [
+                (
+                    self._offsets[a],
+                    self._offsets[b] if b < self.total else self._read_end,
+                    a,
+                )
+                for a, b in zip(bounds[:-1], bounds[1:], strict=False)
+            ]
 
     @property
     def has_unindexed_history(self) -> bool:
