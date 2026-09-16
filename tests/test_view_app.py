@@ -2485,11 +2485,19 @@ def _mouse(app, cls, x, y):
     return cls(app.screen, **kwargs)
 
 
-async def _drag_select(pilot, app, x1, y1, x2, y2):
-    """按下 → 移动 → 松开 (pilot 没有拖拽 API, 按它内部的方式直接投事件)。"""
+async def _drag_select(pilot, app, x1, y1, x2, y2, steps=6):
+    """按下 → 逐格移动 → 松开 (pilot 没有拖拽 API, 按它内部的方式直接投事件)。
+
+    中间要走多步: 真实拖动每格都发一次 MouseMove, 而 textual 每次都按"当前这一帧渲染出来的
+    segment"反查坐标 —— 只投一次 move 的话, 一切与"渲染结果被选区改变"相关的错位都测不出来。
+    """
     from textual.events import MouseDown, MouseMove, MouseUp
 
-    for cls, x, y in ((MouseDown, x1, y1), (MouseMove, x2, y2), (MouseUp, x2, y2)):
+    moves = [
+        (MouseMove, x1 + round((x2 - x1) * i / steps), y1 + round((y2 - y1) * i / steps))
+        for i in range(1, steps + 1)
+    ]
+    for cls, x, y in [(MouseDown, x1, y1), *moves, (MouseUp, x2, y2)]:
         app.screen._forward_event(_mouse(app, cls, x, y))
         await pilot.pause()
 
@@ -2789,3 +2797,73 @@ async def test_ctrl_c_in_value_filter_search_copies_selection():
         await pilot.pause()
         assert app.clipboard == "x"
         assert not [n for n in app._notifications if "没有选中内容" in n.message]
+
+
+@pytest.mark.asyncio
+async def test_selection_highlight_keeps_text_readable():
+    # 选区高亮只改背景: screen--selection 的前景是"完全透明", 扁平成 rich style 后与背景同色,
+    # 整段叠上去会把文字涂没 (选中即看不见内容)
+    app = _make_app([{"messages": [{"role": "user", "content": "彩色文本 abcdef"}]}])
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        before = [(seg.text, seg.style.color) for seg in f.render_line(0)]
+        f.text_select_all()
+        await pilot.pause()
+        after = [(seg.text, seg.style.color) for seg in f.render_line(0)]
+        assert [c for _, c in after] == [c for _, c in before]  # 前景原样
+        sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
+        assert all(seg.style.bgcolor == sel_bg for seg in f.render_line(0) if seg.text)
+        assert all(seg.style.color != sel_bg for seg in f.render_line(0) if seg.text.strip())
+
+
+@pytest.mark.asyncio
+async def test_drag_onto_blank_line_stays_within_drag():
+    # 空行渲染成 0 个 segment, 没地方挂 offset —— 不补落点的话 textual 反查失败,
+    # 会把这一端退化成"整块全选": 只拖了两行, 却选中整个字段
+    rows = [{"messages": [{"role": "assistant", "content": "第一行\n\n第三行\n第四行\n第五行"}]}]
+    app = _make_app(rows)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        lines = f._plain_lines()
+        i = lines.index("第一行")
+        assert lines[i + 1] == ""  # 下一行确实是空行
+        y = f.content_region.y + i
+        await _drag_select(pilot, app, f.content_region.x + 2, y, f.content_region.x + 2, y + 1)
+        selected = app.screen.get_selected_text()
+        assert "第三行" not in selected and "第五行" not in selected
+        assert selected == "一行"  # 起点落在"第"之后, 终点是空行 —— 就这么多
+
+
+@pytest.mark.asyncio
+async def test_drag_select_tracks_mouse_across_steps():
+    # 真实拖动是一连串 MouseMove, textual 每次都按"当前帧渲染出的 segment"反查坐标:
+    # 高亮会把 segment 切成三段, 若沿用切之前的 offset, 后两段都自称从原 segment 起点开始,
+    # 选区就会越拖越短 (用户看到的"高亮从鼠标位置一路涂到行首")
+    from rich.cells import cell_len
+
+    text = "abcdefghijklmnopqrstuvwxyz0123456789"
+    app = _make_app([{"messages": [{"role": "user", "content": text}]}])
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        y = f.content_region.y + 1
+        base = f.content_region.x
+        sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
+
+        for x1, x2 in ((2, 20), (25, 8)):  # 正向 / 反向拖
+            app.screen.clear_selection()
+            await pilot.pause()
+            await _drag_select(pilot, app, base + x1, y, base + x2, y, steps=10)
+
+            strip = app.screen._compositor.render_strips()[y]
+            cells, start, end = 0, None, None
+            for seg in strip:  # 屏幕上真正被涂上选区底色的 cell 区间
+                if seg.style and seg.style.bgcolor == sel_bg:
+                    start = cells if start is None else start
+                    end = cells + cell_len(seg.text)
+                cells += cell_len(seg.text)
+            lo, hi = min(x1, x2), max(x1, x2) + 1  # 终点那格也算进选区
+            assert (start - base, end - base) == (lo, hi)
+            assert app.screen.get_selected_text() == text[lo:hi]

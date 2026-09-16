@@ -336,19 +336,27 @@ class _FieldStatic(Static):
         return selection.extract("\n".join(self._plain_lines())), "\n"
 
     def render_line(self, y: int) -> Strip:
-        strip = super().render_line(y).apply_offsets(0, y)  # 打 offset: 屏幕坐标→字符索引
+        strip = super().render_line(y)
+        if not strip:
+            # 空行 (段落之间的空白) 渲染成 0 个 segment, 没有 segment 就没地方挂 offset,
+            # textual 反查不到内容坐标就把这一端退化成"整块全选" —— 拖到一个空行, 选中的
+            # 却是整个字段。补一个空格撑住这行的落点。
+            strip = Strip([Segment(" ")], 1)
         selection = self.text_selection
-        if selection is None:
-            return strip
-        span = selection.get_span(y)
-        if span is None:
-            return strip
-        start, end = span
-        if end == -1:
-            end = len(strip.text)
-        return _style_chars(
-            strip, start, end, self.screen.get_component_rich_style("screen--selection")
-        )
+        span = None if selection is None else selection.get_span(y)
+        if span is not None:
+            start, end = span
+            if end == -1:
+                end = len(strip.text)
+            # 只叠背景: screen--selection 的前景是"完全透明"(意为不改前景), 扁平成 rich style
+            # 时会被解析成与背景同色, 整段叠上去等于把文字涂没了。textual 自己走 Visual 那条
+            # 路会保留原前景, 这里对齐它。
+            selection_bg = self.screen.get_component_rich_style("screen--selection").bgcolor
+            strip = _style_chars(strip, start, end, Style(bgcolor=selection_bg))
+        # offset 必须最后打, 且打在最终的 segment 划分上: 高亮会把一个 segment 切成三段,
+        # 沿用切之前的 offset 会让后两段都自称从原 segment 起点开始 —— 拖动中 textual 每次
+        # 反查坐标都读这些 meta, 于是越拖越偏 (高亮从鼠标位置一路涂到行首)。
+        return strip.apply_offsets(0, y)  # 打 offset: 屏幕坐标→字符索引
 
 
 def _fit_panel(screen, sl: SelectionList, chrome: int, hard_max: int) -> int:
