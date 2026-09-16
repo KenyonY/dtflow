@@ -247,6 +247,8 @@ _HELP = """[b]dt view 快捷键[/b]
   n / N        详情下/上一字段 (对话按条走: msg0/msg1…; 亦可鼠标点击选中)
   *            跳到详情中下一处搜索命中 (命中处画黄底)
   y            复制当前样本 JSON 到剪贴板
+  鼠标拖选     详情区按住左键拖选文本 (所见即所选, 自动换行处不错位), 松手即进剪贴板;
+                 双击选中整个字段块, 三击选整屏详情; Esc 或点一下清除选区
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
   w            导出当前浏览序列 (或多选选区) 到文件, 按扩展名定格式
                  .jsonl 流式写, 几十万行不占内存; 同时写血缘, dt history 可查来源与条件
@@ -280,8 +282,39 @@ _HELP = """[b]dt view 快捷键[/b]
 """
 
 
+def _style_chars(strip: Strip, start: int, end: int, style: Style) -> Strip:
+    """给 strip 的 [start, end) 字符区间叠加样式。
+
+    按字符切而不是按 cell (Strip.divide) 切: 选区坐标来自 apply_offsets, 那是字符索引空间,
+    宽字符 (中文) 下两者对不上, 按 cell 切会把选区高亮整体错位。
+    """
+    segments: List[Segment] = []
+    x = 0
+    for text, seg_style, control in strip:
+        n = len(text)
+        lo, hi = max(start - x, 0), min(end - x, n)
+        x += n
+        if lo >= hi:  # 整段在选区外
+            segments.append(Segment(text, seg_style, control))
+            continue
+        if lo:
+            segments.append(Segment(text[:lo], seg_style, control))
+        segments.append(Segment(text[lo:hi], (seg_style + style) if seg_style else style, control))
+        if hi < n:
+            segments.append(Segment(text[hi:], seg_style, control))
+    return Strip(segments, strip.cell_length)
+
+
 class _FieldStatic(Static):
-    """详情里的一个字段块。自己处理点击 (self 即被点字段, 无需坐标反查, 同 DataTable 选行)。"""
+    """详情里的一个字段块。自己处理点击 (self 即被点字段, 无需坐标反查, 同 DataTable 选行),
+    并支持鼠标拖选取词。
+
+    拖选: textual 靠渲染 segment 上的 meta["offset"] 把屏幕坐标反查成内容坐标, 而字段渲染的是
+    rich Group (角色标题 + 正文 + 搜索高亮), 这类 renderable 不带 offset —— 选区退化成"整块",
+    且默认 get_selection 只认 Text/Content, 取不出文本 (即 textual 原生拖选在这里是死的)。
+    这里把坐标空间直接定义为"渲染后的行/列": render_line 给每个 segment 打上 (字符索引, 行号),
+    get_selection 按同一套渲染行文本切片 —— 所见即所选, 自动换行/缩进也不会错位。
+    """
 
     def __init__(self, renderable, field_name: str):
         # 不设 id: remove_children 是异步卸载, 固定 id 会与新 mount 的 widget 撞 DuplicateIds
@@ -291,6 +324,32 @@ class _FieldStatic(Static):
     def on_click(self, event) -> None:
         self.app.select_detail_field(self)  # 通知 app 选中本字段
         event.stop()
+
+    # -------------------------------------------------------------- #
+    # 鼠标拖选 (松手即复制, 见 ViewApp.on_text_selected)
+    # -------------------------------------------------------------- #
+    def _plain_lines(self) -> List[str]:
+        """渲染行的纯文本; 行尾补白不是内容, 去掉免得复制出一串空格。"""
+        base = super().render_line  # 绕开本类的 offset/高亮加工, 拿原始渲染行
+        return [base(y).text.rstrip() for y in range(self.size.height)]
+
+    def get_selection(self, selection) -> Optional[Tuple[str, str]]:
+        return selection.extract("\n".join(self._plain_lines())), "\n"
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y).apply_offsets(0, y)  # 打 offset: 屏幕坐标→字符索引
+        selection = self.text_selection
+        if selection is None:
+            return strip
+        span = selection.get_span(y)
+        if span is None:
+            return strip
+        start, end = span
+        if end == -1:
+            end = len(strip.text)
+        return _style_chars(
+            strip, start, end, self.screen.get_component_rich_style("screen--selection")
+        )
 
 
 def _fit_panel(screen, sl: SelectionList, chrome: int, hard_max: int) -> int:
@@ -1683,6 +1742,22 @@ class ViewApp(App):
         driver = getattr(self, "_driver", None)
         if driver is not None:
             driver.write(self._clipboard_osc52(text))
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """覆盖 textual 的实现 (它发裸 OSC52, tmux 下被吞), 让内建的 ctrl+c 复制选区也走
+        这里的 passthrough 版本。"""
+        self._clipboard = text
+        self._copy_clipboard(text)
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        """详情区鼠标松手即复制选区 —— 拖完还要再按一次键才进剪贴板不合直觉。
+
+        表格区不参与 (DataTable 关了 textual 选择: 拖拽在那里是改列宽/选行), 整条样本用 y。
+        """
+        text = self.screen.get_selected_text()
+        if text:
+            self._copy_clipboard(text)
+            self.notify(f"已复制选中的 {len(text)} 字符")
 
     def _copy_samples(self, positions) -> None:
         """把 view_indices 中若干位置的样本按 NDJSON (每行一条) 复制到剪贴板。"""

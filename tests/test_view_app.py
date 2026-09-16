@@ -2462,3 +2462,135 @@ async def test_divider_position_follows_horizontal_scroll():
         line = t.render_line(0).text
         for x in xs:
             assert line[x] == FastDataTable.DIVIDER
+
+
+# ---------------------------------------------------------------------- #
+# 详情区鼠标拖选
+# ---------------------------------------------------------------------- #
+def _mouse(app, cls, x, y):
+    kwargs = {
+        "x": x,
+        "y": y,
+        "delta_x": 0,
+        "delta_y": 0,
+        "button": 1,
+        "shift": False,
+        "meta": False,
+        "ctrl": False,
+        "screen_x": x,
+        "screen_y": y,
+        "style": None,
+    }
+    return cls(app.screen, **kwargs)
+
+
+async def _drag_select(pilot, app, x1, y1, x2, y2):
+    """按下 → 移动 → 松开 (pilot 没有拖拽 API, 按它内部的方式直接投事件)。"""
+    from textual.events import MouseDown, MouseMove, MouseUp
+
+    for cls, x, y in ((MouseDown, x1, y1), (MouseMove, x2, y2), (MouseUp, x2, y2)):
+        app.screen._forward_event(_mouse(app, cls, x, y))
+        await pilot.pause()
+
+
+def _first_field(app):
+    from dtflow.cli.view.app import _FieldStatic
+
+    return next(c for c in app.query_one("#detail").children if isinstance(c, _FieldStatic))
+
+
+@pytest.mark.asyncio
+async def test_detail_drag_select_copies_what_is_highlighted():
+    # 详情区拖选: 选到的文本 == 屏幕上高亮的文本, 松手即进剪贴板 (中文宽字符不错位)
+    from rich.cells import cell_len
+
+    rows = [{"messages": [{"role": "user", "content": "abcdefghij 中文字符测试 klmnopqr"}]}]
+    app = _make_app(rows)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        lines = f._plain_lines()
+        y = next(i for i, ln in enumerate(lines) if "abcdefghij" in ln)
+        line = lines[y]
+        x1 = f.content_region.x + cell_len(line[:3])
+        x2 = f.content_region.x + cell_len(line[:16])  # 落在中文中间
+        await _drag_select(pilot, app, x1, f.content_region.y + y, x2, f.content_region.y + y)
+
+        selected = app.screen.get_selected_text()
+        assert selected.startswith("defghij 中文字符测")
+        assert copied == [selected]  # 松手即复制, 不用再按键
+        # 高亮的正是被复制的那段
+        sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
+        strip = f.render_line(y)
+        highlighted = "".join(s.text for s in strip if s.style and s.style.bgcolor == sel_bg)
+        assert highlighted == selected
+
+
+@pytest.mark.asyncio
+async def test_detail_drag_select_spans_fields():
+    # 跨字段拖选: 起点字段的尾部 + 中间字段整块 + 终点字段的头部
+    app = _chat_app(3)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        fields = [
+            c for c in app.query_one("#detail").children if type(c).__name__ == "_FieldStatic"
+        ]
+        first, last = fields[0], fields[-1]
+        await _drag_select(
+            pilot,
+            app,
+            first.content_region.x + 1,
+            first.content_region.y,
+            last.content_region.x + 3,
+            last.content_region.y,
+        )
+        selected = app.screen.get_selected_text()
+        assert "\n" in selected  # 跨行跨字段
+        assert copied == [selected]
+
+
+@pytest.mark.asyncio
+async def test_click_without_drag_copies_nothing():
+    # 纯点击 (选字段) 不该往剪贴板里写空串
+    app = _chat_app(3)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        await pilot.click(f, offset=(1, 0))
+        await pilot.pause()
+        assert copied == []
+
+
+@pytest.mark.asyncio
+async def test_detail_drag_select_after_scroll():
+    # 详情滚动后拖选: 选到的仍是屏幕上高亮的那段 (坐标按可见行算, 不被滚动偏移带歪)
+    long_text = "\n".join(f"line{i:03d} content" for i in range(60))
+    rows = [{"messages": [{"role": "user", "content": long_text}]}]
+    app = _make_app(rows)
+    copied = []
+    app._copy_clipboard = lambda text: copied.append(text)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail")
+        detail.scroll_to(y=20, animate=False)
+        await pilot.pause()
+        f = _first_field(app)
+        y = detail.content_region.y + 1  # 屏幕坐标: 详情区顶部往下一行
+        await _drag_select(
+            pilot, app, detail.content_region.x + 2, y, detail.content_region.x + 9, y
+        )
+
+        selected = app.screen.get_selected_text()
+        assert selected and copied == [selected]
+        sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
+        row = y - f.content_region.y  # 该屏幕行在字段内的行号
+        highlighted = "".join(
+            s.text for s in f.render_line(row) if s.style and s.style.bgcolor == sel_bg
+        )
+        assert highlighted == selected
