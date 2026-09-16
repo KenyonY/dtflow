@@ -2594,8 +2594,9 @@ async def test_detail_drag_select_after_scroll():
 
 
 @pytest.mark.asyncio
-async def test_ctrl_c_without_selection_copies_nothing():
-    # 没有选区时 Ctrl+c 不写剪贴板 (让位给原本的 ctrl+c 行为), 也不报错
+async def test_ctrl_c_without_selection_copies_nothing_and_answers():
+    # 没有选区时 Ctrl+c 不写剪贴板, 但必须给回应 —— 我们这条绑定顶掉了 textual 的
+    # "按 q 退出"提示, 静默会让反射性按 ctrl+c 想退出的人以为卡死
     app = _chat_app(3)
     copied = []
     app._copy_clipboard = lambda text: copied.append(text)
@@ -2604,6 +2605,9 @@ async def test_ctrl_c_without_selection_copies_nothing():
         await pilot.press("ctrl+c")
         await pilot.pause()
         assert copied == []
+        assert app.is_running  # 不退出
+        msgs = [n.message for n in app._notifications]
+        assert msgs and "q" in msgs[-1]  # 复制怎么用 + 怎么退出
 
 
 @pytest.mark.asyncio
