@@ -479,14 +479,25 @@ async def test_column_picker_hides_table_and_detail():
         )
         assert "source" not in buf.getvalue() and "difficulty" not in buf.getvalue()
 
-        # picker: 全不选 + 应用 → 至少保留第一列
+        # picker: 未手动选过列 → 默认全不选; 空勾选应用 → 提示并留在面板
         app.action_columns()
         await pilot.pause()
-        assert isinstance(app.screen, ColumnPicker)
-        await pilot.press("n")
+        screen = app.screen
+        assert isinstance(screen, ColumnPicker)
+        assert set(screen.query_one("SelectionList").selected) == set()
         await pilot.press("enter")
         await pilot.pause()
-        assert app._visible_columns() == ["#"]
+        assert app.screen is screen
+        # 只勾 source 应用 → 之后再打开回显当前可见列
+        screen.query_one("SelectionList").select("source")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._visible_columns() == ["source"]
+        app.action_columns()
+        await pilot.pause()
+        assert set(app.screen.query_one("SelectionList").selected) == {"source"}
+        await pilot.press("escape")
+        await pilot.pause()
 
         # 鼠标按钮: 全选按钮 + 应用按钮 → 恢复全部列
         app.action_columns()

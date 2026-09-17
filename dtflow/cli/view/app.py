@@ -456,7 +456,10 @@ class HelpScreen(ModalScreen):
 
 
 class ColumnPicker(ModalScreen):
-    """列显示勾选面板: 空格切换, Enter/Esc 应用并关闭。返回可见列名集合。"""
+    """列显示勾选面板: 空格切换, Enter 应用 / Esc 取消。返回可见列名集合。
+
+    checked 为打开时的勾选集: 未手动选过列时传空集 (默认全不选), 选过则回显当前可见列。
+    勾选为空时提示并留在面板, 不返回空集。"""
 
     # priority=True: 抢在 SelectionList 之前处理, 否则 enter 会被它消费而无法关闭
     BINDINGS = [
@@ -466,10 +469,10 @@ class ColumnPicker(ModalScreen):
         Binding("n", "none", "全不选"),
     ]
 
-    def __init__(self, columns: List[str], hidden: Set[str]):
+    def __init__(self, columns: List[str], checked: Set[str]):
         super().__init__()
         self._columns = columns
-        self._hidden = hidden
+        self._checked = checked
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
@@ -493,7 +496,7 @@ class ColumnPicker(ModalScreen):
     def on_mount(self) -> None:
         sl = self.query_one(SelectionList)
         for col in self._columns:
-            sl.add_option(Selection(Text(col), col, col not in self._hidden))
+            sl.add_option(Selection(Text(col), col, col in self._checked))
         _fit_panel(self, sl, _PICKER_CHROME, hard_max=20)
         sl.focus()
 
@@ -504,7 +507,11 @@ class ColumnPicker(ModalScreen):
         self.query_one(SelectionList).deselect_all()
 
     def action_close(self) -> None:
-        self.dismiss(set(self.query_one(SelectionList).selected))
+        selected = set(self.query_one(SelectionList).selected)
+        if not selected:
+            self.notify("至少选一列")
+            return
+        self.dismiss(selected)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -2304,15 +2311,13 @@ class ViewApp(App):
         def apply(visible: Optional[Set[str]]) -> None:
             if visible is None:
                 return
-            hidden = set(self.columns) - visible
-            if len(hidden) == len(self.columns):  # 不允许全隐藏, 至少留第一列
-                hidden.discard(self.columns[0])
-            self._hidden = hidden
+            self._hidden = set(self.columns) - visible
             self._auto_hidden.clear()
             self._columns_customized = True
             self._rebuild_columns()
 
-        self.push_screen(ColumnPicker(self.columns, self._hidden | self._auto_hidden), apply)
+        checked = set(self._visible_columns()) if self._columns_customized else set()
+        self.push_screen(ColumnPicker(self.columns, checked), apply)
 
     def _row_number_width_changed(self) -> bool:
         """窗口行号位数增加时扩列，避免沿用首屏宽度截断绝对行号。"""
