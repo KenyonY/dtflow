@@ -19,9 +19,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.selection import Selection as TextSelection  # 与勾选面板的 Selection 同名
 from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
@@ -244,7 +245,8 @@ _HELP = """[b]dt view 快捷键[/b]
   *            跳到详情中下一处搜索命中 (命中处画黄底)
   y            复制当前样本 JSON 到剪贴板
   鼠标拖选     详情区按住左键拖选文本 (所见即所选, 自动换行处不错位), 再按 Ctrl+c 复制;
-                 双击选中整个字段块, 三击选整屏详情; Esc 或点一下清除选区
+                 连击逐级放大: 双击取词 (id/字段值, 连字符下划线算词内) · 三击整行 ·
+                 四击整个字段块 · 五击整屏详情; Esc 或点一下清除选区
                  复制走 OSC52 + 本地 wl-copy/xclip/xsel 双通道 (SSH/tmux 下也进本机剪贴板)
   v            多选样本 (j/k 扩展选区), y 复制多条, Esc 取消
   w            导出当前浏览序列 (或多选选区) 到文件, 按扩展名定格式
@@ -279,6 +281,18 @@ _HELP = """[b]dt view 快捷键[/b]
   搜索/筛选/排序都是全量的 (扫整个文件, 非仅当前窗口), 且可叠加;
   启动即带条件: dt view f.jsonl --where=... --search=... --sort=-chars
 """
+
+
+# 双击取词的分段: 词 (\w 已含中文与下划线, 再带上 uuid/命名里的 -) / 空白 / 符号, 三类各自成段
+_TOKEN_RE = re.compile(r"[\w-]+|\s+|[^\w\s-]+")
+
+
+def _token_span(line: str, x: int) -> Tuple[int, int]:
+    """命中 x 的那一段同类字符 [起, 止); 落在行尾之外就退化成一个字符。"""
+    for m in _TOKEN_RE.finditer(line):
+        if m.start() <= x < m.end():
+            return m.start(), m.end()
+    return x, x + 1
 
 
 def _style_chars(strip: Strip, start: int, end: int, style: Style) -> Strip:
@@ -320,9 +334,39 @@ class _FieldStatic(Static):
         super().__init__(renderable, classes="detail-field")
         self._field_name = field_name
 
-    def on_click(self, event) -> None:
+    async def _on_click(self, event: events.Click) -> None:
+        """点击选中本字段 (self 即被点字段, 无需坐标反查), 连击则分级放大选区:
+        2 词 · 3 整行 · 4 整个字段块 · 5 整屏详情。
+
+        覆写掉 textual 默认的 2=整块 / 3=整屏: 那个跨度对着数据看时太粗 —— 最常要复制的是
+        一个 id、一个字段值, 那是"词"这一级, 一路加击才逐步放大。
+
+        写成私有 handler 而不是 on_click: textual 每个类只取一个点击 handler, 私有优先,
+        两个都定义的话公有那个根本不会被调用; 而 MRO 上每个类各取一个, 所以还得
+        prevent_default 掐掉 Widget._on_click, 否则它的 2=整块/3=整屏会盖在这上面。
+        """
+        event.prevent_default()
         self.app.select_detail_field(self)  # 通知 app 选中本字段
+        chain = event.chain
+        if chain >= 5:
+            self.select_container.text_select_all()
+        elif chain == 4:
+            self.text_select_all()
+        elif chain in (2, 3):
+            offset = self._click_offset(event)
+            if offset is not None:
+                lines = self._plain_lines()
+                line = lines[offset.y] if offset.y < len(lines) else ""
+                lo, hi = (0, len(line)) if chain == 3 else _token_span(line, offset.x)
+                span = TextSelection(Offset(lo, offset.y), Offset(hi, offset.y))
+                self.screen.selections = {self: span}
         event.stop()
+        await self.broker_event("click", event)
+
+    def _click_offset(self, event: events.Click) -> Optional[Offset]:
+        """点击位置的内容坐标 (字符索引, 渲染行); 借 compositor 换算, 与拖选同一套坐标。"""
+        widget, offset = self.screen.get_widget_and_offset_at(event.screen_x, event.screen_y)
+        return offset if widget is self else None
 
     # -------------------------------------------------------------- #
     # 鼠标拖选 (选区靠 Ctrl+c 复制, 见 ViewApp.action_copy_selection)

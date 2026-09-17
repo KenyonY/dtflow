@@ -2619,21 +2619,59 @@ async def test_ctrl_c_without_selection_copies_nothing_and_answers():
 
 
 @pytest.mark.asyncio
-async def test_double_click_selects_field_and_ctrl_c_copies_it():
-    # 双击选整块 -> Ctrl+c 复制整块 (不是点到的那一行)
-    app = _chat_app(3)
+async def test_multi_click_selection_levels():
+    # 连击分级放大: 2 词 · 3 整行 · 4 整个字段块 · 5 整屏详情
+    # (textual 默认只有 2=整块/3=整屏, 对着数据看太粗 —— 最常复制的是一个 id/一个值)
+    from rich.cells import cell_len
+
+    line = "id=8f3a-42b1 请看 order_no 12345 这段中文内容，还有标点。"
+    app = _make_app(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": line},
+                    {"role": "assistant", "content": "回答"},
+                ]
+            }
+        ]
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        f = _first_field(app)
+        assert f._plain_lines()[1] == line
+
+        async def click_at(word, times):
+            x = cell_len(line[: line.index(word) + 1])  # 落在词里面
+            app.screen.clear_selection()
+            await pilot.click(f, offset=(x, 1), times=times)
+            await pilot.pause()
+            return app.screen.get_selected_text()
+
+        assert await click_at("8f3a-42b1", 2) == "8f3a-42b1"  # 连字符算词的一部分 (uuid)
+        assert await click_at("order_no", 2) == "order_no"  # 下划线同理
+        assert await click_at("这段中文内容", 2) == "这段中文内容"  # 中文按标点/空格断词
+        assert await click_at("12345", 2) == "12345"
+
+        assert await click_at("order_no", 3) == line  # 整行 (自动换行后的渲染行)
+        assert await click_at("order_no", 4) == f"[user]\n{line}"  # 整个字段块
+        assert "[assistant]" in await click_at("order_no", 5)  # 整屏详情
+
+
+@pytest.mark.asyncio
+async def test_double_click_word_then_ctrl_c_copies_it():
+    # 双击取词 -> Ctrl+c: 最常用的一条路 (复制一个 id / 一个字段值)
+    app = _make_app([{"messages": [{"role": "user", "content": "trace_id abc123 done"}]}])
     copied = []
     app._copy_clipboard = lambda text: copied.append(text)
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
-        await pilot.double_click(_first_field(app), offset=(1, 0))
+        f = _first_field(app)
+        await pilot.click(f, offset=(f._plain_lines()[1].index("abc123") + 1, 1), times=2)
         await pilot.pause()
-        assert copied == []  # 双击只选中, 不复制
-        selected = app.screen.get_selected_text()
-        assert selected.startswith("[user]")
+        assert copied == []  # 双击只选中
         await pilot.press("ctrl+c")
         await pilot.pause()
-        assert copied == [selected]
+        assert copied == ["abc123"]
 
 
 @pytest.mark.asyncio
