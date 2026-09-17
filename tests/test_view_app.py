@@ -2867,3 +2867,20 @@ async def test_drag_select_tracks_mouse_across_steps():
             lo, hi = min(x1, x2), max(x1, x2) + 1  # 终点那格也算进选区
             assert (start - base, end - base) == (lo, hi)
             assert app.screen.get_selected_text() == text[lo:hi]
+
+
+@pytest.mark.asyncio
+async def test_status_hints_layout_key_up_front():
+    # z / ? 提示排在文件名之后而不是行尾: 状态栏右端先被窄屏截掉, 挂末尾等于小终端看不见
+    app = _chat_app(5)
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause()
+        line = app.query_one("#status").render_line(0).text
+        assert "z 布局" in line and "? 帮助" in line
+        assert line.index("z 布局") < line.index("格式")
+
+        app._set_split_hint(True)  # 压在两区分界上: 让位给更贴当下的那条提示
+        await pilot.pause()
+        line = app.query_one("#status").render_line(0).text
+        assert "拖动调两区大小" in line and "z 换上下/左右" in line
+        assert "z 布局" not in line

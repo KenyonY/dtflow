@@ -1380,6 +1380,15 @@ class ViewApp(App):
             parts.append(f"[reverse] {escape(self._scan_msg)} [/reverse]")
             status.update(Text.from_markup("  ·  ".join(parts)))
             return
+        # 排在最前 (文件名之后): 状态栏从左往右排, 右端先被窄屏截掉 —— 常驻提示挂在末尾,
+        # 越是小终端越看不见。压在可拖的线上时让位给那条更贴当下的提示。
+        if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
+            hint = "[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]"
+        elif self._split_hint:
+            hint = "[reverse] 拖动调两区大小 · 双击恢复默认 · z 换上下/左右 [/reverse]"
+        else:
+            hint = "[dim]z 布局 · ? 帮助[/dim]"
+        parts.insert(1, hint)
         if self._follow:
             if self._follow_missing:
                 parts.append("[yellow]路径暂时不存在，等待轮转新文件[/yellow]")
@@ -1422,11 +1431,6 @@ class ViewApp(App):
         cur_field = self._current_field()
         if cur_field:
             parts.append(f"[cyan]字段:{escape(cur_field)}[/cyan]")
-        if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
-            parts.append("[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]")
-        if self._split_hint:
-            parts.append("[reverse] 拖动调两区大小 · 双击恢复默认 [/reverse]")
-        parts.append("[dim]? 帮助[/dim]")
         status.update(Text.from_markup("  ·  ".join(parts)))
 
     def _unlock_follow_move(self) -> None:
