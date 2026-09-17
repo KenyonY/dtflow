@@ -275,7 +275,8 @@ _HELP = """[b]dt view 快捷键[/b]
   拖两区分界   表格与详情之间那两行(横排时是两列)边框即分界, 鼠标压上去边框变亮,
                  按住拖到哪分界就到哪; 双击恢复默认 65:35
   c            选列 (勾选面板, 同时作用于表格和详情)
-  r            清除全部筛选/搜索/排序, 回到全量浏览
+  r            清除全部筛选/搜索/排序, 回到全量浏览 (横向也回最左)
+               筛选/搜索应用后横向位置保持不动; 原来那条样本还在命中里就继续停在它上面
   ?            帮助      q  退出
 
   搜索/筛选/排序都是全量的 (扫整个文件, 非仅当前窗口), 且可叠加;
@@ -1230,6 +1231,7 @@ class ViewApp(App):
 
     def _populate(self) -> None:
         table = self.query_one("#table", DataTable)
+        scroll_x = table.scroll_x  # clear() 顺手把横向滚动清零, 重填完要放回去
         table.clear()
         self._row_keys = []
         vis = self._visible_columns()
@@ -1249,6 +1251,7 @@ class ViewApp(App):
             self._field_widgets = []
             self._field_texts = []
             self._cur_anchors = {}
+        self._restore_scroll_x(table, scroll_x)
 
     def _field_names(self) -> List[str]:
         return [w._field_name for w in self._field_widgets]
@@ -1845,6 +1848,8 @@ class ViewApp(App):
             self._rebuild_columns()  # 清列头 ▾ 标记 + 清单元格高亮
         else:
             self._load_window(0, rebuild_columns=True)
+        table = self.query_one("#table", DataTable)
+        table.scroll_x = table.scroll_target_x = 0  # r 是"回到起点", 横向也一并回最左
         self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
 
     # ------------------------------------------------------------------ #
@@ -2341,9 +2346,23 @@ class ViewApp(App):
     def _rebuild_columns(self) -> None:
         """列可见集变化后重建表头并重填。"""
         table = self.query_one("#table", DataTable)
+        scroll_x = table.scroll_x
         table.clear(columns=True)
         self._add_columns(table)
         self._populate()
+        self._restore_scroll_x(table, scroll_x)
+
+    def _restore_scroll_x(self, table: DataTable, scroll_x: float) -> None:
+        """把横向滚动放回原处。
+
+        筛选/翻窗口都要重填表格, 而 DataTable.clear() 会把 scroll_x 清零 —— 右边那几列
+        看得好好的, 一应用筛选就被弹回最左, 还得重新滚过去。列变窄/变少时由 scroll_x 的
+        validate 夹到新的 max_scroll_x, 不会滚出界。
+        """
+        if not scroll_x:
+            return
+        table.scroll_x = scroll_x
+        table.scroll_target_x = table.scroll_x
 
     def action_search(self) -> None:
         self._open_prompt("search", "全量搜索 (整条记录, 不分大小写; re: 前缀走正则):")
@@ -2546,6 +2565,7 @@ class ViewApp(App):
 
     def _commit_subset(self, matches: List[int], label: str, spec: ScanSpec) -> None:
         """子集落地: 记下这一版约束, 定位到窗口并刷新列头标记。"""
+        keep = self._cursor_global_no()  # 筛选前正看着的那条样本
         self._subset = matches  # 可能为空 (0 命中)
         self._filter_label = label or None
         self._commit_spec(spec)
@@ -2557,6 +2577,31 @@ class ViewApp(App):
             self._follow_moving = True
             self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
             self.call_after_refresh(self._unlock_follow_move)
+        else:
+            self._restore_cursor(keep)
+
+    def _cursor_global_no(self) -> Optional[int]:
+        """光标所在样本的全局行号 (跨筛选/翻窗口唯一)。"""
+        table = self.query_one("#table", DataTable)
+        row = table.cursor_row
+        if not self.view_indices or not 0 <= row < len(self.view_indices):
+            return None
+        return self._global_nos[self.view_indices[row]]
+
+    def _restore_cursor(self, global_no: Optional[int]) -> None:
+        """筛完把光标放回原来那条样本 —— 它常常就是你按 f 的原因 (照着它找同类)。
+
+        它要是被筛掉了, 或落在别的窗口, 就留在首行: 从头看命中结果同样是常态, 为跟一条
+        样本去跨窗口跳转反而喧宾夺主。
+        """
+        if global_no is None:
+            return
+        try:
+            local = self._global_nos.index(global_no)
+        except ValueError:
+            return
+        if local in self.view_indices:
+            self.query_one("#table", DataTable).move_cursor(row=self.view_indices.index(local))
 
     # ------------------------------------------------------------------ #
     # 列快照: 对当前浏览序列的某列给一行 n·min·max·mean·非空率 (即时决策用)

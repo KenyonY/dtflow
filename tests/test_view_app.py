@@ -2922,3 +2922,79 @@ async def test_status_hints_layout_key_up_front():
         line = app.query_one("#status").render_line(0).text
         assert "拖动调两区大小" in line and "z 换上下/左右" in line
         assert "z 布局" not in line
+
+
+# ---------------------------------------------------------------------- #
+# 筛选前后的视图位置
+# ---------------------------------------------------------------------- #
+async def _wide_app(pilot, app):
+    """把某列撑到溢出屏幕, 逼出横向滚动。"""
+    app._manual_widths["first_user"] = 120
+    app._rebuild_columns()
+    await pilot.pause()
+    t = app.query_one("#table")
+    assert t.max_scroll_x > 40
+    return t
+
+
+@pytest.mark.asyncio
+async def test_filter_keeps_horizontal_scroll_and_cursor():
+    # 筛选要重填表格, 而 DataTable.clear() 会把横向滚动清零 —— 右边那几列看得好好的,
+    # 一应用筛选就被弹回最左。光标则跟住原来那条样本 (它常常就是按 f 的原因)
+    app = _chat_app(40)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        t = await _wide_app(pilot, app)
+        t.move_cursor(row=7)
+        t.scroll_x = 40
+        await pilot.pause()
+        keep = app._cursor_global_no()
+
+        app._apply_filter("source==a")  # 奇数 idx 命中
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert t.scroll_x == 40
+        assert app._cursor_global_no() == keep  # 还停在原来那条上 (行号变了, 样本没变)
+
+        # 值筛选走的是另一条路径, 同样保持
+        t.scroll_x = 30
+        await pilot.pause()
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app.screen.dismiss({"a"})
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert t.scroll_x == 30
+
+
+@pytest.mark.asyncio
+async def test_filtered_out_sample_falls_back_to_first_row():
+    # 原来那条被筛掉了就留在首行 (为跟一条样本跨窗口跳转反而喧宾夺主), 横向仍保持
+    app = _chat_app(40)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        t = await _wide_app(pilot, app)
+        t.move_cursor(row=2)  # source == "b" (偶数 idx)
+        t.scroll_x = 35
+        await pilot.pause()
+
+        app._apply_filter("source==a")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert t.cursor_row == 0
+        assert t.scroll_x == 35
+
+
+@pytest.mark.asyncio
+async def test_reset_returns_to_leftmost():
+    # r 是"回到全量浏览的起点", 横向也一并回最左
+    app = _chat_app(40)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        t = await _wide_app(pilot, app)
+        t.scroll_x = 50
+        await pilot.pause()
+        app.action_reset()
+        await pilot.pause()
+        assert t.scroll_x == 0 and t.cursor_row == 0
