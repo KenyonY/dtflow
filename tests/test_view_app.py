@@ -117,7 +117,7 @@ async def test_value_filter_high_cardinality_caps_render_only():
             assert isinstance(app.screen, ValueFilterScreen)  # 不再拒绝
             sl = app.screen.query_one("SelectionList")
             assert sl.option_count == 10  # 仅渲染前 10 项
-            assert len(app.screen._checked) == 50  # 默认全选覆盖全量 50 个值
+            assert app.screen._checked == set()  # 默认全不选
             # 搜索在全量值上过滤: "4" 命中 4/14/24/34/40-49 共 14 个 (含未渲染的低频值)
             app.screen.query_one("#vf-search").value = "4"
             await pilot.pause()
@@ -207,7 +207,10 @@ async def test_value_filter_mouse_buttons():
         for b in app.screen.query(Button):
             assert b.region.x >= box.x and b.region.right <= box.right, f"{b.label} 被裁"
         sl = app.screen.query_one("SelectionList")
-        # 点"全不选"按钮 → 清空勾选
+        # 点"全选"再点"全不选"按钮 → 清空勾选
+        await pilot.click("#vf-all")
+        await pilot.pause()
+        assert set(sl.selected) == {"a", "b"}
         await pilot.click("#vf-none")
         await pilot.pause()
         assert set(sl.selected) == set()
@@ -1155,16 +1158,19 @@ async def test_value_filter_search_then_apply_keeps_only_matches():
 
 
 @pytest.mark.asyncio
-async def test_value_filter_search_uncheck_one_then_apply():
-    # 有搜索词时取消一个匹配项再应用 → 只保留剩下的匹配项 (视野外默认勾选不算数)
+async def test_value_filter_search_check_one_then_apply():
+    # 有搜索词时勾一个匹配项再应用 → 只保留勾选的匹配项 (视野外勾选不算数)
     app = _tag_app(30)
     async with app.run_test(size=(120, 30)) as pilot:
         app._start_value_scan("tag")
         await app.workers.wait_for_complete()
         await pilot.pause()
+        app.screen.action_all()  # 视野外也有勾选: dolly 等不应混进结果
         app.screen.query_one("#vf-search").value = "alpaca"
         await pilot.pause()
-        app.screen.query_one("SelectionList").deselect("alpaca_en")
+        await pilot.click("#vf-none")
+        await pilot.pause()
+        app.screen.query_one("SelectionList").select("alpaca_zh")
         await pilot.pause()
         await pilot.click("#vf-apply")
         await app.workers.wait_for_complete()
@@ -1212,11 +1218,36 @@ async def test_value_filter_search_deselect_only_matches():
         await app.workers.wait_for_complete()
         await pilot.pause()
         screen = app.screen
+        screen.action_all()
         screen.query_one("#vf-search").value = "alpaca"
         await pilot.pause()
         await pilot.click("#vf-none")  # 只去掉 alpaca_*
         await pilot.pause()
         assert screen._checked == {"sharegpt", "dolly", "other"}
+
+
+@pytest.mark.asyncio
+async def test_value_filter_default_unchecked_and_empty_apply_stays_open():
+    # 未筛过的列默认全不选; 空勾选直接应用 → 提示并留在面板 (关掉会丢刚扫完的值表)
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _tag_app(30)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._start_value_scan("tag")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        screen = app.screen
+        assert set(screen.query_one("SelectionList").selected) == set()
+        await pilot.click("#vf-apply")
+        await pilot.pause()
+        assert app.screen is screen and isinstance(screen, ValueFilterScreen)
+        # 搜索词 0 命中时应用同样留在面板
+        screen.query_one("#vf-search").value = "zzz"
+        await pilot.pause()
+        await pilot.click("#vf-apply")
+        await pilot.pause()
+        assert app.screen is screen
+        assert app._subset is None and app._col_value_filters == {}
 
 
 def _assert_panel_fits(screen, box_id, size):
@@ -2426,7 +2457,7 @@ async def test_header_shows_dividers_and_highlights_on_hover():
         t = app.query_one("#table")
         vis = app._visible_columns()
         header = t.render_line(0).text
-        assert header.count(FastDataTable.DIVIDER) == len(vis) - 1  # 末列右缘不画
+        assert header.count(FastDataTable.DIVIDER) == len(vis)  # 末列右缘也画, 否则末列没法拖
         assert FastDataTable.DIVIDER_HOT not in header
         assert t.render_line(1).text.count(FastDataTable.DIVIDER) == 0  # 数据行保持干净
 
@@ -2998,3 +3029,31 @@ async def test_reset_returns_to_leftmost():
         app.action_reset()
         await pilot.pause()
         assert t.scroll_x == 0 and t.cursor_row == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [120, 52])  # 列没铺满 (末列右缘在表格中间) / 恰好铺满到右缘
+async def test_last_column_divider_drawn_and_draggable(width):
+    # 末列右缘同样画分隔线并可拖, 否则最右一列没法调宽
+    from dtflow.cli.view.app import FastDataTable
+
+    app = _chat_app(10)
+    async with app.run_test(size=(width, 30)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#table")
+        last = len(t.ordered_columns) - 1
+        cells = t._divider_cells()
+        assert cells[-1][1] == last
+        x_local = cells[-1][0]
+        assert t.render_line(0).text[x_local] == FastDataTable.DIVIDER
+
+        x, y = _divider_x(app, last), t.gutter.top
+        assert x == x_local + t.gutter.left
+        w0 = t.ordered_columns[last].width
+        await pilot.mouse_down(t, offset=(x, y))
+        t.post_message(_drag(t, x, x - 2, y))
+        await pilot.pause()
+        await pilot.mouse_up(t, offset=(x - 2, y))
+        await pilot.pause()
+        assert t.ordered_columns[last].width == w0 - 2
+        assert app._manual_widths[app._visible_columns()[last]] == w0 - 2

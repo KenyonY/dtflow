@@ -95,14 +95,14 @@ class FastDataTable(DataTable):
     _hover_edge: Optional[int] = None  # 鼠标所在 (或正在拖) 的分隔线, 画成高亮
 
     def _divider_cells(self) -> List[Tuple[int, int]]:
-        """[(分隔线的屏幕 x, 归属列下标)]。末列右边界就是表格右缘, 不画。"""
+        """[(分隔线的屏幕 x, 归属列下标)]。末列右缘也画: 列没铺满时它在表格中间, 铺满时也得能拖窄。"""
         out: List[Tuple[int, int]] = []
         cols = self.ordered_columns
         fixed = self._row_label_column_width + sum(
             c.get_render_width(self) for c in cols[: self.fixed_columns]
         )
         edge = self._row_label_column_width
-        for i, col in enumerate(cols[:-1]):
+        for i, col in enumerate(cols):
             edge += col.get_render_width(self)
             x = edge - 1  # 本列右内边距那一格: 必为空白, 画线不遮字
             if i >= self.fixed_columns:
@@ -268,7 +268,7 @@ _HELP = """[b]dt view 快捷键[/b]
                  点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
-  拖表头的 │   改列宽 (Excel 式): 表头上列与列之间那道 │ 即分隔线, 鼠标压上去变 ┃
+  拖表头的 │   改列宽 (Excel 式): 表头每列右侧那道 │ 即分隔线, 鼠标压上去变 ┃
                  按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
   z            切换 上下 / 左右 布局
   +/-          调整表格/详情两区大小 (每档 5%)
@@ -514,11 +514,11 @@ class ValueFilterScreen(ModalScreen):
     """Excel 式列值勾选筛选: 列出某列唯一值(带频次), 勾选要保留的值。
 
     - 顶部搜索框实时按子串过滤候选值 (大小写不敏感), 唯一值成百上千时靠它定位。
-    - 有搜索词时应用 = 只保留 勾选∩匹配 (Excel 语义: 所见即所得),
-      于是"某列包含某子串"= 打字 → Enter, 两步完成。
+    - 有搜索词时应用 = 只保留 勾选∩匹配 (Excel 语义: 所见即所得); 匹配项一个没勾时
+      = 保留全部匹配项, 于是"某列包含某子串"= 打字 → Enter, 两步完成。
     - 有搜索词时 全选=勾上匹配项(不动视野外勾选) / 全不选=只取消匹配项 —— 因此
       跨搜索词可累积勾选 (搜A全选→搜B全选→清空搜索词→应用 = A∪B)。
-    - prior 非 None 时回显上次保留集 (故可把去掉的值重新勾回); 否则默认全选。
+    - prior 非 None 时回显上次保留集 (故可把去掉的值重新勾回); 否则默认全不选。
     - anchor 非 None 时面板贴着被点列头下方弹出 (右溢出自动左移), 否则居中。
     - Enter 应用返回勾选集合, Esc 或点击面板外返回 None (取消)。
 
@@ -545,11 +545,9 @@ class ValueFilterScreen(ModalScreen):
         self._col = col
         self._items = items  # [(value, count), ...] 按频次降序
         self._total = total
-        self._prior = prior  # 上次保留值集 (None=未筛→默认全选)
+        self._prior = prior  # 上次保留值集 (None=未筛→默认全不选)
         self._anchor = anchor  # (x, y) 列头下方; None=居中
-        self._checked: Set[str] = (
-            {v for v, _ in items} if prior is None else {v for v, _ in items if v in prior}
-        )
+        self._checked: Set[str] = set() if prior is None else {v for v, _ in items if v in prior}
         self._query = ""
         self._shown: List[str] = []  # 当前列表实际渲染的值 (≤_MAX_SHOW), _sync 的作用域
 
@@ -662,12 +660,17 @@ class ValueFilterScreen(ModalScreen):
         self._rebuild()
 
     def action_close(self) -> None:
-        """应用。有搜索词时只保留 勾选∩匹配 (所见即所得) —— 默认全选下
-        "打字 → Enter" 即等于按包含子串筛选, 不必先全不选再全选。"""
+        """应用。有搜索词时只保留 勾选∩匹配 (所见即所得); 匹配项一个没勾则取全部匹配项 ——
+        默认全不选下 "打字 → Enter" 即等于按包含子串筛选, 不必再点全选。
+        结果为空时留在面板提示: 关掉会丢掉刚扫完的值表, 大文件重扫代价高。"""
         self._sync()
         selected = set(self._checked)
         if self._query:
-            selected &= {v for v, _ in self._matched()}
+            matched = {v for v, _ in self._matched()}
+            selected = (selected & matched) or matched
+        if not selected:
+            self.notify("至少选一个值")
+            return
         self.dismiss(selected)
 
     def action_cancel(self) -> None:
@@ -2680,13 +2683,10 @@ class ViewApp(App):
         items = sorted(value_rows.items(), key=lambda kv: -len(kv[1]))  # [(值, 频次)] 频次降序
         items = [(v, len(rows)) for v, rows in items]
         total = len(items)
-        prior = self._col_value_filters.get(col)  # 上次保留集 (None=该列未筛→默认全选)
+        prior = self._col_value_filters.get(col)  # 上次保留集 (None=该列未筛→默认全不选)
 
         def apply(selected) -> None:
             if selected is None:  # Esc 取消
-                return
-            if not selected:
-                self.notify("至少选一个值")
                 return
             if self._busy():
                 return
