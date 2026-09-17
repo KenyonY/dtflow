@@ -208,3 +208,13 @@ def test_render_detail_output_unchanged_for_head():
     text = cap.get()
     assert "[user]" in text and "[assistant]" in text
     assert "─" not in text  # 段间 Rule: 只有一段, 不该出现
+
+
+def test_row_cells_preview_limits():
+    # 表格预览上限: 长文本列 160 字, 普通列 120 字; preview=False 不截断
+    row = {"messages": [{"role": "user", "content": "x" * 500}], "note": "y" * 500}
+    first_user, note = R.row_cells(0, row, "openai_chat", ["first_user", "note"])
+    assert first_user == "x" * 160 + "…"
+    assert note == "y" * 120 + "…"
+    full = R.row_cells(0, row, "openai_chat", ["first_user", "note"], preview=False)
+    assert full == ["x" * 500, "y" * 500]

@@ -458,7 +458,7 @@ class HelpScreen(ModalScreen):
 class ColumnPicker(ModalScreen):
     """列显示勾选面板: 空格切换, Enter 应用 / Esc 取消。返回可见列名集合。
 
-    checked 为打开时的勾选集: 未手动选过列时传空集 (默认全不选), 选过则回显当前可见列。
+    checked 为打开时的勾选集: 未手动选过列时只勾行号列 #, 选过则回显当前可见列。
     勾选为空时提示并留在面板, 不返回空集。"""
 
     # priority=True: 抢在 SelectionList 之前处理, 否则 enter 会被它消费而无法关闭
@@ -2316,7 +2316,7 @@ class ViewApp(App):
             self._columns_customized = True
             self._rebuild_columns()
 
-        checked = set(self._visible_columns()) if self._columns_customized else set()
+        checked = set(self._visible_columns()) if self._columns_customized else {"#"}
         self.push_screen(ColumnPicker(self.columns, checked), apply)
 
     def _row_number_width_changed(self) -> bool:

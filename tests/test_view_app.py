@@ -479,23 +479,25 @@ async def test_column_picker_hides_table_and_detail():
         )
         assert "source" not in buf.getvalue() and "difficulty" not in buf.getvalue()
 
-        # picker: 未手动选过列 → 默认全不选; 空勾选应用 → 提示并留在面板
+        # picker: 未手动选过列 → 默认只勾行号列 #; 空勾选应用 → 提示并留在面板
         app.action_columns()
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, ColumnPicker)
-        assert set(screen.query_one("SelectionList").selected) == set()
+        assert set(screen.query_one("SelectionList").selected) == {"#"}
+        await pilot.press("n")
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is screen
-        # 只勾 source 应用 → 之后再打开回显当前可见列
+        # 勾 # + source 应用 → 之后再打开回显当前可见列
+        screen.query_one("SelectionList").select("#")
         screen.query_one("SelectionList").select("source")
         await pilot.press("enter")
         await pilot.pause()
-        assert app._visible_columns() == ["source"]
+        assert app._visible_columns() == ["#", "source"]
         app.action_columns()
         await pilot.pause()
-        assert set(app.screen.query_one("SelectionList").selected) == {"source"}
+        assert set(app.screen.query_one("SelectionList").selected) == {"#", "source"}
         await pilot.press("escape")
         await pilot.pause()
 
@@ -1078,7 +1080,7 @@ async def test_rapid_refresh_no_duplicate_ids():
 # 包含筛选 (~=): 派生列按全文匹配, 真实字段路径交给 _parse_where
 # --------------------------------------------------------------------------- #
 def test_contains_operator_on_derived_column_matches_full_text():
-    # first_user 表格里只显示前 80 字, 但 ~= 必须搜全文, 否则靠后的词被静默漏掉
+    # first_user 表格里只显示前 160 字, 但 ~= 必须搜全文, 否则靠后的词被静默漏掉
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {

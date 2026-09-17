@@ -186,8 +186,9 @@ def row_cells(
     preview: False 时文本列不截断 —— 搜索/包含筛选须匹配全文, 否则长内容里靠后的
              关键词会被"只搜可见前缀"静默漏掉。表格显示/值勾选仍用 True。
     """
-    n_long = 80 if preview else None  # 长文本列 (first_user/prompt/instruction)
-    n_meta = 60 if preview else None  # 普通标量列
+    # 截断只为控制表格里每格的字符串体量; 上限放宽到够拖宽列时看到更多内容
+    n_long = 160 if preview else None  # 长文本列 (first_user/prompt/instruction)
+    n_meta = 120 if preview else None  # 普通标量列
     display_no = idx + 1 if row_no is None else (row_no if row_no < 0 else row_no + 1)
     derived: Dict[str, Any] = {"#": str(display_no)}
 
