@@ -1224,6 +1224,15 @@ class ViewApp(App):
             frac = (y - region.y + 1) / max(1, region.height)
         self._set_split(round(frac * 100))
 
+    def push_screen(self, *args, **kwargs):
+        """弹窗一盖上来, 主屏"分界可拖"的边框高亮就得熄灭。
+
+        它只由鼠标移动开关, 而弹窗之后的鼠标事件都归弹窗, 不熄掉就会一直亮着,
+        指着一条此刻并不能拖的线 (能不能拖见 _on_split_edge)。
+        """
+        self._set_split_hint(False)
+        return super().push_screen(*args, **kwargs)
+
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if not self._on_split_edge(event.screen_x, event.screen_y):
             return

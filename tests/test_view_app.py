@@ -2841,6 +2841,98 @@ async def test_split_double_click_restores_default():
         assert app._split == app.SPLIT_DEFAULT
 
 
+async def _real_click(pilot, app, x, y):
+    """真实终端的一次点击: 走 App.on_event (Click 由 app 自己合成), 且 down 与 up 之间
+    隔着一次事件循环 —— pilot.click 直接投给 screen, 复现不出"按下时 app 抢走鼠标、
+    随后的 Click 被捕获者吞掉"这条时序。"""
+    from textual.events import MouseDown, MouseUp
+
+    for cls in (MouseDown, MouseUp):
+        await app.on_event(_mouse(app, cls, x, y))
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_panel_click_beats_split_drag():
+    # 面板盖在两区分界上时, 点面板里的选项就是选项 —— 不能被分界拖拽抢走
+    from textual.widgets import SelectionList
+
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        edge_x = app.query_one("#table").region.right - 1  # 默认左右排, 分界是竖的
+        assert app._on_split_edge(edge_x, 10)
+        await pilot.press("c")
+        await pilot.pause()
+        sl = app.screen.query_one(SelectionList)
+        box = sl.content_region
+        assert box.x <= edge_x < box.right  # 选项行确实横跨分界
+        assert not app._on_split_edge(edge_x, box.y)  # 这一格此刻归面板
+
+        before = set(sl.selected)
+        split0 = app._split
+        await _real_click(pilot, app, edge_x, box.y + 1)
+        assert set(app.screen.query_one(SelectionList).selected) != before
+        assert app._split == split0 and not app._split_drag
+
+
+@pytest.mark.asyncio
+async def test_value_filter_click_beats_split_drag():
+    # 值筛选面板同理 (它贴着列头弹出, 更容易压在分界上)
+    from textual.widgets import SelectionList
+
+    rows = [
+        {"messages": [{"role": "user", "content": "q"}], "source": f"s{i % 7}"} for i in range(30)
+    ]
+    app = _make_app(rows)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.action_value_filter()
+        await pilot.pause()
+        await pilot.press("s", "o", "u", "r", "c", "e", "enter")
+        await pilot.pause()
+        sl = app.screen.query_one(SelectionList)
+        box = sl.content_region
+        edge_x = app.query_one("#table").region.right - 1
+        assert box.x <= edge_x < box.right
+        before = set(sl.selected)
+        await _real_click(pilot, app, edge_x, box.y)
+        assert set(app.screen.query_one(SelectionList).selected) != before
+        assert not app._split_drag
+
+
+@pytest.mark.asyncio
+async def test_panel_backdrop_does_not_drag_split():
+    # 面板外的模态背景也不是分界: 那一格归弹窗, 拖不动两区
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        edge_x = app.query_one("#table").region.right - 1
+        await pilot.press("c")
+        await pilot.pause()
+        assert not app._on_split_edge(edge_x, 1)  # 顶部那行是模态背景, 不在面板框里
+        split0 = app._split
+        await _drag_select(pilot, app, edge_x, 1, edge_x - 20, 1)
+        assert app._split == split0
+
+
+@pytest.mark.asyncio
+async def test_split_hint_clears_when_panel_opens():
+    # 鼠标停在分界上时开面板: "可拖"高亮得熄掉, 否则指着一条此刻拖不动的线
+    from textual.events import MouseMove
+
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        edge_x = app.query_one("#table").region.right - 1
+        await app.on_event(_mouse(app, MouseMove, edge_x, 10))
+        await pilot.pause()
+        assert app._split_hint and app.query_one("#table").has_class("split-hot")
+        await pilot.press("c")
+        await pilot.pause()
+        assert not app._split_hint and not app.query_one("#table").has_class("split-hot")
+
+
 @pytest.mark.asyncio
 async def test_ctrl_c_in_input_copies_input_selection():
     # 焦点在搜索/筛选输入框且框里有选中时, Ctrl+c 归 Input 自己的复制, 别被 app 这条绑定吃掉
