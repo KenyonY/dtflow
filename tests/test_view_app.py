@@ -2917,6 +2917,55 @@ async def test_panel_backdrop_does_not_drag_split():
 
 
 @pytest.mark.asyncio
+async def test_panel_aborts_split_drag_in_progress():
+    # 拖分界拖到一半弹窗压上来 (值扫描完成会自动弹): 这次拖拽就此作废, 不能在面板底下继续
+    from textual.events import MouseDown, MouseMove
+
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        edge_x = app.query_one("#table").region.right - 1
+        await app.on_event(_mouse(app, MouseDown, edge_x, 10))
+        await pilot.pause()
+        assert app._split_drag
+        split0 = app._split
+
+        await pilot.press("c")  # 面板压上来
+        await pilot.pause()
+        assert not app._split_drag and app.mouse_captured is None
+        await app.on_event(_mouse(app, MouseMove, edge_x - 20, 10))
+        await pilot.pause()
+        assert app._split == split0
+
+
+@pytest.mark.asyncio
+async def test_panel_aborts_column_drag_in_progress():
+    # 列宽拖到一半弹窗压上来: 面板关掉后不能留下"鼠标一动列宽就跟着跑"的幽灵拖拽
+    from textual.events import MouseDown, MouseMove
+
+    app = _chat_app(30)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        t = app.query_one("#table")
+        x = t.region.x + t.gutter.left + t._divider_cells()[0][0]
+        y = t.region.y + t.gutter.top
+        await app.on_event(_mouse(app, MouseDown, x, y))
+        await pilot.pause()
+        assert t._drag_col is not None
+        w0 = t.ordered_columns[0].width
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert t._drag_col is None and app.mouse_captured is None
+        await pilot.press("escape")
+        await pilot.pause()
+        await app.on_event(_mouse(app, MouseMove, x + 16, y))
+        await pilot.pause()
+        assert t.ordered_columns[0].width == w0
+        assert not app._manual_widths
+
+
+@pytest.mark.asyncio
 async def test_split_hint_clears_when_panel_opens():
     # 鼠标停在分界上时开面板: "可拖"高亮得熄掉, 否则指着一条此刻拖不动的线
     from textual.events import MouseMove

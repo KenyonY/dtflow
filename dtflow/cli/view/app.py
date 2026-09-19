@@ -218,6 +218,17 @@ class FastDataTable(DataTable):
         event.stop()
         event.prevent_default()
 
+    def cancel_drag(self) -> None:
+        """作废进行中的列宽拖拽 (弹窗抢走鼠标时用)。
+
+        不发 ColumnResized: 这次拖拽没走完, 拖到一半的宽度不该被记成手动列宽。
+        """
+        if self._drag_col is None:
+            return
+        self._drag_col = None
+        self.release_mouse()
+        self._set_hover_edge(None)
+
     def _on_leave(self, event: events.Leave) -> None:
         self._set_hover_edge(None)
 
@@ -1186,8 +1197,8 @@ class ViewApp(App):
         光按坐标判定不够: 分界拖拽挂在 app 上, 而弹窗(选列/值筛选/帮助)里的鼠标事件
         照样冒泡到 app —— 面板正好盖在分界上时, 点面板里的选项会被当成"按住分界",
         app 还会 capture_mouse, 于是随后的 Click 全被吞掉, 那一行选项永远点不中。
-        所以先做一次命中测试: 顶层 widget 不是两区本身 (被弹窗/通知浮层盖住, 或压根
-        是弹窗那一屏) 就不算分界。
+        所以先做一次命中测试: 问一句当前这一屏的这一格归谁, 不是两区本身就不算分界
+        (弹窗那一屏、模态背景都算不是)。
         """
         if self.query_one("#table", DataTable).has_class("hidden"):
             return False  # 详情放大态只有一个区, 没有分界
@@ -1225,11 +1236,18 @@ class ViewApp(App):
         self._set_split(round(frac * 100))
 
     def push_screen(self, *args, **kwargs):
-        """弹窗一盖上来, 主屏"分界可拖"的边框高亮就得熄灭。
+        """弹窗压上来之前, 把主屏拖到一半的鼠标状态机就地作废。
 
-        它只由鼠标移动开关, 而弹窗之后的鼠标事件都归弹窗, 不熄掉就会一直亮着,
-        指着一条此刻并不能拖的线 (能不能拖见 _on_split_edge)。
+        弹窗接管鼠标后主屏再也收不到 MouseUp, 拖拽既不会自己结束也停不下来 ——
+        分界会在面板底下被继续拖走; 列宽那边更糟, capture 一直挂着, 面板关掉后
+        只要动一下鼠标列宽就跟着跑。弹窗不总是手按出来的 (值扫描完自动弹), 拖到
+        一半被打断是真会发生的。顺带熄掉"分界可拖"的边框高亮: 它只由鼠标移动
+        开关, 弹窗之后不会再有 MouseMove 来关它。
         """
+        if self._split_drag:
+            self._split_drag = False
+            self.screen.release_mouse()
+        self.query_one("#table", FastDataTable).cancel_drag()
         self._set_split_hint(False)
         return super().push_screen(*args, **kwargs)
 
