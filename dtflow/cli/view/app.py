@@ -19,6 +19,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.errors import NoWidget
 from textual.geometry import Offset, Size
 from textual.message import Message
 from textual.screen import ModalScreen
@@ -238,7 +239,7 @@ _HELP = """[b]dt view 快捷键[/b]
   ↑/↓  j/k     选行 (详情联动)
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
   g/G          首/末行   Tab  切换焦点 (滚动长对话)
-  ←/→          水平滚动   h/l 水平滚动 2 字符
+  ←/→          水平滚动   h/l 水平滚动 4 字符
   ] / [        下/上一窗口 (大文件翻页)   :  跳到行号 (-1 为末行)
                  尾窗首次前翻/全量操作会按需建历史索引；follow 中上移暂停，G 恢复追尾
   n / N        详情下/上一字段 (对话按条走: msg0/msg1…; 亦可鼠标点击选中)
@@ -270,7 +271,7 @@ _HELP = """[b]dt view 快捷键[/b]
   Enter        放大当前样本 (Esc 返回)
   拖表头的 │   改列宽 (Excel 式): 表头每列右侧那道 │ 即分隔线, 鼠标压上去变 ┃
                  按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
-  z            切换 上下 / 左右 布局
+  z            切换 左右 / 上下 布局 (默认左右)
   +/-          调整表格/详情两区大小 (每档 5%)
   拖两区分界   表格与详情之间那两行(横排时是两列)边框即分界, 鼠标压上去边框变亮,
                  按住拖到哪分界就到哪; 双击恢复默认 65:35
@@ -746,7 +747,7 @@ class ViewApp(App):
         # DataTable 内置只认箭头键, 这里补 vim 键 (与帮助屏承诺一致)
         Binding("j", "cursor_down", "下移", show=False),
         Binding("k", "cursor_up", "上移", show=False),
-        # h/l 每次水平滚动 2 字符，方向键保留 Textual 默认的单字符跨度。
+        # h/l 每次水平滚动 4 字符，方向键保留 Textual 默认的单字符跨度。
         Binding("h", "scroll_left", "左滚", show=False),
         Binding("l", "scroll_right", "右滚", show=False),
         # 调整表格/详情两区大小 (竖排调高度, 横排调宽度)
@@ -1001,7 +1002,8 @@ class ViewApp(App):
         self._row_ok = scan.build_row_ok(spec)
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="main"):
+        # 默认左右布局 (horizontal): 表格在左、详情在右。z 切回上下。
+        with Vertical(id="main", classes="horizontal"):
             # fixed_columns=1: 冻结 # 索引列, 列多水平滚动时始终可见 (# 恒为第一列, 不可隐藏)
             yield FastDataTable(id="table", cursor_type="row", zebra_stripes=True, fixed_columns=1)
             yield VerticalScroll(id="detail")  # 每字段一个 Static, 动态挂载 (真实布局定位)
@@ -1176,18 +1178,33 @@ class ViewApp(App):
             self._apply_split()
 
     def _on_split_edge(self, x: int, y: int) -> bool:
-        """屏幕坐标是否压在两区分界上。
+        """屏幕坐标是否压在两区分界上 —— 且这一格此刻确实归两区所有。
 
         分界不是一条线而是两格: 表格那圈边框的下(右)缘 + 详情那圈边框的上(左)缘,
         两格都算, 手感与拖列宽的 2 格判定区一致。
+
+        光按坐标判定不够: 分界拖拽挂在 app 上, 而弹窗(选列/值筛选/帮助)里的鼠标事件
+        照样冒泡到 app —— 面板正好盖在分界上时, 点面板里的选项会被当成"按住分界",
+        app 还会 capture_mouse, 于是随后的 Click 全被吞掉, 那一行选项永远点不中。
+        所以先做一次命中测试: 顶层 widget 不是两区本身 (被弹窗/通知浮层盖住, 或压根
+        是弹窗那一屏) 就不算分界。
         """
         if self.query_one("#table", DataTable).has_class("hidden"):
             return False  # 详情放大态只有一个区, 没有分界
-        table = self.query_one("#table", DataTable).region
-        detail = self.query_one("#detail", VerticalScroll).region
+        table = self.query_one("#table", DataTable)
+        detail = self.query_one("#detail", VerticalScroll)
+        t, d = table.region, detail.region
         if self.query_one("#main", Vertical).has_class("horizontal"):
-            return table.right - 1 <= x <= detail.x and table.y <= y < table.bottom
-        return table.bottom - 1 <= y <= detail.y and table.x <= x < table.right
+            on_band = t.right - 1 <= x <= d.x and t.y <= y < t.bottom
+        else:
+            on_band = t.bottom - 1 <= y <= d.y and t.x <= x < t.right
+        if not on_band:
+            return False
+        try:
+            hit, _ = self.screen.get_widget_at(x, y)
+        except NoWidget:
+            return False
+        return hit is table or hit is detail
 
     def _set_split_hint(self, active: bool) -> None:
         if active == self._split_hint:
@@ -1651,10 +1668,10 @@ class ViewApp(App):
         self._table_action("cursor_up")
 
     def action_scroll_left(self) -> None:
-        self._table_action("scroll_left", repeat=2)
+        self._table_action("scroll_left", repeat=4)
 
     def action_scroll_right(self) -> None:
-        self._table_action("scroll_right", repeat=2)
+        self._table_action("scroll_right", repeat=4)
 
     def _half_scroll(self, direction: int) -> None:
         """半屏滚动: 详情放大时滚详情, 否则按半屏移动表格光标。"""

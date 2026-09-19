@@ -847,14 +847,14 @@ async def test_compressed_col_min_width_and_narrow_exempt():
 
 
 @pytest.mark.asyncio
-async def test_vim_horizontal_scroll_moves_two_cells():
+async def test_vim_horizontal_scroll_moves_four_cells():
     rows = [{f"column_{i}": "x" * 30 for i in range(20)}]
     app = _make_app(rows, fmt="generic")
     async with app.run_test(size=(60, 20)) as pilot:
         table = app.query_one("#table")
-        assert table.max_scroll_x >= 2
+        assert table.max_scroll_x >= 4
         await pilot.press("l")
-        assert table.scroll_target_x == 2
+        assert table.scroll_target_x == 4
         await pilot.press("h")
         assert table.scroll_target_x == 0
 
@@ -2681,6 +2681,8 @@ async def test_multi_click_selection_levels():
     )
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("z")  # 切回上下: 详情占满宽度, 长行不折行
+        await pilot.pause()
         f = _first_field(app)
         assert f._plain_lines()[1] == line
 
@@ -2755,6 +2757,8 @@ async def test_split_drag_resizes_panes():
     app = _chat_app(30)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("z")  # 默认左右, 切回上下
+        await pilot.pause()
         table = app.query_one("#table")
         edge_y = table.region.bottom - 1
         assert app._on_split_edge(table.region.x + 5, edge_y)  # 表格下边框
@@ -2773,6 +2777,8 @@ async def test_split_drag_clamps_and_ignores_zoom():
     app = _chat_app(30)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("z")  # 默认左右, 切回上下
+        await pilot.pause()
         table = app.query_one("#table")
         main = app.query_one("#main")
         x = table.region.x + 5
@@ -2789,11 +2795,9 @@ async def test_split_drag_clamps_and_ignores_zoom():
 
 @pytest.mark.asyncio
 async def test_split_drag_horizontal_layout():
-    # 横排 (z 切换) 时分界是竖的两列, 左右拖改宽度
+    # 横排 (默认布局) 时分界是竖的两列, 左右拖改宽度
     app = _chat_app(30)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await pilot.press("z")
         await pilot.pause()
         table = app.query_one("#table")
         edge_x = table.region.right - 1
@@ -2811,6 +2815,8 @@ async def test_split_drag_does_not_select_or_copy():
     app._copy_clipboard = lambda text: copied.append(text)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("z")  # 默认左右, 切回上下
+        await pilot.pause()
         table = app.query_one("#table")
         x, edge_y = table.region.x + 5, table.region.bottom - 1
         await _drag_select(pilot, app, x, edge_y, x, edge_y + 4)
@@ -2826,6 +2832,7 @@ async def test_split_double_click_restores_default():
     app = _chat_app(30)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await pilot.press("z")  # 默认左右, 切回上下
         app._set_split(30)
         await pilot.pause()
         table = app.query_one("#table")
@@ -3052,6 +3059,8 @@ async def test_last_column_divider_drawn_and_draggable(width):
 
     app = _chat_app(10)
     async with app.run_test(size=(width, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("z")  # 切回上下: 表格占满终端宽度, width 参数才是表格宽度
         await pilot.pause()
         t = app.query_one("#table")
         last = len(t.ordered_columns) - 1
