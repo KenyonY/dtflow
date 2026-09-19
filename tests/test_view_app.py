@@ -2949,14 +2949,18 @@ async def test_panel_aborts_column_drag_in_progress():
         t = app.query_one("#table")
         x = t.region.x + t.gutter.left + t._divider_cells()[0][0]
         y = t.region.y + t.gutter.top
+        w0 = t.ordered_columns[0].width
         await app.on_event(_mouse(app, MouseDown, x, y))
         await pilot.pause()
         assert t._drag_col is not None
-        w0 = t.ordered_columns[0].width
+        await app.on_event(_mouse(app, MouseMove, x + 16, y))
+        await pilot.pause()
+        assert t.ordered_columns[0].width > w0  # 确实拖宽了
 
         await pilot.press("c")
         await pilot.pause()
         assert t._drag_col is None and app.mouse_captured is None
+        assert t.ordered_columns[0].width == w0  # 当场退回, 不留个待回弹的半截宽
         await pilot.press("escape")
         await pilot.pause()
         await app.on_event(_mouse(app, MouseMove, x + 16, y))

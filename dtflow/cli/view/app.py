@@ -221,10 +221,13 @@ class FastDataTable(DataTable):
     def cancel_drag(self) -> None:
         """作废进行中的列宽拖拽 (弹窗抢走鼠标时用)。
 
-        不发 ColumnResized: 这次拖拽没走完, 拖到一半的宽度不该被记成手动列宽。
+        退回按下前的宽度, 也不发 ColumnResized: 这次拖拽没走完, 鼠标停在哪纯属偶然,
+        那个宽度既不该被记成手动列宽, 也不该留在屏幕上 —— 留着的话它会一直显示到
+        下一次 _rebuild_columns (改筛选/选列/翻窗口), 再毫无来由地弹回去。
         """
         if self._drag_col is None:
             return
+        self.set_column_width(self._drag_col, self._drag_w0)
         self._drag_col = None
         self.release_mouse()
         self._set_hover_edge(None)
