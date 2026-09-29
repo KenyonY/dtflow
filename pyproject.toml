@@ -78,6 +78,11 @@ logs = [
     "toolong>=1.5.0",
 ]
 
+showcase = [                     # scripts/view_showcase.py: 生成 README 的 dt view 截图/GIF
+    "playwright>=1.40.0",
+    "pillow>=10.0.0",
+]
+
 kv = [
     "flaxkv2>=0.1.9",
 ]

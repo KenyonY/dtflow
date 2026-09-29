@@ -7,7 +7,9 @@
     python scripts/view_showcase.py            # 全部重新生成
     python scripts/view_showcase.py --no-gif   # 只出 PNG
 
-依赖: playwright (含 chromium), ffmpeg。
+依赖: pip install "dtflow[showcase]" (playwright + pillow) && playwright install chromium; ffmpeg;
+字体: JetBrains Mono 与 Noto Sans Mono CJK SC (SVG 里指定, 缺失时 chromium 会退回别的字体,
+图会略有不同)。
 """
 
 from __future__ import annotations
@@ -289,7 +291,7 @@ async def _settle(app, pilot):
 
 
 async def _prompt(app, pilot, key: str, text: str, shots: Shots, name: str):
-    """按 key 打开输入框, 逐字打进 text (中途截一帧), 回车提交并等扫描完。"""
+    """按 key 打开输入框, 填入 text (提交前截一帧), 回车提交并等扫描完。"""
     await pilot.press(key)
     await pilot.pause()
     prompt = app.query_one("#prompt")
@@ -346,6 +348,7 @@ async def shoot_chat(path: Path, shots: Shots):
         # Enter 放大当前样本
         await pilot.press("enter")
         await pilot.pause()
+        assert app.query_one("#detail").has_class("zoomed"), "Enter 未放大, zoom 帧会与上一帧相同"
         shots.take(app, "zoom", 2.6)
         await pilot.press("escape")
         await pilot.pause()
@@ -380,7 +383,7 @@ async def shoot_dpo(path: Path, shots: Shots):
 # Rich 15 的 export_svg 有两处让中文走样:
 # 1. 字体写死 Fira Code, 本机没有时 chromium 退回的 CJK 字体宽窄不一;
 # 2. <text textLength> 按 len(text) 算, 而 x 坐标按 cell_len 推进 —— 中文 (1 字 2 cell)
-#    的文本段被压成一半宽。这里把 textLength 按 cell 宽重算, 字体换成本机确定存在的等宽 + CJK 等宽。
+#    的文本段被压成一半宽。这里把 textLength 按 cell 宽重算, 字体换成等宽 + CJK 等宽, 并关掉连字。
 FONT_STACK = '"JetBrains Mono", "Noto Sans Mono CJK SC", monospace'
 _TEXT_RE = re.compile(r'(<text[^>]*textLength=")([\d.]+)("[^>]*>)([^<]*)(</text>)')
 
@@ -393,7 +396,9 @@ def _fix_svg(svg: str, char_width: float = 20 * 0.61) -> str:
         return f"{m.group(1)}{cells * char_width:.1f}{m.group(3)}{m.group(4)}{m.group(5)}"
 
     svg = _TEXT_RE.sub(fix, svg)
-    return svg.replace('"Fira Code"', FONT_STACK).replace("Fira Code, monospace", FONT_STACK)
+    svg = svg.replace('"Fira Code"', FONT_STACK).replace("Fira Code, monospace", FONT_STACK)
+    # JetBrains Mono 的连字会把 -> == <= 画成 → ═ ≤, 终端里并不是这样
+    return svg.replace("<style>", "<style>\n        text { font-variant-ligatures: none; }", 1)
 
 
 def rasterize(svgs: List[Tuple[str, Path]], out_dir: Path) -> List[Path]:

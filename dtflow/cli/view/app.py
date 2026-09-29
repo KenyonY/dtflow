@@ -52,6 +52,10 @@ class FastDataTable(DataTable):
     height=1 非 auto_height。若引入 auto_width 列或 auto_height 行, 需回退父类实现。
     """
 
+    # DataTable 自带 enter→select_cursor, 焦点在表格时会先于 App 层的 enter→zoom 吃掉按键;
+    # 在这里同键覆盖, 直接转给 app 的放大动作 (弹窗/输入框里的 Enter 焦点不在表格, 不受影响)。
+    BINDINGS = [Binding("enter", "app.zoom", "放大")]
+
     def _update_dimensions(self, new_rows) -> None:
         for row_key in new_rows:
             row = self.rows.get(row_key)

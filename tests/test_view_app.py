@@ -698,6 +698,22 @@ def test_clipboard_osc52_wrapping(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_enter_key_zooms_from_table():
+    # 焦点在表格时按 Enter 要能放大 (DataTable 自带的 enter→select_cursor 不能把键吃掉), Esc 还原
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        detail = app.query_one("#detail")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert detail.has_class("zoomed")
+        assert app.query_one("#table").has_class("hidden")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not detail.has_class("zoomed")
+        assert app.query_one("#table").has_focus
+
+
+@pytest.mark.asyncio
 async def test_zoom_guards_table_navigation():
     app = _chat_app(5)
     async with app.run_test() as pilot:
