@@ -383,3 +383,16 @@ def test_call_id_searchable_on_calling_turn():
     # 搜 call_1 时 * 既能跳到 tool 返回, 也能跳到发起调用的那条 (纯文本与渲染同源)
     secs = R.render_detail_sections(_agent_row(), "openai_chat", split_turns=True)
     assert "call_1" in secs[1][2] and "call_1" in secs[2][2]
+
+
+def test_sharegpt_function_call_dict_without_name_not_misreported():
+    # value 已是 dict (合法 JSON) 只是缺 name: 只报缺函数名, 不该误报"不是合法 JSON"
+    row = {"conversations": [{"from": "function_call", "value": {"foo": 1}}]}
+    from rich.console import Console
+
+    out = Console(width=60)
+    with out.capture() as cap:
+        out.print(R.render_detail(row, "sharegpt"))
+    text = cap.get()
+    assert "⚠ 缺少函数名" in text and "⚠ arguments 不是合法 JSON" not in text
+    assert '"foo": 1' in text  # 按 JSON 格式化, 不是 Python repr

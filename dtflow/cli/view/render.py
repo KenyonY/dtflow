@@ -140,7 +140,8 @@ def _normalize_turns(row: Dict, fmt: str) -> List[Turn]:
                 if isinstance(fc, dict) and "name" in fc:
                     calls = _parse_tool_calls([fc])
                 else:  # 解析不了/没有 name: 原文当参数, 渲染时标红, 别让坏样本混过 calls 筛选
-                    calls = (ToolCall("?", _as_text(value), ""),)
+                    raw = value if isinstance(value, str) else orjson.dumps(value).decode()
+                    calls = (ToolCall("?", raw, ""),)
                 value = None
             turns.append(Turn(role=role, content=_as_text(value), tool_calls=calls))
         return turns
@@ -417,7 +418,7 @@ def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableT
     JSON 块用 Syntax 着色, 与代码块一样不叠加搜索高亮。
     """
     style = _ROLE_STYLE.get(turn.role, "bold white")
-    parts: List[RenderableType] = [Text(_turn_header(turn), style=style)]
+    parts: List[RenderableType] = [_hl(Text(_turn_header(turn), style=style), highlight)]
     if turn.reasoning:
         parts.append(Text("(reasoning)", style="dim italic"))
         parts.append(_hl(Text(turn.reasoning, style="dim"), highlight))
