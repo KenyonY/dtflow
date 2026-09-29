@@ -11,9 +11,11 @@ dt view 的数据模型与渲染层
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Dict, List, Optional, Pattern, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Pattern, Tuple
 
+import orjson
 from rich.console import Group, RenderableType
 from rich.rule import Rule
 from rich.syntax import Syntax
@@ -31,6 +33,8 @@ _ROLE_STYLE = {
     "gpt": "bold green",
     "tool": "yellow",
     "function": "yellow",
+    "observation": "yellow",
+    "function_call": "bold green",
 }
 
 _CODE_FENCE = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
@@ -55,19 +59,88 @@ def detect_format(rows: List[Dict]) -> str:
     return "generic"
 
 
-def _normalize_turns(row: Dict, fmt: str) -> List[Tuple[str, str]]:
-    """统一抽取 (role, content) 列表, 供表格摘要和详情渲染共用。"""
+class ToolCall(NamedTuple):
+    name: str
+    arguments: str  # 原样保留: 是否合法 JSON 正是要检查的东西, 渲染时再判断
+    call_id: str
+
+
+class Turn(NamedTuple):
+    """一条消息归一化后的样子, 供表格摘要与详情渲染共用。"""
+
+    role: str
+    content: str
+    reasoning: str = ""  # reasoning_content / reasoning (思维链)
+    tool_calls: Tuple[ToolCall, ...] = ()
+    call_id: str = ""  # tool 消息回应的 tool_call_id
+
+    @property
+    def chars(self) -> int:
+        """模型实际读/写的字符数: 正文 + 思维链 + 工具调用参数。"""
+        return (
+            len(self.content)
+            + len(self.reasoning)
+            + sum(len(c.name) + len(c.arguments) for c in self.tool_calls)
+        )
+
+
+def _parse_tool_calls(raw: Any) -> Tuple[ToolCall, ...]:
+    """openai 的 tool_calls 列表 → ToolCall 元组; 结构不对的条目保留原样便于发现。"""
+    if not isinstance(raw, list):
+        return ()
+    out = []
+    for tc in raw:
+        if not isinstance(tc, dict):
+            out.append(ToolCall("?", str(tc), ""))
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+        args = fn.get("arguments", "")
+        if not isinstance(args, str):  # 有的数据直接放 dict
+            args = orjson.dumps(args).decode()
+        out.append(ToolCall(str(fn.get("name", "?")), args, str(tc.get("id") or "")))
+    return tuple(out)
+
+
+def _normalize_turns(row: Dict, fmt: str) -> List[Turn]:
+    """统一抽取消息列表, 供表格摘要和详情渲染共用。
+
+    openai_chat: content 为 null 的 tool_calls 消息不再显示成 "None", 调用本身进 tool_calls;
+    sharegpt: LLaMA-Factory 约定 from=function_call 的 value 是 {"name","arguments"} JSON。
+    """
     if fmt == "openai_chat":
         msgs = row.get("messages") or []
-        return [(str(m.get("role", "")), _as_text(m.get("content", ""))) for m in msgs]
+        return [
+            Turn(
+                role=str(m.get("role", "")),
+                content=_as_text(m.get("content")),
+                reasoning=_as_text(m.get("reasoning_content") or m.get("reasoning")),
+                tool_calls=_parse_tool_calls(m.get("tool_calls")),
+                call_id=str(m.get("tool_call_id") or ""),
+            )
+            for m in msgs
+        ]
     if fmt == "sharegpt":
-        msgs = row.get("conversations") or []
-        return [(str(m.get("from", "")), _as_text(m.get("value", ""))) for m in msgs]
+        turns = []
+        for m in row.get("conversations") or []:
+            role, value = str(m.get("from", "")), m.get("value")
+            calls: Tuple[ToolCall, ...] = ()
+            if role == "function_call":
+                try:
+                    fc = orjson.loads(value) if isinstance(value, str) else value
+                except orjson.JSONDecodeError:
+                    fc = None
+                if isinstance(fc, dict) and "name" in fc:
+                    calls = _parse_tool_calls([fc])
+                    value = None
+            turns.append(Turn(role=role, content=_as_text(value), tool_calls=calls))
+        return turns
     return []
 
 
 def _as_text(v: Any) -> str:
-    """content 可能是 str, 也可能是多模态 list, 统一成字符串。"""
+    """content 可能是 str/None, 也可能是多模态 list, 统一成字符串。"""
+    if v is None:
+        return ""
     if isinstance(v, str):
         return v
     if isinstance(v, list):
@@ -89,13 +162,33 @@ def _preview(text: str, n: Optional[int] = 40) -> str:
     return text[:n] + "…" if len(text) > n else text
 
 
-def _roles_sig(turns: List[Tuple[str, str]]) -> str:
-    """角色序列签名, 如 u→a→u; 长了截断。"""
-    abbr = {"system": "sys", "user": "u", "human": "u", "assistant": "a", "gpt": "a"}
-    seq = [abbr.get(r, r[:3]) for r, _ in turns]
+def _roles_sig(turns: List[Turn]) -> str:
+    """角色序列签名, 如 u→a→t→a; 长了截断。工具返回记 t, 发起调用的仍是 a。"""
+    abbr = {
+        "system": "sys",
+        "user": "u",
+        "human": "u",
+        "assistant": "a",
+        "gpt": "a",
+        "tool": "t",
+        "function": "t",
+        "observation": "t",
+        "function_call": "a",  # sharegpt 里发起调用的是模型自己
+    }
+    seq = [abbr.get(t.role, t.role[:3]) for t in turns]
     if len(seq) > 5:
         seq = seq[:4] + ["…"]
     return "→".join(seq)
+
+
+def _tools_sig(turns: List[Turn]) -> str:
+    """样本里调用过的函数名 (按首次出现顺序去重), 无工具调用为空。"""
+    seen: List[str] = []
+    for t in turns:
+        for c in t.tool_calls:
+            if c.name not in seen:
+                seen.append(c.name)
+    return ",".join(seen)
 
 
 # --------------------------------------------------------------------------- #
@@ -123,8 +216,8 @@ def _top_level_fields(rows: List[Dict], skip: set, reserved: set) -> List[str]:
 # 各格式的"派生列"名 (计算列, 无对应字段路径; 与标量元数据列区分)。
 # 筛选时: 派生列按表格显示值比较, 其余名字当真实字段路径解析。
 _DERIVED_COLUMNS = {
-    "openai_chat": ["turns", "roles", "first_user", "chars"],
-    "sharegpt": ["turns", "roles", "first_user", "chars"],
+    "openai_chat": ["turns", "roles", "first_user", "chars", "tools"],
+    "sharegpt": ["turns", "roles", "first_user", "chars", "tools"],
     "dpo": ["prompt", "chosen_chars", "rejected_chars"],
     "alpaca": ["instruction", "has_input", "out_chars"],
 }
@@ -194,12 +287,13 @@ def row_cells(
 
     if fmt in ("openai_chat", "sharegpt"):
         turns = _normalize_turns(row, fmt)
-        first_user = next((c for r, c in turns if r in ("user", "human")), "")
+        first_user = next((t.content for t in turns if t.role in ("user", "human")), "")
         derived.update(
             turns=str(len(turns)),
             roles=_roles_sig(turns),
             first_user=_preview(first_user, n_long),
-            chars=str(sum(len(c) for _, c in turns)),
+            chars=str(sum(t.chars for t in turns)),
+            tools=_tools_sig(turns),
         )
     elif fmt == "dpo":
         derived.update(
@@ -280,18 +374,76 @@ def _render_content(content: str, highlight: Optional[Pattern] = None) -> List[R
     return out
 
 
-def _render_turn(role: str, content: str, highlight: Optional[Pattern] = None) -> RenderableType:
-    """单条消息: [role] 标题行 + 正文。"""
-    style = _ROLE_STYLE.get(role, "bold white")
-    return Group(Text(f"[{role}]", style=style), *_render_content(content, highlight))
+def _json_block(raw: str) -> Tuple[Optional[RenderableType], bool]:
+    """字符串若是合法 JSON 对象/数组, 格式化成 json 高亮块; 否则返回 (None, False)。"""
+    try:
+        obj = orjson.loads(raw)
+    except orjson.JSONDecodeError:
+        return None, False
+    if not isinstance(obj, (dict, list)):
+        return None, True  # 合法 JSON 但只是标量, 原样显示即可
+    pretty = json.dumps(obj, ensure_ascii=False, indent=2)
+    return Syntax(pretty, "json", theme="ansi_dark", word_wrap=True, padding=(0, 1)), True
 
 
-def _render_conversation(
-    turns: List[Tuple[str, str]], highlight: Optional[Pattern] = None
-) -> RenderableType:
+def _turn_header(turn: Turn) -> str:
+    """``[role]``; 发起调用的写成 ``[assistant → fn1, fn2]``, 工具返回写成 ``[tool ← call_id]``。"""
+    if turn.tool_calls:
+        return f"[{turn.role} → {', '.join(c.name for c in turn.tool_calls)}]"
+    if turn.call_id:
+        return f"[{turn.role} ← {turn.call_id}]"
+    return f"[{turn.role}]"
+
+
+def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableType:
+    """单条消息: 标题行 + (思维链) + 正文 + (工具调用块)。
+
+    看 agent 数据最要核对的三件事都直接摆出来: arguments 是不是合法 JSON (不合法标红),
+    tool 返回对应哪次调用 (标题带 call_id), 模型最后说的话是否有工具返回支撑 (紧挨着看)。
+    JSON 块用 Syntax 着色, 与代码块一样不叠加搜索高亮。
+    """
+    style = _ROLE_STYLE.get(turn.role, "bold white")
+    parts: List[RenderableType] = [Text(_turn_header(turn), style=style)]
+    if turn.reasoning:
+        parts.append(Text("(reasoning)", style="dim italic"))
+        parts.append(_hl(Text(turn.reasoning, style="dim"), highlight))
+    if turn.content:
+        if turn.call_id or turn.role in ("tool", "observation", "function"):
+            block, _ = _json_block(turn.content)  # 工具返回常是 JSON, 格式化后才看得清
+            parts.append(block or _hl(Text(turn.content), highlight))
+        else:
+            parts.extend(_render_content(turn.content, highlight))
+    for call in turn.tool_calls:
+        title = Text(f"⚙ {call.name}", style="bold yellow")
+        if call.call_id:
+            title.append(f"  {call.call_id}", style="dim")
+        parts.append(title)
+        block, valid = _json_block(call.arguments)
+        if block is not None:
+            parts.append(block)
+        else:
+            parts.append(_hl(Text(call.arguments), highlight))
+            if not valid:
+                parts.append(Text("⚠ arguments 不是合法 JSON", style="bold red"))
+    return Group(*parts)
+
+
+def _turn_plain(turn: Turn) -> str:
+    """与 _render_turn 同源的纯文本 (命中查找用)。"""
+    lines = [_turn_header(turn)]
+    if turn.reasoning:
+        lines.append(turn.reasoning)
+    if turn.content:
+        lines.append(turn.content)
+    for c in turn.tool_calls:
+        lines.append(f"{c.name}({c.arguments})")
+    return "\n".join(lines)
+
+
+def _render_conversation(turns: List[Turn], highlight: Optional[Pattern] = None) -> RenderableType:
     parts: List[RenderableType] = []
-    for role, content in turns:
-        parts.append(_render_turn(role, content, highlight))
+    for turn in turns:
+        parts.append(_render_turn(turn, highlight))
         parts.append(Text(""))
     return Group(*parts)
 
@@ -329,12 +481,10 @@ def render_detail_sections(
         turns = _normalize_turns(row, fmt)
         secs: List[Tuple[str, RenderableType, str]] = []
         if split_turns:
-            for i, (role, content) in enumerate(turns):
-                secs.append(
-                    (f"msg{i}", _render_turn(role, content, highlight), f"[{role}]\n{content}")
-                )
+            for i, turn in enumerate(turns):
+                secs.append((f"msg{i}", _render_turn(turn, highlight), _turn_plain(turn)))
         else:
-            plain = "\n".join(f"[{r}]\n{c}" for r, c in turns)
+            plain = "\n".join(_turn_plain(t) for t in turns)
             secs.append(("对话", _render_conversation(turns, highlight), plain))
         extra = {
             k: v

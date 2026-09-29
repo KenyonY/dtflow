@@ -78,8 +78,99 @@ def test_derived_and_diagnostic_columns_are_not_hidden_or_duplicated():
 
 
 def test_roles_sig_truncates():
-    turns = [("user", "")] * 8
+    turns = [R.Turn("user", "")] * 8
     assert R._roles_sig(turns).endswith("…")
+
+
+def _agent_row():
+    return {
+        "messages": [
+            {"role": "user", "content": "北京天气"},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "先查工具",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city": "北京"}'},
+                    },
+                    {"id": "call_2", "function": {"name": "search", "arguments": "{bad"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"temp": 22}'},
+            {"role": "assistant", "content": "22 度"},
+        ]
+    }
+
+
+def test_tool_calls_derived_columns():
+    # content=null 的调用消息不再算成 "None"; tools 列列出调用过的函数; 工具返回记 t
+    row = _agent_row()
+    cols = R.build_columns([row], "openai_chat")
+    cells = dict(zip(cols, R.row_cells(0, row, "openai_chat", cols), strict=False))
+    assert cells["roles"] == "u→a→t→a"
+    assert cells["tools"] == "get_weather,search"
+    assert cells["turns"] == "4"
+    # chars = 正文 + 思维链 + 函数名 + 参数, 不含 "None"
+    expected = (
+        len("北京天气")
+        + len("先查工具")
+        + len("get_weather")
+        + len('{"city": "北京"}')
+        + len("search")
+        + len("{bad")
+        + len('{"temp": 22}')
+        + len("22 度")
+    )
+    assert cells["chars"] == str(expected)
+    assert "tools" in R.derived_columns("openai_chat")  # 筛选 tools~=get_weather 走派生列
+
+
+def test_tool_calls_render_detail():
+    from rich.console import Console
+
+    row = _agent_row()
+    out = Console(width=60)
+    with out.capture() as cap:
+        out.print(R.render_detail(row, "openai_chat"))
+    text = cap.get()
+    assert "None" not in text  # 回归: content=null 曾显示为 None
+    assert "[assistant → get_weather, search]" in text
+    assert "(reasoning)" in text and "先查工具" in text
+    assert "⚙ get_weather" in text and "call_1" in text
+    assert '"city": "北京"' in text  # 合法参数格式化展示
+    assert "⚠ arguments 不是合法 JSON" in text  # 坏参数标出来
+    assert "[tool ← call_1]" in text
+    # 纯文本与渲染同源: 函数名/参数可被 * 命中定位
+    secs = R.render_detail_sections(row, "openai_chat", split_turns=True)
+    assert "get_weather" in secs[1][2] and "{bad" in secs[1][2]
+    assert secs[2][2].startswith("[tool ← call_1]")
+
+
+def test_sharegpt_function_call_and_observation():
+    row = {
+        "conversations": [
+            {"from": "human", "value": "查天气"},
+            {
+                "from": "function_call",
+                "value": '{"name": "get_weather", "arguments": {"city": "上海"}}',
+            },
+            {"from": "observation", "value": '{"temp": 25}'},
+            {"from": "gpt", "value": "25 度"},
+        ]
+    }
+    cols = R.build_columns([row], "sharegpt")
+    cells = dict(zip(cols, R.row_cells(0, row, "sharegpt", cols), strict=False))
+    assert cells["roles"] == "u→a→t→a"  # 与 openai_chat 一致: 发起调用是 a, 返回是 t
+    assert cells["tools"] == "get_weather"
+    from rich.console import Console
+
+    out = Console(width=60)
+    with out.capture() as cap:
+        out.print(R.render_detail(row, "sharegpt"))
+    assert "[function_call → get_weather]" in cap.get() and '"city": "上海"' in cap.get()
 
 
 def test_multimodal_content_flattened():

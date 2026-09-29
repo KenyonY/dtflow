@@ -3213,7 +3213,7 @@ async def test_reset_returns_to_leftmost():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("width", [120, 52])  # 列没铺满 (末列右缘在表格中间) / 恰好铺满到右缘
+@pytest.mark.parametrize("width", [120, 61])  # 列没铺满 (末列右缘在表格中间) / 恰好铺满到右缘
 async def test_last_column_divider_drawn_and_draggable(width):
     # 末列右缘同样画分隔线并可拖, 否则最右一列没法调宽
     from dtflow.cli.view.app import FastDataTable
