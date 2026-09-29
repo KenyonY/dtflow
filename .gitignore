@@ -67,3 +67,6 @@ Thumbs.db
 label-app/
 next-gen-designer/
 审核标准与数据/
+
+# 传播文案草稿 (本地, 不入库)
+.launch-drafts/
