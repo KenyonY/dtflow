@@ -20,6 +20,8 @@ fi
 
 echo "生成 CHANGELOG.md..."
 git-cliff --tag "$VERSION" -o CHANGELOG.md
+# git-cliff 输出末尾带多余空行, pre-commit 的 end-of-file-fixer 会改文件并让提交失败 → 先归一
+printf '%s\n' "$(cat CHANGELOG.md)" > CHANGELOG.md
 
 echo "提交 changelog 更新..."
 git add CHANGELOG.md

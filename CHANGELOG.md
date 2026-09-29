@@ -4,6 +4,7 @@
 
 ### Ci
 
+- **release**: Changelog 与 release 正文末尾附 Full Changelog 对比链接
 - **release**: Release 正文改由 git-cliff 生成, 不再依赖只统计 PR 的自动说明
 
 
