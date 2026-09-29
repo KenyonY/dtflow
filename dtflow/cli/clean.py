@@ -2,27 +2,16 @@
 CLI 数据清洗和去重相关命令
 """
 
-import os
-import shutil
-import tempfile
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from rich.markup import escape
 
 from ..core import DataTransformer
-from ..storage.io import save_data
-from ..streaming import load_stream
+from ..streaming import StreamingTransformer
 from ..utils.field_path import get_field_with_spec
-from .common import (
-    _check_file_format,
-    _get_value_len,
-    _is_empty_value,
-    _is_streaming_supported,
-    _parse_field_list,
-    _require_file_exists,
-)
+from .common import _get_value_len, _is_empty_value, _parse_field_list
 from .output import die, die_io_error, die_usage, emit_action, log
+from .pipe import input_label, open_input, resolve_output, write_output
 
 
 def dedupe(
@@ -30,17 +19,18 @@ def dedupe(
     key: Optional[str] = None,
     similar: Optional[float] = None,
     output: Optional[str] = None,
+    in_place: bool = False,
     dry_run: bool = False,
 ) -> None:
     """
     数据去重。
 
     支持两种模式：
-    1. 精确去重（默认）：完全相同的数据才去重
-    2. 相似度去重：使用 MinHash+LSH 算法，相似度超过阈值则去重
+    1. 精确去重（默认）：完全相同的数据才去重, 流式 (O(唯一键) 内存), 支持 stdin
+    2. 相似度去重：使用 MinHash+LSH 算法，相似度超过阈值则去重 (全量加载)
 
     Args:
-        filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        filename: 输入文件路径 (- 为 stdin)，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
         key: 去重依据字段，支持嵌套路径语法：
             - meta.source        嵌套字段
             - messages[0].role   数组索引
@@ -49,23 +39,19 @@ def dedupe(
             - messages[*].role:join  展开所有元素
             多个字段用逗号分隔。不指定则全量去重
         similar: 相似度阈值（0-1），指定后启用相似度去重模式，需要指定 --key
-        output: 输出文件路径，不指定则覆盖原文件
+        output: 输出文件路径; 不指定则写 stdout
+        in_place: 原地写回输入文件
         dry_run: 预演模式。跑完全流程但不写出，输出统计摘要后退出码 10
 
     Examples:
-        dt dedupe data.jsonl                       # 全量精确去重
-        dt dedupe data.jsonl --key=text            # 按 text 字段精确去重
-        dt dedupe data.jsonl --key=user,timestamp  # 按多字段组合精确去重
+        dt dedupe data.jsonl -o out.jsonl          # 全量精确去重
+        dt dedupe data.jsonl --key=text -i         # 按 text 字段精确去重, 原地写回
+        dt dedupe data.jsonl --key=user,timestamp  # 按多字段组合精确去重 → stdout
         dt dedupe data.jsonl --key=meta.id         # 按嵌套字段去重
         dt dedupe data.jsonl --key=messages[0].content   # 按第一条消息内容去重
         dt dedupe data.jsonl --key=text --similar=0.8    # 相似度去重
         dt dedupe data.jsonl --dry-run             # 预演: 只报告去重统计
     """
-    filepath = Path(filename)
-
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
-
     # 相似度去重模式必须指定 key
     if similar is not None and not key:
         die_usage(
@@ -76,79 +62,57 @@ def dedupe(
     if similar is not None and (similar <= 0 or similar > 1):
         die_usage("--similar 参数必须在 0-1 之间")
 
-    # 加载数据
-    log(f"📊 加载数据: {filepath}")
-    try:
-        dt = DataTransformer.load(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
+    out = resolve_output(filename, output, in_place)
+    st = open_input(filename)
+    stats: Dict[str, Any] = {"mode": "similar" if similar is not None else "exact", "key": key}
 
-    original_count = len(dt)
-    log(f"   共 {original_count} 条数据")
-
-    # 执行去重
-    if similar is not None:
-        log(f"🔑 相似度去重: 字段={escape(key)}, 阈值={similar}")
-        log("🔄 执行去重（MinHash+LSH）...")
+    if similar is not None or dry_run:
+        # 相似度去重要全量; dry-run 要精确的 input/removed 计数
+        log(f"📊 加载数据: {input_label(filename)}")
         try:
-            result = dt.dedupe_similar(key, threshold=similar)
-        except ImportError as e:
-            die(
-                "missing_dependency",
-                str(e),
-                suggestion="pip install datasketch 或改用精确去重",
-            )
-    else:
-        # 精确去重模式
-        dedupe_key: Any = None
-        if key:
-            keys = [k.strip() for k in key.split(",")]
-            if len(keys) == 1:
-                dedupe_key = keys[0]
-                log(f"🔑 按字段精确去重: {escape(dedupe_key)}")
-            else:
-                dedupe_key = keys
-                log(f"🔑 按多字段组合精确去重: {escape(', '.join(dedupe_key))}")
+            data = st.collect()
+        except Exception as e:
+            die_io_error(e, operation="读取", path=input_label(filename))
+        log(f"   共 {len(data)} 条数据")
+        dt = DataTransformer(data)
+        if similar is not None:
+            log(f"🔑 相似度去重: 字段={escape(key)}, 阈值={similar}")
+            try:
+                result = dt.dedupe_similar(key, threshold=similar).data
+            except ImportError as e:
+                die(
+                    "missing_dependency", str(e), suggestion="pip install datasketch 或改用精确去重"
+                )
         else:
-            log("🔑 全量精确去重")
-
-        log("🔄 执行去重...")
-        result = dt.dedupe(dedupe_key)
-
-    dedupe_count = len(result)
-    removed_count = original_count - dedupe_count
-    output_path = output or str(filepath)
-    stats = {
-        "input_rows": original_count,
-        "output_rows": dedupe_count,
-        "removed_rows": removed_count,
-        "mode": "similar" if similar is not None else "exact",
-        "key": key,
-    }
-
-    if dry_run:
-        emit_action(
-            "dedupe",
-            input_files=[str(filepath)],
-            output=output_path,
-            stats=stats,
-            dry_run=True,
+            result = dt.dedupe(_dedupe_key(key)).data
+        stats.update(
+            input_rows=len(data), output_rows=len(result), removed_rows=len(data) - len(result)
         )
-        return
+        if dry_run:
+            emit_action(
+                "dedupe", input_files=[input_label(filename)], output=out, stats=stats, dry_run=True
+            )
+            return
+        st = StreamingTransformer(iter(result), st._source_path, total=len(result))
+    else:
+        dedupe_key = _dedupe_key(key)
+        if dedupe_key is None:
+            log("🔑 全量精确去重")
+        else:
+            log(f"🔑 按字段精确去重: {escape(str(dedupe_key))}")
+        if st._total is not None:
+            stats["input_rows"] = st._total
+        st = st.dedupe(dedupe_key, raw=True)
 
-    # 保存结果
-    log(f"💾 保存结果: {output_path}")
-    try:
-        result.save(output_path)
-    except Exception as e:
-        die_io_error(e, operation="保存", path=output_path)
+    write_output(st, out, action="dedupe", inputs=[filename], stats=stats)
 
-    emit_action(
-        "dedupe",
-        input_files=[str(filepath)],
-        output=output_path,
-        stats=stats,
-    )
+
+def _dedupe_key(key: Optional[str]) -> Any:
+    """--key 'a,b' → ['a', 'b']; 单个 → 'a'; 空 → None (全量)"""
+    if not key:
+        return None
+    keys = [k.strip() for k in key.split(",")]
+    return keys[0] if len(keys) == 1 else keys
 
 
 def clean(
@@ -168,13 +132,14 @@ def clean(
     max_tokens: Optional[str] = None,
     model: str = "cl100k_base",
     output: Optional[str] = None,
+    in_place: bool = False,
     dry_run: bool = False,
 ) -> None:
     """
-    数据清洗（默认流式处理）。
+    数据清洗（流式处理, 支持 stdin/stdout 管道）。
 
     Args:
-        filename: 输入文件路径，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
+        filename: 输入文件路径 (- 为 stdin)，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
         drop_empty: 删除空值记录，支持嵌套路径语法
             - 不带值：删除任意字段为空的记录
             - 指定字段：删除指定字段为空的记录（逗号分隔）
@@ -188,7 +153,8 @@ def clean(
         fill: 填充空值，格式 "field:default_value"（逗号分隔多个）
         reorder: 控制字段顺序（逗号分隔），未列出的字段追加在后面
         strip: 去除所有字符串字段的首尾空白
-        output: 输出文件路径，不指定则覆盖原文件
+        output: 输出文件路径; 不指定则写 stdout
+        in_place: 原地写回输入文件
 
     Examples:
         dt clean data.jsonl --drop-empty                    # 删除任意空值记录
@@ -208,11 +174,6 @@ def clean(
         dt clean data.jsonl --min-tokens=text:50 --model=gpt-4 # 使用 gpt-4 分词器
         dt clean data.jsonl --drop-empty --dry-run          # 预演: 只报告将过滤多少条
     """
-    filepath = Path(filename)
-
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
-
     # 解析参数
     try:
         min_len_field, min_len_value = _parse_len_param(min_len) if min_len else (None, None)
@@ -279,96 +240,60 @@ def clean(
             f"🔄 过滤 {escape(max_tokens_field)} tokens > {max_tokens_value} 的记录 (model={token_model})..."
         )
 
-    output_path = output or str(filepath)
+    out = resolve_output(filename, output, in_place)
+    st = open_input(filename)
 
-    # dry-run 统一走内存模式：即使输入支持流式也加载，保证能返回准确的 input/output/removed
-    # 这样 dry-run 的成本可控 — 它本来就是预演
-    force_memory_mode = dry_run
-
-    # 对于 JSONL 文件使用流式处理
-    if _is_streaming_supported(filepath) and not force_memory_mode:
-        input_resolved = filepath.resolve()
-        output_resolved = Path(output_path).resolve()
-        use_temp_file = input_resolved == output_resolved
-
-        log(f"📊 流式加载: {filepath}")
-
-        # 如果输入输出相同，使用临时文件
-        if use_temp_file:
-            log("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=output_resolved.suffix,
-                prefix=".tmp_",
-                dir=output_resolved.parent,
-            )
-            os.close(temp_fd)
-            actual_output = temp_path
-        else:
-            actual_output = output_path
-
+    if dry_run:
+        # dry-run 走内存模式：返回准确的 input/output/removed 与各步统计 — 它本来就是预演
+        log(f"📊 加载数据: {input_label(filename)}")
         try:
-            count = _clean_streaming(
-                str(filepath),
-                actual_output,
-                strip=strip,
-                empty_fields=empty_fields,
-                min_len_field=min_len_field,
-                min_len_value=min_len_value,
-                max_len_field=max_len_field,
-                max_len_value=max_len_value,
-                keep_set=keep_set,
-                drop_fields_set=drop_fields_set,
-                rename_map=rename_map,
-                promote_list=promote_list,
-                add_field_map=add_field_map,
-                fill_map=fill_map,
-                reorder_fields=reorder_fields,
-                min_tokens_field=min_tokens_field,
-                min_tokens_value=min_tokens_value,
-                max_tokens_field=max_tokens_field,
-                max_tokens_value=max_tokens_value,
-                token_model=token_model,
-            )
-
-            # 如果使用了临时文件，移动到目标位置
-            if use_temp_file:
-                shutil.move(temp_path, output_path)
-
-            log(f"💾 保存结果: {output_path}")
-            emit_action(
-                "clean",
-                input_files=[str(filepath)],
-                output=output_path,
-                stats={"output_rows": count},
-            )
+            rows = st.collect()
         except Exception as e:
-            # 清理临时文件
-            if use_temp_file and os.path.exists(temp_path):
-                os.unlink(temp_path)
-            die("clean_failed", f"清洗失败: {e}")
+            die_io_error(e, operation="读取", path=input_label(filename))
+        data, step_stats = _clean_data_single_pass(
+            rows,
+            strip=strip,
+            empty_fields=empty_fields,
+            min_len_field=min_len_field,
+            min_len_value=min_len_value,
+            max_len_field=max_len_field,
+            max_len_value=max_len_value,
+            keep_fields=keep_fields,
+            drop_fields=drop_fields_set,
+            rename_map=rename_map,
+            promote_list=promote_list,
+            add_field_map=add_field_map,
+            fill_map=fill_map,
+            reorder_fields=reorder_fields,
+            min_tokens_field=min_tokens_field,
+            min_tokens_value=min_tokens_value,
+            max_tokens_field=max_tokens_field,
+            max_tokens_value=max_tokens_value,
+            token_model=token_model,
+        )
+        stats: Dict[str, Any] = {
+            "input_rows": len(rows),
+            "output_rows": len(data),
+            "removed_rows": len(rows) - len(data),
+        }
+        if step_stats:
+            stats["steps"] = step_stats
+        emit_action(
+            "clean", input_files=[input_label(filename)], output=out, stats=stats, dry_run=True
+        )
         return
 
-    # 内存模式（非流式或 dry-run）
-    log(f"📊 加载数据: {filepath}")
-    try:
-        dt = DataTransformer.load(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
-
-    original_count = len(dt)
-    log(f"   共 {original_count} 条数据")
-
-    # 单次遍历执行所有清洗操作
-    data, step_stats = _clean_data_single_pass(
-        dt.data,
+    log(f"📊 流式处理: {input_label(filename)}")
+    st = build_clean_stream(
+        st,
         strip=strip,
         empty_fields=empty_fields,
         min_len_field=min_len_field,
         min_len_value=min_len_value,
         max_len_field=max_len_field,
         max_len_value=max_len_value,
-        keep_fields=keep_fields,
-        drop_fields=drop_fields_set,
+        keep_set=keep_set,
+        drop_fields_set=drop_fields_set,
         rename_map=rename_map,
         promote_list=promote_list,
         add_field_map=add_field_map,
@@ -380,40 +305,7 @@ def clean(
         max_tokens_value=max_tokens_value,
         token_model=token_model,
     )
-
-    final_count = len(data)
-    removed_count = original_count - final_count
-    stats = {
-        "input_rows": original_count,
-        "output_rows": final_count,
-        "removed_rows": removed_count,
-    }
-    if step_stats:
-        stats["steps"] = step_stats
-
-    if dry_run:
-        emit_action(
-            "clean",
-            input_files=[str(filepath)],
-            output=output_path,
-            stats=stats,
-            dry_run=True,
-        )
-        return
-
-    # 保存结果
-    log(f"💾 保存结果: {output_path}")
-    try:
-        save_data(data, output_path)
-    except Exception as e:
-        die_io_error(e, operation="保存", path=output_path)
-
-    emit_action(
-        "clean",
-        input_files=[str(filepath)],
-        output=output_path,
-        stats=stats,
-    )
+    write_output(st, out, action="clean", inputs=[filename])
 
 
 def _parse_rename_param(param: str) -> Dict[str, str]:
@@ -682,9 +574,8 @@ def _clean_data_single_pass(
     return result, step_stats
 
 
-def _clean_streaming(
-    input_path: str,
-    output_path: str,
+def build_clean_stream(
+    st: StreamingTransformer,
     strip: bool = False,
     empty_fields: Optional[List[str]] = None,
     min_len_field: Optional[str] = None,
@@ -704,12 +595,7 @@ def _clean_streaming(
     max_tokens_value: Optional[int] = None,
     token_model: str = "cl100k_base",
 ) -> int:
-    """
-    流式清洗数据。
-
-    Returns:
-        处理后的数据条数
-    """
+    """把清洗步骤挂到数据流上 (惰性)。CLI 与 pipeline 共用。"""
 
     # 延迟导入 count_tokens（仅在需要时）
     _count_tokens = None
@@ -766,9 +652,6 @@ def _clean_streaming(
 
         return item
 
-    # 构建流式处理链
-    st = load_stream(input_path)
-
     # 以下所有 transform/filter 均使用 raw=True，因为清洗函数直接操作原始 dict
 
     # 如果需要 strip，先执行 strip 转换（在过滤之前，这样空值检测更准确）
@@ -820,4 +703,4 @@ def _clean_streaming(
     if reorder_fields is not None:
         st = st.transform(lambda item: _reorder_item(item, reorder_fields), raw=True)
 
-    return st.save(output_path)
+    return st

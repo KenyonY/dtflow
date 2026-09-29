@@ -9,7 +9,6 @@ from rich.markup import escape
 
 from ..core import DataTransformer
 from ..storage.io import save_data
-from .common import _check_file_format, _require_file_exists
 from .output import die_io_error, die_usage, emit_action, log
 
 
@@ -61,26 +60,29 @@ def split(
     seed: Optional[int] = None,
     output: Optional[str] = None,
     dry_run: bool = False,
+    name: Optional[str] = None,
 ) -> None:
     """
     分割数据集为 train/test (或 train/val/test)。
 
     Args:
-        filename: 输入文件路径
+        filename: 输入文件路径 (- 为 stdin, 此时必须给 -o 目录和 --name 前缀)
         ratio: 分割比例，如 "0.8" 或 "0.7,0.15,0.15"
         seed: 随机种子
         output: 输出目录（默认同目录）
         dry_run: 预演模式，仅计算各切分行数但不写入文件
+        name: 输出文件名前缀 (默认取输入文件名); 输出为 <name>_train.jsonl 等
 
     Examples:
         dt split data.jsonl --ratio=0.8
         dt split data.jsonl --ratio=0.7,0.15,0.15 --seed=42
         dt split data.jsonl --ratio=0.8 --dry-run
     """
-    filepath = Path(filename)
+    from .pipe import input_label, is_stdin, load_rows
 
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    filepath = Path(filename)
+    if is_stdin(filename) and not (output and name):
+        die_usage("stdin 输入需要指定输出目录和文件名前缀", suggestion="-o DIR --name STEM")
 
     # 解析比例
     try:
@@ -94,11 +96,8 @@ def split(
     split_names = _get_split_names(len(ratios))
 
     # 加载数据
-    log(f"[bold]📊 加载数据:[/bold] {filepath}")
-    try:
-        dt = DataTransformer.load(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
+    log(f"[bold]📊 加载数据:[/bold] {input_label(filename)}")
+    dt = DataTransformer(load_rows(filename))
 
     total = len(dt)
     log(f"   共 {total} 条数据")
@@ -136,12 +135,12 @@ def split(
         output_dir = filepath.parent
 
     # 收集 split 信息
-    stem = filepath.stem
-    ext = filepath.suffix
+    stem = name or filepath.stem
+    ext = ".jsonl" if is_stdin(filename) else filepath.suffix
 
     log(f"[bold]🔀 切分比例:[/bold] {' / '.join(f'{r:.0%}' for r in ratios)}")
     split_info = []
-    for i, (name, part) in enumerate(zip(split_names, parts)):
+    for i, (name, part) in enumerate(zip(split_names, parts, strict=False)):
         output_path = output_dir / f"{stem}_{name}{ext}"
         split_info.append(
             {
@@ -162,7 +161,7 @@ def split(
     if dry_run:
         emit_action(
             "split",
-            input_files=[str(filepath)],
+            input_files=[input_label(filename)],
             output=str(output_dir),
             stats=stats,
             dry_run=True,
@@ -170,7 +169,7 @@ def split(
         return
 
     # 保存各部分
-    for info, part in zip(split_info, parts):
+    for info, part in zip(split_info, parts, strict=False):
         try:
             save_data(part, info["path"])
         except Exception as e:
@@ -181,7 +180,7 @@ def split(
 
     emit_action(
         "split",
-        input_files=[str(filepath)],
+        input_files=[input_label(filename)],
         output=str(output_dir),
         stats=stats,
     )

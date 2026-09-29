@@ -8,11 +8,8 @@ from typing import Optional
 from rich.markup import escape
 
 from ..schema import alpaca_schema, dpo_schema, openai_chat_schema, sharegpt_schema
-from ..storage.io import load_data, save_data
-from .common import _check_file_format, _require_file_exists
 from .output import (
     die,
-    die_io_error,
     die_usage,
     emit_json,
     is_stdout_tty,
@@ -65,10 +62,9 @@ def validate(
         dt validate data.jsonl --preset=chat --workers=4
         dt --format=json validate data.jsonl --preset=chat   # stdout JSON 报告
     """
-    filepath = Path(filename)
+    from .pipe import input_label, load_rows
 
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    filepath = Path(input_label(filename))
 
     # 确定 Schema
     if preset is None:
@@ -87,10 +83,7 @@ def validate(
     schema = PRESET_SCHEMAS[preset_lower]()
 
     # 加载数据
-    try:
-        data = load_data(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
+    data = load_rows(filename)
 
     if not data:
         die(
@@ -182,20 +175,21 @@ def validate(
     }
 
     # 输出：TTY table / 非 TTY JSON
+    # --filter 且无 -o: 有效数据走 stdout, 报告让位到 stderr (stdout 只能有一种东西)
+    data_to_stdout = filter_invalid and not output
     fmt = resolve_format(format, default_for_tty="table")
-    if fmt == "table" and is_stdout_tty():
+    if data_to_stdout or (fmt == "table" and is_stdout_tty()):
         _render_validate_report(report, max_errors)
     else:
         emit_json(report)
 
     # 保存有效数据
     if output or filter_invalid:
-        output_path = output or str(filepath).replace(filepath.suffix, f"_valid{filepath.suffix}")
-        try:
-            save_data(valid_data, output_path)
-        except Exception as e:
-            die_io_error(e, operation="保存", path=str(output_path))
-        log(f"[green]✅ 有效数据已保存:[/green] {output_path} ({valid_count} 条)")
+        from ..streaming import StreamingTransformer
+        from .pipe import write_output
+
+        st = StreamingTransformer(iter(valid_data), None, total=len(valid_data))
+        write_output(st, output, action="validate", inputs=[filename], stats={"valid": valid_count})
 
     # 详细模式：显示 Schema 定义
     if verbose:

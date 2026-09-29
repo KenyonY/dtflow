@@ -14,6 +14,8 @@ Agent 探索入口:
 输出契约:
     stdout  只承载数据（JSON / NDJSON / CSV / Table）
     stderr  承载进度、警告、错误等消息
+    管道    FILE 写 - 表示从 stdin 读 NDJSON; 数据命令不加 -o 时数据写 stdout,
+            于是 dt sample a.jsonl -w "x.ok" | dt clean - --strip | dt head - 可串联
     退出码  0=成功, 1=一般错误, 2=参数错误, 3=资源不存在,
             4=权限拒绝, 5=冲突, 10=dry-run 预演成功
 
@@ -208,7 +210,7 @@ def _global_options(
 
 @app.command()
 def sample(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     num_arg: Optional[int] = typer.Argument(None, help="采样数量", metavar="NUM"),
     num: int = typer.Option(10, "--num", "-n", help="采样数量", show_default=True),
     type: Optional[SampleType] = typer.Option(
@@ -270,7 +272,7 @@ def sample(
 
 @app.command()
 def head(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     num_arg: Optional[int] = typer.Argument(None, help="显示数量", metavar="NUM"),
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
@@ -296,7 +298,7 @@ def head(
 
 @app.command()
 def tail(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     num_arg: Optional[int] = typer.Argument(None, help="显示数量", metavar="NUM"),
     num: int = typer.Option(10, "--num", "-n", help="显示数量", show_default=True),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
@@ -419,7 +421,7 @@ def view(
 
 @app.command("slice")
 def slice_cmd(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     range_str: str = typer.Argument(..., help="行号范围 (start:end)，如 10:20、:100、100:、-10:"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     fields: Optional[str] = typer.Option(None, "--fields", "-f", help="只显示指定字段"),
@@ -446,7 +448,7 @@ def slice_cmd(
 
 @app.command()
 def transform(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     num: Optional[int] = typer.Argument(None, help="只转换前 N 条数据"),
     preset: Optional[TransformPreset] = typer.Option(
         None,
@@ -456,15 +458,18 @@ def transform(
         case_sensitive=False,
     ),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="配置文件路径"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="输出文件路径 (不指定则写 stdout; 配置模式取配置里的 output)"
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="预演: 计算结果但不写出 (退出码 10)"),
 ):
     """转换数据格式
 
     示例:
-        dt transform data.jsonl --preset=openai_chat
-        dt transform data.jsonl --config=./config.yaml -o out.jsonl
+        dt transform data.jsonl --preset=openai_chat -o out.jsonl
+        dt transform data.jsonl --config=./config.py -o out.jsonl
         dt transform data.jsonl --preset=alpaca --dry-run
+        dt sample data.jsonl -w "x.ok" | dt transform - --preset=openai_chat | dt head -
     """
     preset_value = preset.value if isinstance(preset, TransformPreset) else preset
     _transform(filename, num, preset_value, config, output, dry_run=dry_run)
@@ -492,27 +497,32 @@ def run(
 
 @app.command()
 def dedupe(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     key: Optional[str] = typer.Option(None, "--key", "-k", help="去重依据字段"),
     similar: Optional[float] = typer.Option(None, "--similar", "-s", help="相似度阈值 (0-1)"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="输出文件路径 (不指定则写 stdout)"
+    ),
+    in_place: bool = typer.Option(False, "--in-place", "-i", help="原地写回输入文件"),
     dry_run: bool = typer.Option(False, "--dry-run", help="预演: 计算结果但不写出 (退出码 10)"),
 ):
-    """数据去重
+    """数据去重 (精确去重流式, O(唯一键) 内存)
 
     示例:
-        dt dedupe data.jsonl --key=text                  # 精确去重
-        dt dedupe data.jsonl --key=messages[0].content   # 按嵌套字段去重
-        dt dedupe data.jsonl --key=text --similar=0.9    # 模糊去重（相似度 >= 0.9）
+        dt dedupe data.jsonl --key=text -i               # 精确去重, 原地写回
+        dt dedupe data.jsonl --key=messages[0].content -o out.jsonl   # 按嵌套字段去重
+        dt dedupe data.jsonl --key=text --similar=0.9    # 模糊去重（相似度 >= 0.9）→ stdout
         dt dedupe data.jsonl --key=text --dry-run        # 预演
     """
-    _dedupe(filename, key, similar, output, dry_run=dry_run)
+    _dedupe(filename, key, similar, output, in_place=in_place, dry_run=dry_run)
 
 
 @app.command()
 def concat(
-    files: List[str] = typer.Argument(..., help="输入文件列表 (至少两个)"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径（必须）"),
+    files: List[str] = typer.Argument(..., help="输入文件列表 (至少两个; 至多一个 - 表示 stdin)"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="输出文件路径 (不指定则写 stdout)"
+    ),
     strict: bool = typer.Option(False, "--strict", help="严格模式，字段必须一致"),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="预演: 分析字段/行数但不写出 (退出码 10)"
@@ -531,7 +541,7 @@ def concat(
 
 @app.command()
 def clean(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     drop_empty: Optional[str] = typer.Option(None, "--drop-empty", help="删除空值记录"),
     min_len: Optional[str] = typer.Option(None, "--min-len", help="最小长度过滤 (字段:长度)"),
     max_len: Optional[str] = typer.Option(None, "--max-len", help="最大长度过滤 (字段:长度)"),
@@ -554,16 +564,19 @@ def clean(
         None, "--max-tokens", help="最大 token 数过滤 (字段:数量)"
     ),
     model: str = typer.Option("cl100k_base", "--model", "-m", help="分词器模型 (默认 cl100k_base)"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="输出文件路径 (不指定则写 stdout)"
+    ),
+    in_place: bool = typer.Option(False, "--in-place", "-i", help="原地写回输入文件"),
     dry_run: bool = typer.Option(False, "--dry-run", help="预演: 计算结果但不写出 (退出码 10)"),
 ):
-    """数据清洗
+    """数据清洗 (流式; 无 -o 写 stdout, -i 原地写回)
 
     示例:
         dt clean data.jsonl --drop-empty=text -o out.jsonl
-        dt clean data.jsonl --min-len=messages.#:2       # 至少 2 条消息
-        dt clean data.jsonl --rename=old:new --drop=debug
-        dt clean data.jsonl --promote=meta.label --strip  # 提升嵌套字段 + 去空白
+        dt clean data.jsonl --min-len=messages.#:2 -i    # 至少 2 条消息, 原地写回
+        dt clean data.jsonl --rename=old:new --drop=debug | dt head -
+        dt clean data.jsonl --promote=meta.label --strip -i  # 提升嵌套字段 + 去空白
         dt clean data.jsonl --drop-empty=text --dry-run  # 预演, 退出码 10
     """
     _clean(
@@ -583,6 +596,7 @@ def clean(
         max_tokens,
         model,
         output,
+        in_place=in_place,
         dry_run=dry_run,
     )
 
@@ -592,7 +606,7 @@ def clean(
 
 @app.command()
 def stats(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     top: int = typer.Option(10, "--top", "-n", help="显示 Top N 值"),
     full: bool = typer.Option(False, "--full", "-f", help="完整模式：统计值分布、唯一值等详细信息"),
     field: Optional[List[str]] = typer.Option(
@@ -616,7 +630,7 @@ def stats(
 
 @app.command("token-stats")
 def token_stats(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     field: str = typer.Option("messages", "--field", "-f", help="统计字段"),
     model: str = typer.Option(
         "cl100k_base", "--model", "-m", help="分词器: cl100k_base (默认), qwen2.5, llama3, gpt-4 等"
@@ -639,8 +653,8 @@ def token_stats(
 
 @app.command()
 def diff(
-    file1: str = typer.Argument(..., help="第一个文件"),
-    file2: str = typer.Argument(..., help="第二个文件"),
+    file1: str = typer.Argument(..., help="第一个文件 (可为 -)"),
+    file2: str = typer.Argument(..., help="第二个文件 (可为 -)"),
     key: Optional[str] = typer.Option(None, "--key", "-k", help="匹配键字段"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="报告输出路径"),
 ):
@@ -676,10 +690,13 @@ def history(
 
 @app.command()
 def split(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin (需 -o 与 --name)"),
     ratio: str = typer.Option("0.8", "--ratio", "-r", help="分割比例，如 0.8 或 0.7,0.15,0.15"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出目录（默认同目录）"),
+    name: Optional[str] = typer.Option(
+        None, "--name", help="输出文件名前缀 (默认取输入文件名), 生成 <name>_train.jsonl 等"
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="预演: 计算各切分行数但不写出 (退出码 10)"
     ),
@@ -690,13 +707,14 @@ def split(
         dt split data.jsonl --ratio=0.8
         dt split data.jsonl --ratio=0.7,0.15,0.15 --seed=42
         dt split data.jsonl --ratio=0.8 --dry-run
+        dt sample data.jsonl -w "x.ok" | dt split - -o out/ --name clean
     """
-    _split(filename, ratio, seed, output, dry_run=dry_run)
+    _split(filename, ratio, seed, output, dry_run=dry_run, name=name)
 
 
 @app.command()
 def export(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     framework: Framework = typer.Option(
         ...,
         "--framework",
@@ -725,7 +743,7 @@ def export(
 
 @app.command()
 def eval(
-    result_file: str = typer.Argument(..., help="模型输出的 .jsonl 文件路径"),
+    result_file: str = typer.Argument(..., help="模型输出的 .jsonl 文件路径; - 表示 stdin"),
     source: Optional[str] = typer.Option(
         None, "--source", "-s", help="原始输入文件，按行号对齐合并"
     ),
@@ -776,7 +794,7 @@ def eval(
 
 @app.command()
 def validate(
-    filename: str = typer.Argument(..., help="输入文件路径"),
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
     preset: Optional[ValidatePreset] = typer.Option(
         None,
         "--preset",
@@ -785,7 +803,9 @@ def validate(
         case_sensitive=False,
     ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出有效数据的文件路径"),
-    filter: bool = typer.Option(False, "--filter", "-f", help="过滤无效数据并保存"),
+    filter: bool = typer.Option(
+        False, "--filter", "-f", help="只输出有效数据 (无 -o 则写 stdout, 报告转 stderr)"
+    ),
     max_errors: int = typer.Option(20, "--max-errors", help="最多显示的错误数量"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="显示详细信息"),
     workers: Optional[int] = typer.Option(

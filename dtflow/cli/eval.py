@@ -11,11 +11,9 @@ from typing import Optional
 
 from rich.markup import escape
 
-from ..storage.io import load_data
 from ..utils.field_path import get_field
 from ..utils.text_parser import extract_code_snippets, parse_generic_tags, strip_think_tags
-from .common import _require_file_exists
-from .output import die, die_io_error, die_usage, emit_action, log
+from .output import die, die_usage, emit_action, log
 
 # 自动检测 label 的候选字段名
 LABEL_CANDIDATES = ["label", "labels", "content_label", "target", "ground_truth", "answer"]
@@ -52,24 +50,16 @@ def eval(
     import pandas as pd
 
     from ..eval import export_eval_report
-
-    _require_file_exists(Path(result_file))
+    from .pipe import input_label, load_rows
 
     # --- 加载数据 ---
-    try:
-        data = load_data(result_file)
-    except Exception as e:
-        die_io_error(e, operation="读取", path=result_file)
+    data = load_rows(result_file)
     df = pd.DataFrame(data)
-    log(f"[cyan]加载 {result_file}，共 {len(df)} 条[/cyan]")
+    log(f"[cyan]加载 {input_label(result_file)}，共 {len(df)} 条[/cyan]")
 
     # 合并 source 文件
     if source:
-        _require_file_exists(Path(source))
-        try:
-            source_data = load_data(source)
-        except Exception as e:
-            die_io_error(e, operation="读取 source 文件", path=source)
+        source_data = load_rows(source)
         source_df = pd.DataFrame(source_data)
         if len(source_df) != len(df):
             die(

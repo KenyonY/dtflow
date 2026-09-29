@@ -7,17 +7,14 @@ from typing import Any, Dict, List, Optional
 
 import orjson
 
-from ..storage.io import load_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
-    _check_file_format,
     _infer_type,
     _is_numeric,
     _pad_to_width,
-    _require_file_exists,
     _truncate,
 )
-from .output import die, die_io_error, emit_json, log, log_panel, log_table, resolve_format
+from .output import die, emit_json, log, log_panel, log_table, resolve_format
 
 
 def stats(
@@ -48,25 +45,23 @@ def stats(
         dt stats data.jsonl --full --field=category  # 指定字段
         dt stats data.jsonl --full --expand=tags     # 展开 list 字段
     """
-    filepath = Path(filename)
+    from .pipe import input_label, is_stdin, load_rows, open_input
 
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    filepath = Path(input_label(filename))
+    if not is_stdin(filename):
+        open_input(filename)  # 只做存在/格式校验 (惰性)
 
     fmt = resolve_format(format, default_for_tty="table")
 
-    # 快速模式：忽略 --field 和 --expand 参数
-    if not full:
+    # 快速模式：忽略 --field 和 --expand 参数 (stdin 无文件可探, 直接走完整模式)
+    if not full and not is_stdin(filename):
         if fields or expand_fields:
             log("[yellow]⚠️  警告: --field 和 --expand 参数仅在完整模式 (--full) 下生效[/yellow]")
         _quick_stats(filepath, fmt=fmt)
         return
 
     # 加载数据
-    try:
-        data = load_data(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
+    data = load_rows(filename)
 
     if not data:
         die("empty_file", "文件为空", exit_code=1)
@@ -617,19 +612,15 @@ def token_stats(
         dt token-stats data.jsonl --detailed
         dt token-stats data.jsonl --workers=4   # 使用 4 进程
     """
-    filepath = Path(filename)
+    from .pipe import input_label, load_rows
 
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    filepath = Path(input_label(filename))
 
     fmt = resolve_format(format, default_for_tty="table")
 
     # 加载数据
     log(f"📊 加载数据: {filepath}")
-    try:
-        data = load_data(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
+    data = load_rows(filename)
 
     if not data:
         die("empty_file", "文件为空", exit_code=1)

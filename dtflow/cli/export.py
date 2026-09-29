@@ -7,7 +7,6 @@ from typing import Optional
 
 from ..core import DataTransformer
 from ..framework import check_compatibility, detect_format, export_for
-from .common import _check_file_format, _require_file_exists
 from .output import die, die_io_error, emit_action, log
 
 
@@ -35,17 +34,13 @@ def export(
         dt export data.jsonl --framework=swift -o dataset/
         dt export data.jsonl --framework=axolotl --check
     """
-    filepath = Path(filename)
+    from .pipe import input_label, load_rows
 
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    filepath = Path(input_label(filename))
 
     # 加载数据
     log(f"[bold]📊 加载数据:[/bold] {filepath}")
-    try:
-        dt = DataTransformer.load(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
+    dt = DataTransformer(load_rows(filename))
 
     data = dt.data
     total = len(data)

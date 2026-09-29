@@ -2,19 +2,15 @@
 CLI IO 操作相关命令 (concat, diff)
 """
 
-import os
-import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import orjson
 from rich.markup import escape
 
-from ..storage.io import load_data, save_data
-from ..streaming import load_stream
+from ..storage.io import save_data
 from ..utils.field_path import get_field_with_spec
-from .common import _check_file_format, _is_streaming_supported, _require_file_exists
+from .common import _check_file_format, _require_file_exists
 from .output import (
     die,
     die_io_error,
@@ -38,8 +34,8 @@ def concat(
     拼接多个数据文件（流式处理，内存占用 O(1)）。
 
     Args:
-        *files: 输入文件路径列表，支持 csv/excel/jsonl/json/parquet/arrow/feather 格式
-        output: 输出文件路径，必须指定
+        *files: 输入文件路径列表 (至多一个 - 表示 stdin)，支持 csv/excel/jsonl/json/parquet/arrow/feather
+        output: 输出文件路径; 不指定则写 stdout
         strict: 严格模式，字段必须完全一致，否则报错
         dry_run: 预演模式，仅分析字段和计算条数，不实际写出文件
 
@@ -48,54 +44,47 @@ def concat(
         dt concat data1.csv data2.csv data3.csv -o all.jsonl
         dt concat a.jsonl b.jsonl --strict -o merged.jsonl
         dt concat a.jsonl b.jsonl --dry-run -o merged.jsonl
+        dt filter a.jsonl "x.ok" | dt concat - b.jsonl | dt head -
     """
+    from ..streaming import StreamingTransformer
+    from .common import _get_file_row_count
+    from .pipe import input_label, is_stdin, open_input, write_output
+
     if len(files) < 2:
         die_usage(
             "至少需要两个输入文件",
             suggestion="dt concat a.jsonl b.jsonl -o merged.jsonl",
         )
+    if sum(is_stdin(f) for f in files) > 1:
+        die_usage("stdin (-) 只能出现一次")
 
-    if not output:
-        die_usage(
-            "必须指定输出文件",
-            suggestion="加上 -o/--output 指定输出路径，例如 -o merged.jsonl",
-        )
-
-    # 验证所有文件
-    file_paths = []
+    # 验证文件 (stdin 跳过)
+    file_paths: List[Path] = []
     for f in files:
+        if is_stdin(f):
+            continue
         filepath = Path(f).resolve()  # 使用绝对路径进行比较
         _require_file_exists(filepath)
         _check_file_format(filepath)
         file_paths.append(filepath)
 
-    # 检查输出文件是否与输入文件冲突
-    output_path = Path(output).resolve()
-    use_temp_file = output_path in file_paths
-    if use_temp_file and not dry_run:
+    # 输出文件与某个输入相同 → 让 save_rows 走临时文件
+    output_path = Path(output).resolve() if output else None
+    reads_output = output_path is not None and output_path in file_paths
+    if reads_output and not dry_run:
         log("[yellow]⚠ 检测到输出文件与输入文件相同，将使用临时文件[/yellow]")
 
-    # 流式分析字段（只读取每个文件的第一行）
+    # 流式分析字段（只读取每个文件的第一行; stdin 不可预读, 跳过）
     log("[bold]📊 文件字段分析:[/bold]")
     file_fields: List[tuple] = []  # [(filepath, fields)]
-
     for filepath in file_paths:
         try:
-            # 只读取第一行来获取字段（根据格式选择加载方式）
-            if _is_streaming_supported(filepath):
-                first_row = load_stream(str(filepath)).head(1).collect()
-            else:
-                # 非流式格式（如 .json, .xlsx）使用全量加载
-                data = load_data(str(filepath))
-                first_row = data[:1] if data else []
-            if not first_row:
-                log(f"[yellow]警告: 文件为空 - {filepath}[/yellow]")
-                fields = set()
-            else:
-                fields = set(first_row[0].keys())
+            first_row = open_input(str(filepath)).head(1).collect()
+            fields = set(first_row[0].keys()) if first_row else set()
         except Exception as e:
             die_io_error(e, operation="读取", path=str(filepath))
-
+        if not fields:
+            log(f"[yellow]警告: 文件为空 - {filepath}[/yellow]")
         file_fields.append((filepath, fields))
         fields_str = ", ".join(sorted(fields)) if fields else "(空)"
         log(f"   {filepath.name}: {escape(fields_str)}")  # 字段名来自用户数据
@@ -105,11 +94,7 @@ def concat(
     common_fields: Optional[set] = None
     for _, fields in file_fields:
         all_fields.update(fields)
-        if common_fields is None:
-            common_fields = fields.copy()
-        else:
-            common_fields &= fields
-
+        common_fields = fields.copy() if common_fields is None else common_fields & fields
     common_fields = common_fields or set()
     diff_fields = all_fields - common_fields
 
@@ -125,27 +110,15 @@ def concat(
                     "diff_fields": sorted(diff_fields),
                 },
             )
-        else:
-            log(
-                f"[yellow]⚠ 字段差异: {escape(', '.join(sorted(diff_fields)))} 仅在部分文件中存在[/yellow]"
-            )
+        log(
+            f"[yellow]⚠ 字段差异: {escape(', '.join(sorted(diff_fields)))} 仅在部分文件中存在[/yellow]"
+        )
 
-    # 计算总行数（供 dry-run / 摘要使用）
-    total_count = 0
-    per_file_counts: List[int] = []
-    log("[bold]📏 计算行数...[/bold]")
-    for filepath in file_paths:
-        try:
-            from .common import _get_file_row_count
-
-            cnt = _get_file_row_count(filepath) or 0
-            per_file_counts.append(cnt)
-            total_count += cnt
-        except Exception:
-            per_file_counts.append(0)
-
+    # 计算总行数（供 dry-run / 摘要使用; stdin 未知计 0）
+    per_file_counts = [_get_file_row_count(p) or 0 for p in file_paths]
+    total_count = sum(per_file_counts)
     stats = {
-        "input_files": len(file_paths),
+        "input_files": len(files),
         "input_rows": total_count,
         "output_rows": total_count,
         "per_file_rows": per_file_counts,
@@ -156,91 +129,22 @@ def concat(
     if dry_run:
         emit_action(
             "concat",
-            input_files=[str(p) for p in file_paths],
-            output=str(output_path),
+            input_files=[input_label(f) for f in files],
+            output=str(output_path) if output_path else None,
             stats=stats,
             dry_run=True,
         )
         return
 
-    # 流式拼接
     log("[bold]🔄 流式拼接...[/bold]")
 
-    # 如果输出文件与输入文件冲突，使用临时文件（在输出文件同一目录下）
-    if use_temp_file:
-        output_dir = output_path.parent
-        temp_fd, temp_path = tempfile.mkstemp(
-            suffix=output_path.suffix,
-            prefix=".tmp_",
-            dir=output_dir,
-        )
-        os.close(temp_fd)
-        actual_output = temp_path
-        log(f"💾 写入临时文件: {temp_path}")
-    else:
-        actual_output = output
-        log(f"💾 保存结果: {output}")
-
-    try:
-        real_count = _concat_streaming(file_paths, actual_output)
-
-        # 如果使用了临时文件，重命名为目标文件
-        if use_temp_file:
-            shutil.move(temp_path, output)
-            log(f"💾 移动到目标文件: {output}")
-    except Exception as e:
-        # 清理临时文件
-        if use_temp_file and os.path.exists(temp_path):
-            try:
-                os.unlink(temp_path)
-            except Exception:
-                pass
-        die_io_error(e, operation="拼接", path=str(output))
-
-    stats["output_rows"] = real_count
-    emit_action(
-        "concat",
-        input_files=[str(p) for p in file_paths],
-        output=str(output_path),
-        stats=stats,
-    )
-
-
-def _concat_streaming(file_paths: List[Path], output: str) -> int:
-    """流式拼接多个文件"""
-    from ..storage.io import data_suffix
-    from ..streaming import (
-        StreamingTransformer,
-        _stream_arrow,
-        _stream_csv,
-        _stream_jsonl,
-        _stream_parquet,
-    )
-
     def generator():
-        for filepath in file_paths:
-            ext = data_suffix(filepath)
-            if ext in (".jsonl", ".ndjson"):
-                yield from _stream_jsonl(str(filepath))
-            elif ext == ".csv":
-                yield from _stream_csv(str(filepath))
-            elif ext == ".parquet":
-                yield from _stream_parquet(str(filepath))
-            elif ext in (".arrow", ".feather"):
-                yield from _stream_arrow(str(filepath))
-            elif ext in (".json",):
-                # JSON 需要全量加载
-                data = load_data(str(filepath))
-                yield from data
-            elif ext in (".xlsx", ".xls"):
-                # Excel 需要全量加载
-                data = load_data(str(filepath))
-                yield from data
-            else:
-                yield from _stream_jsonl(str(filepath))
+        for f in files:
+            yield from open_input(f)
 
-    st = StreamingTransformer(generator())
-    return st.save(output, show_progress=True)
+    # source_path 标成输出文件本身, save_rows 据此走"临时文件 + 原子替换"
+    st = StreamingTransformer(generator(), str(output_path) if reads_output else None, total=None)
+    write_output(st, output, action="concat", inputs=list(files), stats=stats)
 
 
 def diff(
@@ -267,22 +171,17 @@ def diff(
         dt diff a.jsonl b.jsonl --output=diff_report.json
         dt --format=json diff a.jsonl b.jsonl     # 强制 JSON 到 stdout
     """
-    path1 = Path(file1)
-    path2 = Path(file2)
+    from .pipe import input_label, is_stdin, load_rows
 
-    # 验证文件
-    _require_file_exists(path1)
-    _check_file_format(path1)
-    _require_file_exists(path2)
-    _check_file_format(path2)
+    if is_stdin(file1) and is_stdin(file2):
+        die_usage("stdin (-) 只能出现一次")
+    path1 = Path(input_label(file1))
+    path2 = Path(input_label(file2))
 
     # 加载数据
     log("[bold]📊 加载数据...[/bold]")
-    try:
-        data1 = load_data(str(path1))
-        data2 = load_data(str(path2))
-    except Exception as e:
-        die_io_error(e, operation="读取")
+    data1 = load_rows(file1)
+    data2 = load_rows(file2)
 
     log(f"   文件1: {path1.name} ({len(data1)} 条)")
     log(f"   文件2: {path2.name} ({len(data2)} 条)")

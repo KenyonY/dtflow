@@ -7,20 +7,17 @@ from typing import Any, Dict, List, Literal, Optional
 
 from rich.markup import escape
 
-from ..storage.io import load_data, sample_file, save_data
+from ..storage.io import sample_file, save_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
-    _check_file_format,
     _get_file_row_count,
     _is_flaxkv_path,
     _parse_field_list,
     _print_samples,
-    _require_file_exists,
     apply_where,
 )
 from .output import (
     die,
-    die_io_error,
     die_usage,
     emit_data,
     emit_json,
@@ -104,13 +101,15 @@ def sample(
         dt sample data.jsonl --where="'wiki' in x.meta.source"   # meta.source 包含 wiki
         dt sample data.jsonl --where="len(x.messages)>=2"        # 消息数量 >= 2
     """
+    from .pipe import is_stdin, load_rows, open_input
+
     # type 未指定时：n=0 默认 head（保序），其他默认 random
     if type is None:
         type = "head" if num == 0 else "random"
     filepath = Path(filename)
-
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    stdin = is_stdin(filename)
+    if not stdin:
+        open_input(filename)  # 只做存在/格式校验 (惰性, 不读数据)
 
     # uniform 必须配合 by 使用
     if uniform and not by:
@@ -150,7 +149,7 @@ def sample(
 
     if where_conditions:
         # 有 where 条件时，先加载全部数据再筛选
-        all_data = load_data(str(filepath))
+        all_data = load_rows(filename)
         original_count = len(all_data)
         filtered_data = apply_where(all_data, where_conditions)
         log(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
@@ -176,6 +175,18 @@ def sample(
             if filtered_data is not None:
                 # 已筛选的数据，直接采样
                 sampled = _sample_from_list(filtered_data, num, type, seed)
+            elif stdin:
+                st = open_input(filename)
+                if num <= 0:
+                    sampled = st.collect()
+                    if type == "random":
+                        sampled = _sample_from_list(sampled, 0, "random", seed)
+                elif type == "head":
+                    sampled = st.head(num).collect()
+                elif type == "tail":
+                    sampled = st.tail(num).collect()
+                else:
+                    sampled = st.sample(num, seed).collect()
             else:
                 sampled = sample_file(
                     str(filepath),
@@ -229,7 +240,9 @@ def sample(
         return
 
     # TTY --pretty 或 --format=table: 走 rich 格式感知渲染
-    if _is_flaxkv_path(filepath):
+    if stdin:
+        total_count, file_size = None, None
+    elif _is_flaxkv_path(filepath):
         total_count = _get_file_row_count(filepath)
         file_size = None
     else:
@@ -238,7 +251,9 @@ def sample(
             total_count = _get_file_row_count(filepath)
         else:
             total_count = None
-    _print_samples(sampled, filepath.name, total_count, field_list, file_size)
+    _print_samples(
+        sampled, "<stdin>" if stdin else filepath.name, total_count, field_list, file_size
+    )
 
 
 def _stratified_sample(
@@ -280,7 +295,9 @@ def _stratified_sample(
 
     # 加载数据（如果没有预筛选数据）
     if data is None:
-        data = load_data(str(filepath))
+        from .pipe import load_rows
+
+        data = load_rows(str(filepath))
     total = len(data)
 
     if num <= 0 or num > total:
@@ -456,10 +473,9 @@ def slice_data(
         dt slice data.jsonl 10:20 --output=sliced.jsonl
         dt slice data.jsonl 10:20 --fields=question,answer
     """
-    filepath = Path(filename)
+    from .pipe import is_stdin, load_rows
 
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    filepath = Path(filename)
 
     # 解析 range
     if ":" not in range_str:
@@ -478,11 +494,7 @@ def slice_data(
         die_usage(f"无效的范围格式 '{range_str}'，start 和 end 必须为整数")
 
     # 加载数据并切片
-    try:
-        data = load_data(str(filepath))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(filepath))
-
+    data = load_rows(filename)
     sliced = data[start:end]
 
     if not sliced:
@@ -534,8 +546,13 @@ def slice_data(
             emit_json(item, indent=True)
         return
 
-    file_size = None if _is_flaxkv_path(filepath) else filepath.stat().st_size
-    _print_samples(sliced, filepath.name, total, field_list, file_size)
+    if is_stdin(filename) or _is_flaxkv_path(filepath):
+        file_size = None
+    else:
+        file_size = filepath.stat().st_size
+    _print_samples(
+        sliced, "<stdin>" if is_stdin(filename) else filepath.name, total, field_list, file_size
+    )
 
 
 def tail(

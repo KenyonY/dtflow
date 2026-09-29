@@ -41,6 +41,13 @@ STREAMING_FORMATS = {
 }
 
 
+def _stderr_console():
+    """进度条只能走 stderr: stdout 是数据通道 (管道/agent 都在读它)。"""
+    from rich.console import Console
+
+    return Console(stderr=True)
+
+
 def _fmt_of(filepath) -> str:
     """该文件的规范格式名 (jsonl/csv/tsv/parquet/arrow/excel/json/flaxkv)。"""
     from dtflow.storage.io import _detect_format
@@ -263,20 +270,26 @@ class StreamingTransformer:
 
         wrapper_func = (lambda x: x) if raw else DictWrapper
 
+        # 过滤后数量未知，不传递 total
+        new_st = StreamingTransformer(iter([]), self._source_path, total=None)
+        new_st._operations = self._operations + [{"type": "filter", "func": func}]
+
         def filtered_iterator():
             for item in self._iterator:
                 try:
                     if func(wrapper_func(item)):
                         yield item
-                except Exception:
+                except Exception as e:
                     if on_error == "raise":
                         raise
-                    elif on_error == "keep":
+                    # 跳过/保留的错误行都要计数: 静默丢行会掩盖 x.scroe 这类拼写错
+                    new_st._error_count += 1
+                    if new_st._first_error is None:
+                        new_st._first_error = f"{type(e).__name__}: {e}"
+                    if on_error == "keep":
                         yield item
 
-        # 过滤后数量未知，不传递 total
-        new_st = StreamingTransformer(filtered_iterator(), self._source_path, total=None)
-        new_st._operations = self._operations + [{"type": "filter", "func": func}]
+        new_st._iterator = filtered_iterator()
         return new_st
 
     def transform(
@@ -655,11 +668,18 @@ class StreamingTransformer:
             # jsonl/ndjson 及未知扩展名: 按 JSONL 写 (与 _detect_format 一致)
             count = self._save_jsonl(filepath, show_progress)
 
-        # 打印错误摘要
-        if self._error_count > 0:
-            print(f"⚠️  跳过 {self._error_count} 条错误记录: {self._first_error}")
-
+        self.report_errors()
         return count
+
+    def report_errors(self) -> None:
+        """把跳过的错误行数汇总到 stderr (stdout 是数据通道, 不能混入)。"""
+        if self._error_count > 0:
+            import sys
+
+            print(
+                f"⚠️  跳过 {self._error_count} 条求值失败的记录 (首个: {self._first_error})",
+                file=sys.stderr,
+            )
 
     def _save_jsonl(self, filepath: str, show_progress: bool) -> int:
         """JSONL 逐行流式保存（使用 orjson; .gz 后缀则 gzip 压缩）"""
@@ -689,7 +709,7 @@ class StreamingTransformer:
                     TimeElapsedColumn(),
                 ]
 
-            with Progress(*columns) as progress:
+            with Progress(*columns, console=_stderr_console()) as progress:
                 task = progress.add_task("处理中", total=self._total)
                 with _open_bin(Path(filepath), "wb") as f:
                     for item in self._iterator:
@@ -757,7 +777,7 @@ class StreamingTransformer:
 
         try:
             if show_progress:
-                with Progress(*progress_columns) as progress:
+                with Progress(*progress_columns, console=_stderr_console()) as progress:
                     task = progress.add_task("处理中", total=self._total)
                     for item in self._iterator:
                         batch.append(item)
@@ -810,7 +830,7 @@ class StreamingTransformer:
                     batch = []
 
             if show_progress:
-                with Progress(*progress_columns) as progress:
+                with Progress(*progress_columns, console=_stderr_console()) as progress:
                     task = progress.add_task("处理中", total=self._total)
                     for item in self._iterator:
                         batch.append(item)
@@ -921,7 +941,7 @@ class StreamingTransformer:
                         TimeElapsedColumn(),
                     ]
 
-                with Progress(*columns) as progress:
+                with Progress(*columns, console=_stderr_console()) as progress:
                     task = progress.add_task("分片 1", total=self._total)
                     process_items(progress, task)
             else:
@@ -1071,40 +1091,46 @@ def _stream_flaxkv(filepath: str) -> Generator[Dict[str, Any], None, None]:
 
 def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
     """JSONL 流式读取（使用 orjson，失败时回退到标准 json）"""
+    from dtflow.storage.io import _open_bin
+
+    with _open_bin(Path(filepath), "rb") as f:
+        yield from _iter_jsonl(f, filepath)
+
+
+def _iter_jsonl(fileobj, name: str) -> Generator[Dict[str, Any], None, None]:
+    """逐行解析一个二进制行流 (文件或 stdin.buffer): orjson, 失败回退标准 json。
+
+    真正解不动的行抛 ValueError 并定位到行号: 这条路径喂给会写出新文件的操作, 不能静默跳行。
+    """
     import json
     import sys
 
-    from dtflow.storage.io import _open_bin
-
     use_fallback = False
+    for i, line in enumerate(fileobj):
+        line = line.strip()
+        if not line:
+            continue
 
-    with _open_bin(Path(filepath), "rb") as f:
-        for i, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-
-            if use_fallback:
-                yield json.loads(line)
-            else:
+        if use_fallback:
+            yield json.loads(line)
+        else:
+            try:
+                yield orjson.loads(line)
+            except orjson.JSONDecodeError:
                 try:
-                    yield orjson.loads(line)
-                except orjson.JSONDecodeError:
-                    try:
-                        yield json.loads(line)
-                        use_fallback = True
-                        print(
-                            f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
-                            file=sys.stderr,
-                        )
-                    except json.JSONDecodeError as e:
-                        # 流式处理会写出新文件, 不能静默跳行; 但报错必须能定位到行
-                        snippet = line.decode("utf-8", errors="replace")[:120]
-                        raise ValueError(
-                            f"{filepath} 第 {i + 1} 行不是合法 JSON: {e}\n"
-                            f"  行内容: {snippet}\n"
-                            f"  想直接看这一行用: dt view {filepath}"
-                        ) from e
+                    yield json.loads(line)
+                    use_fallback = True
+                    print(
+                        f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                        file=sys.stderr,
+                    )
+                except json.JSONDecodeError as e:
+                    snippet = line.decode("utf-8", errors="replace")[:120]
+                    raise ValueError(
+                        f"{name} 第 {i + 1} 行不是合法 JSON: {e}\n"
+                        f"  行内容: {snippet}\n"
+                        f"  想直接看这一行用: dt view {name}"
+                    ) from e
 
 
 def _stream_csv(

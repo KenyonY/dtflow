@@ -2,9 +2,6 @@
 CLI 数据转换相关命令
 """
 
-import os
-import shutil
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -13,10 +10,7 @@ import orjson
 
 from ..core import DataTransformer, DictWrapper, unwrap
 from ..presets import get_preset, list_presets
-from ..storage.io import load_data, save_data
-from ..streaming import load_stream
-from .common import _check_file_format, _is_streaming_supported, _require_file_exists
-from .output import die, die_io_error, die_usage, emit_action, log
+from .output import die, die_usage, emit_action, log
 
 CONFIG_DIR = ".dt"
 
@@ -61,16 +55,20 @@ def transform(
         dt transform data.jsonl 100 --preset=alpaca    # 预设 + 限制数量
         dt transform data.jsonl --preset=alpaca --dry-run  # 预演转换
     """
+    from .pipe import is_stdin, open_input
+
     filepath = Path(filename)
-    _require_file_exists(filepath)
-    _check_file_format(filepath)
+    if not is_stdin(filename):
+        open_input(filename)  # 只做存在/格式校验
 
     # 预设模式：直接使用预设转换
     if preset:
-        _execute_preset_transform(filepath, preset, output, num, dry_run=dry_run)
+        _execute_preset_transform(filename, preset, output, num, dry_run=dry_run)
         return
 
     # 配置文件模式
+    if is_stdin(filename) and not config:
+        die_usage("stdin 输入没有文件名可推导配置", suggestion="用 --preset 或 -c 指定配置文件")
     config_path = _get_config_path(filepath, config)
 
     if not config_path.exists():
@@ -79,9 +77,11 @@ def transform(
                 "首次使用需要先生成配置，--dry-run 对配置生成无效",
                 suggestion=f"先执行: dt transform {filename}",
             )
+        if is_stdin(filename):
+            die_usage(f"配置文件不存在: {config_path}", suggestion="先用文件生成配置再接管道")
         _generate_config(filepath, config_path)
     else:
-        _execute_transform(filepath, config_path, output, num, dry_run=dry_run)
+        _execute_transform(filename, config_path, output, num, dry_run=dry_run)
 
 
 def _generate_config(input_path: Path, config_path: Path) -> None:
@@ -89,10 +89,9 @@ def _generate_config(input_path: Path, config_path: Path) -> None:
     log(f"📊 分析输入数据: {input_path}")
 
     # 读取数据
-    try:
-        data = load_data(str(input_path))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(input_path))
+    from .pipe import load_rows
+
+    data = load_rows(str(input_path))
 
     if not data:
         die("empty_file", "文件为空", exit_code=1)
@@ -283,217 +282,84 @@ def _generate_default_transform(field_names: List[str]) -> str:
 
 
 def _execute_transform(
-    input_path: Path,
+    filename: str,
     config_path: Path,
     output_override: Optional[str],
     num: Optional[int],
     dry_run: bool = False,
 ) -> None:
-    """执行数据转换（默认流式处理）"""
-    log(f"📂 加载配置: {config_path}")
-
-    # 动态加载配置文件
+    """使用配置文件执行转换"""
+    log(f"📂 使用配置: {config_path}")
     try:
         config_ns = _load_config(config_path)
     except Exception as e:
         die("config_load_failed", f"无法加载配置文件: {e}")
 
-    # 获取 transform 函数
     if "transform" not in config_ns:
         die_usage(
             "配置文件中未定义 transform 函数",
             suggestion=f"编辑 {config_path} 并添加 transform(item) 函数",
         )
 
-    transform_func = config_ns["transform"]
-
-    # 获取输出路径
-    output_path = output_override or config_ns.get("output", "output.jsonl")
-
-    def wrapped_transform(item):
-        result = transform_func(DictWrapper(item))
-        return unwrap(result)
-
-    # 对于 JSONL 文件使用流式处理（dry-run 时强制走内存模式统计）
-    if _is_streaming_supported(input_path) and not dry_run:
-        log(f"📊 流式加载: {input_path}")
-        log("🔄 执行转换...")
-        try:
-            st = load_stream(str(input_path))
-            if num:
-                st = st.head(num)
-            count = st.transform(wrapped_transform, raw=True).save(output_path)
-            log(f"💾 保存结果: {output_path}")
-            emit_action(
-                "transform",
-                input_files=[str(input_path)],
-                output=output_path,
-                stats={"output_rows": count},
-            )
-        except Exception as e:
-            die("transform_failed", f"转换失败: {e}")
-        return
-
-    # 内存模式（非流式或 dry-run）
-    log(f"📊 加载数据: {input_path}")
-    try:
-        dt = DataTransformer.load(str(input_path))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(input_path))
-
-    total = len(dt)
-    if num:
-        dt = DataTransformer(dt.data[:num])
-        log(f"   处理前 {len(dt)}/{total} 条数据")
-    else:
-        log(f"   共 {total} 条数据")
-
-    log("🔄 执行转换...")
-    try:
-        results = dt.to(transform_func)
-    except Exception as e:
-        die("transform_failed", f"转换失败: {e}")
-
-    stats = {"input_rows": total, "output_rows": len(results)}
-    if dry_run:
-        preview = results[0] if results else None
-        emit_action(
-            "transform",
-            input_files=[str(input_path)],
-            output=output_path,
-            stats=stats,
-            extra={"preview": preview} if preview is not None else None,
-            dry_run=True,
-        )
-        return
-
-    log(f"💾 保存结果: {output_path}")
-    try:
-        save_data(results, output_path)
-    except Exception as e:
-        die_io_error(e, operation="保存", path=output_path)
-
-    emit_action(
-        "transform",
-        input_files=[str(input_path)],
-        output=output_path,
-        stats=stats,
-    )
+    # 配置里的 output 是默认落盘位置; 两者都没有才走 stdout
+    output_path = output_override or config_ns.get("output")
+    _run_transform(filename, config_ns["transform"], output_path, num, dry_run, {})
 
 
 def _execute_preset_transform(
-    input_path: Path,
+    filename: str,
     preset_name: str,
     output_override: Optional[str],
     num: Optional[int],
     dry_run: bool = False,
 ) -> None:
-    """使用预设模板执行转换（默认流式处理）"""
+    """使用预设模板执行转换"""
     log(f"📂 使用预设: {preset_name}")
-
-    # 获取预设函数
     try:
         transform_func = get_preset(preset_name)
     except ValueError as e:
-        die_usage(
-            str(e),
-            suggestion=f"可用预设: {', '.join(list_presets())}",
-        )
+        die_usage(str(e), suggestion=f"可用预设: {', '.join(list_presets())}")
+    _run_transform(filename, transform_func, output_override, num, dry_run, {"preset": preset_name})
 
-    output_path = output_override or f"{input_path.stem}_{preset_name}.jsonl"
 
-    def wrapped_transform(item):
-        result = transform_func(DictWrapper(item))
-        return unwrap(result)
+def _run_transform(
+    filename: str,
+    transform_func: Any,
+    output: Optional[str],
+    num: Optional[int],
+    dry_run: bool,
+    stats: Dict[str, Any],
+) -> None:
+    """配置/预设两种模式共用的执行体: 流式转换, 无 -o 走 stdout; dry-run 全量算并给预览。"""
+    from .pipe import input_label, open_input, write_output
 
-    # 对于 JSONL 文件使用流式处理（dry-run 时走内存模式）
-    if _is_streaming_supported(input_path) and not dry_run:
-        input_resolved = input_path.resolve()
-        output_resolved = Path(output_path).resolve()
-        use_temp_file = input_resolved == output_resolved
-
-        log(f"📊 流式加载: {input_path}")
-        log("🔄 执行转换...")
-
-        if use_temp_file:
-            log("⚠ 检测到输出文件与输入文件相同，将使用临时文件")
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=output_resolved.suffix,
-                prefix=".tmp_",
-                dir=output_resolved.parent,
-            )
-            os.close(temp_fd)
-            actual_output = temp_path
-        else:
-            actual_output = output_path
-
-        try:
-            st = load_stream(str(input_path))
-            if num:
-                st = st.head(num)
-            count = st.transform(wrapped_transform, raw=True).save(actual_output)
-
-            if use_temp_file:
-                shutil.move(temp_path, output_path)
-
-            log(f"💾 保存结果: {output_path}")
-            emit_action(
-                "transform",
-                input_files=[str(input_path)],
-                output=output_path,
-                stats={"output_rows": count, "preset": preset_name},
-            )
-        except Exception as e:
-            if use_temp_file and os.path.exists(temp_path):
-                os.unlink(temp_path)
-            die("transform_failed", f"转换失败: {e}")
-        return
-
-    # 内存模式（非流式或 dry-run）
-    log(f"📊 加载数据: {input_path}")
-    try:
-        dt = DataTransformer.load(str(input_path))
-    except Exception as e:
-        die_io_error(e, operation="读取", path=str(input_path))
-
-    total = len(dt)
+    st = open_input(filename)
     if num:
-        dt = DataTransformer(dt.data[:num])
-        log(f"   处理前 {len(dt)}/{total} 条数据")
-    else:
-        log(f"   共 {total} 条数据")
-
+        st = st.head(num)
     log("🔄 执行转换...")
-    try:
-        results = dt.to(transform_func)
-    except Exception as e:
-        die("transform_failed", f"转换失败: {e}")
 
-    stats = {"input_rows": total, "output_rows": len(results), "preset": preset_name}
     if dry_run:
+        try:
+            rows = st.collect()
+            results = DataTransformer(rows).to(transform_func)
+        except Exception as e:
+            die("transform_failed", f"转换失败: {e}")
         preview = results[0] if results else None
         emit_action(
             "transform",
-            input_files=[str(input_path)],
-            output=output_path,
-            stats=stats,
+            input_files=[input_label(filename)],
+            output=output,
+            stats={"input_rows": len(rows), "output_rows": len(results), **stats},
             extra={"preview": preview} if preview is not None else None,
             dry_run=True,
         )
         return
 
-    log(f"💾 保存结果: {output_path}")
-    try:
-        save_data(results, output_path)
-    except Exception as e:
-        die_io_error(e, operation="保存", path=output_path)
+    def wrapped_transform(item):
+        return unwrap(transform_func(DictWrapper(item)))
 
-    emit_action(
-        "transform",
-        input_files=[str(input_path)],
-        output=output_path,
-        stats=stats,
-    )
+    st = st.transform(wrapped_transform, raw=True)
+    write_output(st, output, action="transform", inputs=[filename], stats=stats)
 
 
 def _load_config(config_path: Path) -> Dict[str, Any]:

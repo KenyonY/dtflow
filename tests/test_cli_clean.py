@@ -317,11 +317,11 @@ class TestDedupeBasic:
         # (unless there are exact duplicates)
         assert len(result) >= 1
 
-    def test_dedupe_overwrite(self, sample_data_file):
-        """Test deduplication with overwrite (no output specified)."""
+    def test_dedupe_in_place(self, sample_data_file):
+        """-i 原地写回 (无 -o 不再覆盖原文件, 而是走 stdout)"""
         filepath, original_data = sample_data_file
 
-        dedupe(str(filepath), key="text")
+        dedupe(str(filepath), key="text", in_place=True)
 
         result = load_data(str(filepath))
         texts = [item["text"] for item in result]
