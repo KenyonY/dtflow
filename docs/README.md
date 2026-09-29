@@ -7,13 +7,15 @@
 ```
 docs/
 ├── README.md          # 本文档（主入口）
-└── quickstart.md      # 快速入门指南
+├── quickstart.md      # 快速入门指南
+└── images/view/       # README 里 dt view 的截图与 GIF（由 scripts/view_showcase.py 生成）
 ```
 
 ## 快速链接
 
 - [快速入门](./quickstart.md) - 30 秒上手 dtflow
 - [README](../README.md) - 项目主文档和使用说明
+- [dt view 展示素材](../scripts/view_showcase.py) - 重新生成截图/GIF：`python scripts/view_showcase.py`（headless 驱动真实 TUI，需 playwright + ffmpeg）
 
 ## 核心模块
 

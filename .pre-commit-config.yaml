@@ -16,6 +16,7 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
         args: [--maxkb=500]
+        exclude: ^docs/images/  # README 截图/GIF 素材
       - id: check-merge-conflict
 
   # 单元测试 (pre-push)

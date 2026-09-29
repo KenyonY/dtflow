@@ -14,6 +14,11 @@
 
 简洁的数据格式转换工具，专为机器学习训练数据设计。
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/KenyonY/dtflow/main/docs/images/view/demo.gif" alt="dt view：表格 + 详情联动的终端数据浏览器，全量搜索 / 筛选 / 列值勾选 / 放大 / dpo 对比" width="900">
+</p>
+<p align="center"><sub><code>dt view data.jsonl</code> —— 一条命令把训练数据变成可搜索、可筛选的终端浏览器（<a href="#交互式数据浏览dt-view">详细介绍</a>）</sub></p>
+
 ## 安装
 
 ```bash
@@ -24,6 +29,45 @@ pip install tiktoken          # Token 统计（OpenAI 模型）
 pip install transformers      # Token 统计（HuggingFace 模型）
 pip install datasets          # HuggingFace Dataset 转换
 ```
+
+## 交互式数据浏览：dt view
+
+`dt view <file>` 打开一个 master-detail 终端浏览器：左侧表格扫视样本（`turns/roles/first_user/chars` 派生列 + 元数据列），右侧详情按格式渲染当前行——对话按 role 上色、代码块语法高亮、dpo 左右对比。JSONL/CSV/Parquet 都能开，几十万行的文件也是秒开（窗口化加载，搜索/筛选/排序走并行全量扫描）。
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/KenyonY/dtflow/main/docs/images/view/main.png" alt="openai_chat 主界面：表格 + 详情联动，代码块语法高亮"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/KenyonY/dtflow/main/docs/images/view/search.png" alt="/ 全量搜索：整条记录任意值，命中处黄底高亮，状态栏显示命中占比"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>主界面</b>：表格选行，详情按 role 上色、代码块高亮</sub></td>
+    <td align="center"><sub><b><code>/</code> 全量搜索</b>：搜整条记录（含 assistant 回复），命中黄底高亮</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/KenyonY/dtflow/main/docs/images/view/value_filter.png" alt="F 列值勾选筛选：列出唯一值与频次，勾选保留"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/KenyonY/dtflow/main/docs/images/view/dpo.png" alt="dpo 格式：prompt / chosen / rejected 对比渲染"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b><code>F</code> 列值勾选</b>：Excel AutoFilter 式，唯一值 + 频次，勾谁留谁</sub></td>
+    <td align="center"><sub><b>dpo 对比</b>：chosen / rejected 分色渲染，格式自动检测</sub></td>
+  </tr>
+</table>
+
+```bash
+dt view data.jsonl                          # 打开即用，? 看快捷键
+dt view app.jsonl -100 -f                   # 追尾最新 100 行（日志模式）
+dt view data.jsonl -w "turns>=6" -s 报错    # 启动即筛选 + 搜索
+dt sample data.jsonl 500 | dt view -        # 管道：看采样/处理后的结果
+```
+
+| 按键 | 作用 |
+|------|------|
+| `/` `f` `F` `s` | 全量搜索 · 表达式筛选（`turns>=6 and source~=alpaca`）· 列值勾选 · 排序，可叠加，`r` 一键清空 |
+| `Enter` `n/N` `*` | 放大当前样本 · 逐字段跳 · 只在搜索命中间跳 |
+| `w` `C` | 把筛出的子集导出成文件（自动写血缘）· 复制一条能复现当前视图的 `dt view` 命令 |
+| `y` / 鼠标拖选 + `Ctrl+c` | 复制整条样本 JSON / 复制详情里任意一段文字（SSH/tmux 下也进本机剪贴板） |
+
+完整快捷键、筛选语法、大文件与 follow 模式的细节见 [交互式数据浏览 (dt view)](#交互式数据浏览-dt-view)。
 
 ## 🤖 Agent Skill 集成
 
