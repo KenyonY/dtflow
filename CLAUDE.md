@@ -126,12 +126,12 @@ dt history processed.jsonl
 ### 添加新预设
 1. 在 `dtflow/presets.py` 添加函数
 2. 在 `tests/` 添加测试
-3. 更新 README.md 预设表格
+3. 更新 docs/python-api.md 的预设表格
 
 ### 添加新转换器
 1. 在 `dtflow/converters.py` 添加函数
 2. 在 `dtflow/__init__.py` 导出
-3. 在 README.md 添加使用示例
+3. 在 docs/python-api.md 添加使用示例
 
 ### 核心类关系
 - `DataTransformer`: 内存模式，数据全部加载
