@@ -491,3 +491,16 @@ def apply_where(rows: List[Dict], exprs: Sequence[str], strict: bool = False) ->
     if failed:
         log(f"⚠ {failed}/{len(rows)} 行 --where 求值失败, 已视为不匹配 (首个: {first_err})")
     return kept
+
+
+def field_path_arg(value: Optional[str], option: str) -> Optional[str]:
+    """字段路径参数 (--key/--by/--field/…) 误写成表达式 (x.meta.s) 会静默解析成 None,
+    dedupe 把全表去成 1 行都不吭声 —— 在入口就拦下来。"""
+    if value and (value.startswith("x.") or value.startswith("x[")):
+        from .output import die_usage
+
+        die_usage(
+            f"{option} 是字段路径, 不是表达式: 去掉 x. 前缀",
+            suggestion=f"{option}={value[2:] if value.startswith('x.') else value[1:]}",
+        )
+    return value

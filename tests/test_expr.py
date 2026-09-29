@@ -134,9 +134,23 @@ class TestExtra:
         assert pred2(ROW) is True
         assert calls == [1], "未引用派生名时不应计算 extra"
 
-    def test_extra_without_names_always_called(self):
-        pred = compile_where("turns == 2", extra=lambda r: {"turns": 2})
-        assert pred(ROW) is True
+    def test_unknown_bare_name_is_syntax_error(self):
+        # 漏写 x. 的裸字段名不能每行 NameError 却退出码 0
+        with pytest.raises(ExprSyntaxError, match="x.score"):
+            compile_where("score > 0.5")
+        with pytest.raises(ExprSyntaxError, match="x.id"):
+            compile_value("id")  # 整个表达式是内置函数名
+        assert compile_value("len(x.messages)")(ROW) == 2  # 内置函数照常
+        assert compile_where("[m for m in x.messages if m.role == 'user']")(ROW)  # 推导式变量
+        assert compile_where("(lambda y: y > 1)(len(x.messages))")(ROW)
+        # extra 的名字必须通过 extra_names 声明
+        with pytest.raises(ExprSyntaxError):
+            compile_where("turns == 2", extra=lambda r: {"turns": 2})
+
+    def test_incomplete_expr_caret_at_end(self):
+        with pytest.raises(ExprSyntaxError) as ei:
+            compile_where("x.a >")
+        assert ei.value.offset == len("x.a >") + 1
 
 
 def _eval_in_child(args):

@@ -16,11 +16,13 @@
 "判 False 还是报错" 由调用方的 on_error 决定, 这里保持纯函数。
 """
 
+import ast
+import builtins
 import json
 import math
 import re
 from functools import lru_cache
-from typing import Any, Callable, Dict, FrozenSet, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, Optional
 
 from .core import DictWrapper, unwrap
 from .utils.field_path import get_field_with_spec
@@ -35,6 +37,8 @@ def _get(obj: Any, spec: str, default: Any = None) -> Any:
 
 
 _BASE: Dict[str, Any] = {"re": re, "json": json, "math": math, "get": _get}
+_BUILTIN_NAMES = frozenset(dir(builtins))
+_ALWAYS = frozenset(_BASE) | {"x"}
 
 
 class ExprSyntaxError(ValueError):
@@ -51,19 +55,60 @@ class ExprSyntaxError(ValueError):
         return f"{self.expr}\n{' ' * (self.offset - 1)}^"
 
 
+def _free_names(tree: ast.AST) -> Dict[str, int]:
+    """表达式里未在表达式内部绑定的名字 → 首次出现的列偏移 (1-based)。"""
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, ast.Lambda):
+            a = node.args
+            bound.update(p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs])
+            if a.vararg:
+                bound.add(a.vararg.arg)
+            if a.kwarg:
+                bound.add(a.kwarg.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+    free: Dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if node.id not in bound and node.id not in free:
+                free[node.id] = node.col_offset + 1
+    return free
+
+
 @lru_cache(maxsize=256)
-def _compile(expr: str, mode: str):
+def _compile(expr: str, mode: str, allowed: FrozenSet[str] = frozenset()):
+    """编译 + 名字检查: 除 x / re / json / math / get / 内置名 / allowed 外的裸名字直接报错,
+    否则 ``score > 0.5`` 这种漏写 x. 的表达式每行 NameError 却退出码 0, 静默得到 0 命中。"""
     if not expr.strip():
         raise ExprSyntaxError(expr, "表达式为空", 1)
     try:
-        return compile(expr, "<expr>", mode)
+        tree = ast.parse(expr, "<expr>", mode)
     except SyntaxError as e:
-        raise ExprSyntaxError(expr, e.msg or "invalid syntax", e.offset or 1) from None
+        offset = e.offset or 0
+        if offset <= 0:  # 表达式在末尾不完整时 Python 报 0, 指到末尾更有用
+            offset = len(expr) + 1
+        raise ExprSyntaxError(expr, e.msg or "invalid syntax", offset) from None
+    ok = _ALWAYS | _BUILTIN_NAMES | allowed
+    for name, col in _free_names(tree).items():
+        if name not in ok:
+            raise ExprSyntaxError(expr, f"未知名字 {name!r}: 字段请写 x.{name}", col)
+    # 整个表达式就是一个内置函数名 (id / type / input …): 十有八九是想写字段
+    body = tree.body if mode == "eval" else None
+    if (
+        isinstance(body, ast.Name)
+        and body.id in _BUILTIN_NAMES
+        and body.id not in ok - _BUILTIN_NAMES
+    ):
+        raise ExprSyntaxError(expr, f"{body.id!r} 是 Python 内置名: 字段请写 x.{body.id}", 1)
+    return compile(tree, "<expr>", mode)
 
 
-def check_syntax(expr: str, mode: str = "eval") -> None:
-    """只做语法检查 (pipeline 校验期提前报错), 失败抛 ExprSyntaxError"""
-    _compile(expr, mode)
+def check_syntax(expr: str, mode: str = "eval", allowed: Iterable[str] = ()) -> None:
+    """只做语法与名字检查 (pipeline 校验期提前报错), 失败抛 ExprSyntaxError"""
+    _compile(expr, mode, frozenset(allowed))
 
 
 def _namespace(row: Row, extra: Optional[ExtraFn]) -> Dict[str, Any]:
@@ -90,7 +135,7 @@ def compile_value(
     extra_names: Optional[FrozenSet[str]] = None,
 ) -> Callable[[Row], Any]:
     """表达式 → 取值函数 (sort/group --by、select 的派生列)。返回值已 unwrap。"""
-    code = _compile(expr.strip(), "eval")
+    code = _compile(expr.strip(), "eval", extra_names or frozenset())
     use_extra = _pick_extra(code, extra, extra_names)
 
     def value_fn(row: Row) -> Any:
@@ -105,7 +150,7 @@ def compile_where(
     extra_names: Optional[FrozenSet[str]] = None,
 ) -> Callable[[Row], bool]:
     """表达式 → 谓词。extra(row) 可注入额外名字 (view 的 turns/chars 等派生列)。"""
-    code = _compile(expr.strip(), "eval")
+    code = _compile(expr.strip(), "eval", extra_names or frozenset())
     use_extra = _pick_extra(code, extra, extra_names)
 
     def predicate(row: Row) -> bool:
@@ -114,9 +159,9 @@ def compile_where(
     return predicate
 
 
-def compile_in(expr: str) -> Callable[[Dict[str, Any]], Any]:
+def compile_in(expr: str, allowed: Iterable[str] = ()) -> Callable[[Dict[str, Any]], Any]:
     """表达式 → 在调用方给定的命名空间里求值 (group --agg 用: 名字是 g/key/n, 不是 x)。"""
-    code = _compile(expr.strip(), "eval")
+    code = _compile(expr.strip(), "eval", frozenset(allowed))
 
     def fn(names: Dict[str, Any]) -> Any:
         ns = dict(_BASE)

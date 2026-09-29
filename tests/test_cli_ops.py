@@ -238,3 +238,81 @@ class TestCli:
         stats(str(data_file), schema=True, sample=2, format="table")
         captured = capsys.readouterr()
         assert captured.out == "" and "扫描 2 行" in captured.err and "items" not in captured.err
+
+
+class TestQaRegressions:
+    """QA 验收报出的契约/数据级问题, 逐条钉住"""
+
+    def test_group_agg_failure_is_null_not_traceback(self, data_file, capsys, not_tty):
+        group_cmd(str(data_file), "x.s", agg="avg=mean(r.score for r in g)")
+        captured = capsys.readouterr()
+        rows = [json.loads(line) for line in captured.out.splitlines()]
+        assert {r["key"]: r["avg"] for r in rows} == {
+            "wiki": None,
+            "web": 0.9,
+        }  # wiki 组含无 score 的行
+        assert "聚合 avg" in captured.err and "Traceback" not in captured.err
+        with pytest.raises(typer.Exit) as ei:
+            group_cmd(str(data_file), "x.s", agg="avg=mean(r.score for r in g)", strict=True)
+        assert ei.value.exit_code == 1
+
+    def test_map_and_select_keep_row_count(self, data_file, capsys, not_tty):
+        map_cmd(str(data_file), "x.s2 = x.score * 2")
+        rows = _out(capsys)
+        assert len(rows) == 4 and "s2" not in rows[3]  # id=4 无 score: 原样保留
+        select_cmd(str(data_file), "id,s=x.score")
+        rows = _out(capsys)
+        assert len(rows) == 4 and rows[3] == {"id": 4, "s": None}
+
+    def test_output_dash_means_stdout(self, data_file, capsys, not_tty, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        filter_cmd(str(data_file), "x.id > 3", output="-")
+        assert _out(capsys) == [ROWS[3]]
+        assert not (tmp_path / "-").exists()
+
+    def test_strict_failure_with_output_file(self, data_file, capsys, not_tty, tmp_path):
+        out = tmp_path / "st.jsonl"
+        with pytest.raises(typer.Exit) as ei:
+            filter_cmd(str(data_file), "x.score > 0.2", output=str(out), strict=True)
+        assert ei.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert err.count('"error"') == 1  # 只有一份错误 JSON
+        payload = json.loads(err[err.index("{") :])
+        assert payload["error"] == "filter_failed" and not payload["retryable"]
+        assert not out.exists() and not list(tmp_path.glob(".tmp_*"))
+
+    def test_json_and_gz_outputs(self, data_file, capsys, not_tty, tmp_path):
+        from dtflow.storage.io import load_data
+
+        out = tmp_path / "s.json"
+        select_cmd(str(data_file), "id", output=str(out))
+        assert load_data(str(out)) == [{"id": i} for i in (1, 2, 3, 4)]
+        with pytest.raises(typer.Exit) as ei:
+            select_cmd(str(data_file), "id", output=str(tmp_path / "s.csv.gz"))
+        assert ei.value.exit_code == 2
+
+    def test_field_path_args_reject_expression(self, data_file, not_tty):
+        from dtflow.cli.clean import dedupe
+        from dtflow.cli.sample import sample
+
+        with pytest.raises(typer.Exit) as ei:
+            dedupe(str(data_file), key="x.s")
+        assert ei.value.exit_code == 2
+        with pytest.raises(typer.Exit) as ei:
+            sample(str(data_file), num=2, by="x.s")
+        assert ei.value.exit_code == 2
+
+    def test_bare_field_name_is_usage_error(self, data_file, not_tty):
+        with pytest.raises(typer.Exit) as ei:
+            filter_cmd(str(data_file), "score > 0.2")
+        assert ei.value.exit_code == 2
+        with pytest.raises(typer.Exit) as ei:
+            group_cmd(str(data_file), "id")
+        assert ei.value.exit_code == 2
+
+    def test_join_on_and_left_on_conflict(self, data_file, tmp_path, not_tty):
+        right = tmp_path / "r.jsonl"
+        right.write_bytes(b'{"id": 1}\n')
+        with pytest.raises(typer.Exit) as ei:
+            join_cmd(str(data_file), str(right), on="x.id", left_on="x.id")
+        assert ei.value.exit_code == 2

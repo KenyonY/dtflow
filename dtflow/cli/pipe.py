@@ -94,21 +94,34 @@ def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None) -> int:
     st.report_errors()
     if truncated:
         log(
-            f"[yellow]… 已显示前 {limit} 条 (终端预览); 取全量请 -o FILE 落盘、"
+            f"[yellow]… 终端预览只显示前 {limit} 条 (未消费完, 总数未知); 取全量请 -o FILE 落盘、"
             f"| 接下游, 或 --format=ndjson[/yellow]"
         )
     return count
 
 
+def check_output_path(output: str) -> None:
+    """落盘前把格式问题挡在读数据之前: 不支持压缩的格式带 .gz 后缀 → 用法错误。"""
+    from ..storage.io import _detect_format, is_gz
+    from .output import die_usage
+
+    p = Path(output)
+    if is_gz(p) and _detect_format(p) not in ("jsonl", "json"):
+        die_usage(f"{p.name}: 只有 .jsonl.gz / .json.gz 支持压缩写出", suggestion="改用 .jsonl.gz")
+
+
 def save_rows(st: StreamingTransformer, output: str) -> int:
-    """落盘; 输出与输入同一文件时先写同目录临时文件再原子替换 (流式读写不能同时开一个文件)。"""
+    """落盘: 一律先写同目录临时文件, 成功后原子替换 —— 中途失败不留半截文件,
+    输出与输入同一文件时也因此可以流式读写。只有 OSError 才是 io_error, 其它异常原样抛给调用方定性。"""
+    from ..storage.io import _detect_format
+
     out = Path(output)
-    src = st._source_path
-    same = src is not None and Path(src).resolve() == out.resolve()
-    if not same:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if _detect_format(out) == "flaxkv":
+        # flaxkv 是目录型 DB, 没法用临时文件替换; 临时 stem 会留下一个打开的 DB 把锁占住
         try:
             return st.save(output)
-        except Exception as e:
+        except OSError as e:
             die_io_error(e, operation="保存", path=output)
     fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
     os.close(fd)
@@ -116,10 +129,11 @@ def save_rows(st: StreamingTransformer, output: str) -> int:
         n = st.save(tmp)
         shutil.move(tmp, output)
         return n
-    except Exception as e:
+    except OSError as e:
+        die_io_error(e, operation="保存", path=output)
+    finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-        die_io_error(e, operation="保存", path=output)
 
 
 def write_output(
@@ -131,13 +145,26 @@ def write_output(
     stats: Optional[Dict] = None,
     extra: Optional[Dict] = None,
 ) -> int:
-    """无 ``-o`` → stdout 数据流 (摘要只走 stderr, 绝不污染 stdout);
-    有 ``-o`` → 落盘并按 emit_action 约定输出动作摘要。"""
-    if output is None:
-        n = emit_rows(st)
-        log(f"[dim]{action}: 输出 {n} 条[/dim]")
-        return n
-    n = save_rows(st, output)
+    """无 ``-o`` (或 ``-o -``) → stdout 数据流 (摘要只走 stderr, 绝不污染 stdout);
+    有 ``-o`` → 落盘并按 emit_action 约定输出动作摘要。
+    读写过程中的非 IO 异常 (如 --strict 下的求值失败) 统一定性为 ``<action>_failed``, 退出码 1。"""
+    import typer
+
+    from .output import die
+
+    if output == STDIN:
+        output = None
+    try:
+        if output is None:
+            n = emit_rows(st)
+            log(f"[dim]{action}: 输出 {n} 条[/dim]")
+            return n
+        check_output_path(output)
+        n = save_rows(st, output)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        die(f"{action}_failed", f"{type(e).__name__}: {e}", exit_code=1)
     log(f"💾 保存结果: {output}")
     emit_action(
         action,
@@ -159,4 +186,4 @@ def resolve_output(filename: str, output: Optional[str], in_place: bool) -> Opti
         if is_stdin(filename):
             die_usage("stdin 输入无法原地写回", suggestion="用 -o FILE 或直接接管道")
         return filename
-    return output
+    return None if output == STDIN else output

@@ -101,8 +101,12 @@ def sample(
         dt sample data.jsonl --where="'wiki' in x.meta.source"   # meta.source 包含 wiki
         dt sample data.jsonl --where="len(x.messages)>=2"        # 消息数量 >= 2
     """
+    from .common import field_path_arg
     from .pipe import is_stdin, load_rows, open_input
 
+    field_path_arg(by, "--by")
+    if output == "-":
+        output = None
     # type 未指定时：n=0 默认 head（保序），其他默认 random
     if type is None:
         type = "head" if num == 0 else "random"
@@ -476,6 +480,8 @@ def slice_data(
     from .pipe import is_stdin, load_rows
 
     filepath = Path(filename)
+    if output == "-":
+        output = None
 
     # 解析 range
     if ":" not in range_str:

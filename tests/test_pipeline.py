@@ -320,3 +320,16 @@ def test_cli_run_to_stdout_and_dry_run(tmp_path, capsys, monkeypatch):
         run(str(cfg), dry_run=True)
     assert ei.value.exit_code == 10
     assert json.loads(capsys.readouterr().out)["plan"][0]["step"] == "select"
+
+
+def test_validate_rejects_unknown_keys_and_join_conflict(tmp_path):
+    cfg = tmp_path / "p.yaml"
+    cfg.write_text(
+        "steps:\n  - type: clean\n    stirp: true\n  - type: sort\n    by: x.a\n    dsc: true\n"
+    )
+    errors = validate_pipeline(str(cfg))
+    assert any("stirp" in e for e in errors) and any("dsc" in e for e in errors)
+    cfg.write_text("steps:\n  - type: join\n    right: r.jsonl\n    on: x.id\n    left_on: x.id\n")
+    assert any("二选一" in e for e in validate_pipeline(str(cfg)))
+    cfg.write_text("steps:\n  - type: group\n    by: x.a\n    agg: 'm=mean(r.v for r in g)'\n")
+    assert validate_pipeline(str(cfg)) == []

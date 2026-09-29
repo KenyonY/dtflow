@@ -231,7 +231,9 @@ def sample(
     ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
     seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
-    by: Optional[str] = typer.Option(None, "--by", help="分层采样字段"),
+    by: Optional[str] = typer.Option(
+        None, "--by", help="分层采样字段 (字段路径, 如 meta.source; 不是表达式)"
+    ),
     uniform: bool = typer.Option(False, "--uniform", help="均匀采样模式"),
     dist: Optional[str] = typer.Option(
         None, "--dist", help='自定义分布 (JSON), 如 \'{"A":0.5,"B":0.3,"C":0.2}\''
@@ -621,7 +623,7 @@ def clean(
 # ============ 数据原语命令 (可管道拼接; 表达式即 Python, 当前行为 x) ============
 
 _OUT_HELP = "输出文件路径 (不指定则写 stdout)"
-_STRICT_HELP = "表达式求值失败即报错退出 (默认跳过该行并在结束时汇总)"
+_STRICT_HELP = "表达式求值失败即报错退出 (默认: filter 跳过该行 / select 该项置 null / map 该行原样保留 / sort 排末尾, 结束时汇总)"
 
 
 @app.command("filter")
@@ -645,7 +647,9 @@ def filter_cmd(
 @app.command("select")
 def select_cmd(
     filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
-    spec: str = typer.Argument(..., help="字段列表: 字面字段名 或 新名=表达式, 逗号分隔"),
+    spec: str = typer.Argument(
+        ..., metavar="FIELDS", help="字段列表: 字面字段名 或 新名=表达式, 逗号分隔"
+    ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
     strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
 ):

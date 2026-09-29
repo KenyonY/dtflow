@@ -39,6 +39,8 @@ def split(
     from .pipe import input_label, is_stdin, load_rows
 
     filepath = Path(filename)
+    if output == "-":
+        die_usage("split 输出多个文件, -o 必须是目录, 不能是 -")
     if is_stdin(filename) and not (output and name):
         die_usage("stdin 输入需要指定输出目录和文件名前缀", suggestion="-o DIR --name STEM")
 

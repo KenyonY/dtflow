@@ -174,22 +174,26 @@ def validate(
         "errors": errors_payload,
     }
 
-    # 输出：TTY table / 非 TTY JSON
-    # --filter 且无 -o: 有效数据走 stdout, 报告让位到 stderr (stdout 只能有一种东西)
-    data_to_stdout = filter_invalid and not output
+    # 输出: stdout 只能有一种东西。
+    #   纯验证        → 报告 (TTY 面板 / 非 TTY JSON)
+    #   --filter 无 -o → 有效数据走 stdout, 报告面板转 stderr
+    #   -o FILE       → 数据落盘, stdout 只有 action 摘要, 报告并入其 stats
+    if output == "-":
+        output = None
+    writes_data = bool(output or filter_invalid)
     fmt = resolve_format(format, default_for_tty="table")
-    if data_to_stdout or (fmt == "table" and is_stdout_tty()):
+    if writes_data or (fmt == "table" and is_stdout_tty()):
         _render_validate_report(report, max_errors)
     else:
         emit_json(report)
 
-    # 保存有效数据
-    if output or filter_invalid:
+    if writes_data:
         from ..streaming import StreamingTransformer
         from .pipe import write_output
 
         st = StreamingTransformer(iter(valid_data), None, total=len(valid_data))
-        write_output(st, output, action="validate", inputs=[filename], stats={"valid": valid_count})
+        summary = {k: v for k, v in report.items() if k != "errors"}
+        write_output(st, output, action="validate", inputs=[filename], stats=summary)
 
     # 详细模式：显示 Schema 定义
     if verbose:

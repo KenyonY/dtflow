@@ -47,8 +47,11 @@ def stats(
         dt stats data.jsonl --full --field=category  # 指定字段
         dt stats data.jsonl --full --expand=tags     # 展开 list 字段
     """
+    from .common import field_path_arg
     from .pipe import input_label, is_stdin, load_rows, open_input
 
+    for f in [*(fields or []), *(expand_fields or [])]:
+        field_path_arg(f, "--field/--expand")
     filepath = Path(input_label(filename))
     if not is_stdin(filename):
         open_input(filename)  # 只做存在/格式校验 (惰性)
@@ -664,8 +667,10 @@ def token_stats(
         dt token-stats data.jsonl --detailed
         dt token-stats data.jsonl --workers=4   # 使用 4 进程
     """
+    from .common import field_path_arg
     from .pipe import input_label, load_rows
 
+    field_path_arg(field, "--field")
     filepath = Path(input_label(filename))
 
     fmt = resolve_format(format, default_for_tty="table")

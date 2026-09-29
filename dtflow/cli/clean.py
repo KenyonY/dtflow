@@ -21,7 +21,7 @@ from ..ops import (  # noqa: F401  测试与 _clean_data_single_pass 仍按旧�
 )
 from ..streaming import StreamingTransformer
 from ..utils.field_path import get_field_with_spec
-from .common import _parse_field_list
+from .common import _parse_field_list, field_path_arg
 from .output import die, die_io_error, die_usage, emit_action, log
 from .pipe import input_label, open_input, resolve_output, write_output
 
@@ -74,6 +74,7 @@ def dedupe(
     if similar is not None and (similar <= 0 or similar > 1):
         die_usage("--similar 参数必须在 0-1 之间")
 
+    field_path_arg(key, "--key")
     out = resolve_output(filename, output, in_place)
     st = open_input(filename)
     stats: Dict[str, Any] = {"mode": "similar" if similar is not None else "exact", "key": key}
@@ -175,6 +176,16 @@ def clean(
         dt clean data.jsonl --min-tokens=text:50 --model=gpt-4 # 使用 gpt-4 分词器
         dt clean data.jsonl --drop-empty --dry-run          # 预演: 只报告将过滤多少条
     """
+    for opt, val in (
+        ("--drop-empty", drop_empty),
+        ("--min-len", min_len),
+        ("--max-len", max_len),
+        ("--min-tokens", min_tokens),
+        ("--max-tokens", max_tokens),
+        ("--promote", promote),
+    ):
+        field_path_arg(val, opt)
+
     # 解析参数
     try:
         min_len_field, min_len_value = _parse_len_param(min_len) if min_len else (None, None)

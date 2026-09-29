@@ -11,25 +11,25 @@ from .output import die, die_usage, log
 from .pipe import load_rows, open_input, write_output
 
 
-def _guard(fn):
-    """表达式语法错误 → 用法错误 (退出码 2, 带位置); 其它 ValueError → 用法错误。"""
+def _guard(action, fn):
+    """表达式语法错误 → 用法错误 (退出码 2, 带位置); 其它 ValueError → 用法错误;
+    构建阶段就消费数据的命令 (sort/group/join) 的运行时失败 → <action>_failed (退出码 1)。"""
+    import typer
+
     try:
         return fn()
     except ExprSyntaxError as e:
         die_usage(str(e), suggestion=e.caret())
     except ValueError as e:
         die_usage(str(e))
+    except typer.Exit:
+        raise
+    except Exception as e:
+        die(f"{action}_failed", f"{type(e).__name__}: {e}", exit_code=1)
 
 
 def _emit(st, output, action, filename, **stats):
-    try:
-        write_output(st, output, action=action, inputs=[filename], stats=stats or None)
-    except ExprSyntaxError as e:
-        die_usage(str(e), suggestion=e.caret())
-    except ValueError as e:
-        die_usage(str(e))
-    except Exception as e:  # --strict 下逐行求值失败从这里出来
-        die(f"{action}_failed", f"{type(e).__name__}: {e}", exit_code=1)
+    write_output(st, output, action=action, inputs=[filename], stats=stats or None)
 
 
 def filter_cmd(
@@ -44,7 +44,7 @@ def filter_cmd(
         dt filter data.jsonl "any('退款' in m.content for m in x.messages)" -o hit.jsonl
         cat a.jsonl | dt filter - "x.ok" | dt head -
     """
-    st = _guard(lambda: ops.filter_rows(open_input(filename), expr, strict))
+    st = _guard("filter", lambda: ops.filter_rows(open_input(filename), expr, strict))
     _emit(st, output, "filter", filename)
 
 
@@ -55,27 +55,27 @@ def select_cmd(
     投影 / 重命名 / 派生字段: SPEC 形如 ``id,text,n=len(x.messages),src=x.meta.source``。
 
     无 = 的项是字面顶层字段名 (缺失则省略); name=表达式 是派生; 重命名即 new=x.old。
-    输出键序 = SPEC 序。
+    输出键序 = SPEC 序。一进一出: 派生项求值失败置 null 并汇总 (--strict 则报错)。
 
     Examples:
         dt select data.jsonl "id,text"
         dt select data.jsonl "id,n=len(x.messages),last=x.messages[-1].content"
         dt select data.jsonl "prompt=x.instruction,answer=x.output" -o qa.jsonl
     """
-    st = _guard(lambda: ops.select_rows(open_input(filename), spec, strict))
+    st = _guard("select", lambda: ops.select_rows(open_input(filename), spec, strict))
     _emit(st, output, "select", filename)
 
 
 def map_cmd(filename: str, code: str, output: Optional[str] = None, strict: bool = False) -> None:
     """
-    对每行执行 Python 语句 (原地修改 x)。
+    对每行执行 Python 语句 (原地修改 x)。一进一出: 语句失败的行原样保留并汇总 (--strict 则报错)。
 
     Examples:
         dt map data.jsonl "x.text = x.text.strip()"
         dt map data.jsonl "x.n = len(x.messages); del x.debug"
         dt map data.jsonl "x.messages.append({'role': 'assistant', 'content': x.answer})"
     """
-    st = _guard(lambda: ops.map_rows(open_input(filename), code, strict))
+    st = _guard("map", lambda: ops.map_rows(open_input(filename), code, strict))
     _emit(st, output, "map", filename)
 
 
@@ -93,6 +93,9 @@ def explode_cmd(
         dt explode data.jsonl --field messages                # 每条消息一行
         dt explode data.jsonl --field tags --as tag --index-as i
     """
+    from .common import field_path_arg
+
+    field_path_arg(field, "--field")
     st = ops.explode_rows(open_input(filename), field, as_name, index_as)
     _emit(st, output, "explode", filename)
 
@@ -101,7 +104,7 @@ def sort_cmd(
     filename: str, by: str, output: Optional[str] = None, desc: bool = False, strict: bool = False
 ) -> None:
     """
-    按表达式排序 (全量加载)。键求值失败的行排最后。
+    按表达式排序 (全量加载)。键求值失败的行排最后 (--strict 则报错)。
 
     Examples:
         dt sort data.jsonl --by x.score --desc
@@ -111,7 +114,7 @@ def sort_cmd(
     st = open_input(filename)
     if st._total:
         log(f"📊 全量加载 {st._total} 行用于排序")
-    st = _guard(lambda: ops.sort_rows(st, by, desc, strict))
+    st = _guard("sort", lambda: ops.sort_rows(st, by, desc, strict))
     _emit(st, output, "sort", filename)
 
 
@@ -143,7 +146,7 @@ def group_cmd(
         dt group data.jsonl --by x.label --agg "avg_len=mean(len(r.text) for r in g),ids=[r.id for r in g][:3]"
         dt group data.jsonl --by x.label | dt sort - --by x.count --desc | dt head - 5
     """
-    st = _guard(lambda: ops.group_rows(open_input(filename), by, agg, strict))
+    st = _guard("group", lambda: ops.group_rows(open_input(filename), by, agg, strict))
     _emit(st, output, "group", filename)
 
 
@@ -168,11 +171,14 @@ def join_cmd(
     """
     if not (on or (left_on and right_on)):
         die_usage("需要 --on EXPR, 或同时给 --left-on 与 --right-on")
+    if on and (left_on or right_on):
+        die_usage("--on 与 --left-on/--right-on 只能二选一")
     if left == "-" and right == "-":
         die_usage("stdin (-) 只能出现一次")
     right_rows = load_rows(right)
     result = _guard(
-        lambda: ops.join_rows(open_input(left), right_rows, on, left_on, right_on, inner, prefix)
+        "join",
+        lambda: ops.join_rows(open_input(left), right_rows, on, left_on, right_on, inner, prefix),
     )
     st, dup = result
     if dup:

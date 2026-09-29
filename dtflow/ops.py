@@ -84,8 +84,27 @@ def filter_rows(st: StreamingTransformer, expr: str, strict: bool = False) -> St
 
 
 def map_rows(st: StreamingTransformer, code: str, strict: bool = False) -> StreamingTransformer:
-    """对每行执行语句 (原地改 x), 如 ``x.text = x.text.strip(); del x.debug``。"""
-    return st.transform(compile_map(code), raw=True, on_error=_on_error(strict))
+    """对每行执行语句 (原地改 x), 如 ``x.text = x.text.strip(); del x.debug``。
+
+    map 是一进一出: 语句失败的行**原样透传**并计数 (不像 filter 那样丢行), strict 则抛出。
+    """
+    fn = compile_map(code)
+    new = st.transform(lambda r: r, raw=True, on_error="raise")
+    err = new._err  # 闭包只捕获计数对象, 不捕获 new (避免引用环)
+
+    def apply(row: Row) -> Row:
+        try:
+            return fn(row)
+        except Exception as e:
+            if strict:
+                raise
+            err.count += 1
+            if err.first is None:
+                err.first = f"{type(e).__name__}: {e} (该行原样保留)"
+            return row
+
+    new._iterator = map(apply, st)
+    return new
 
 
 def select_rows(st: StreamingTransformer, spec: str, strict: bool = False) -> StreamingTransformer:
@@ -95,18 +114,30 @@ def select_rows(st: StreamingTransformer, spec: str, strict: bool = False) -> St
     输出键序 = SPEC 序。
     """
     plan = [(name, compile_value(expr) if expr else None) for name, expr in parse_spec(spec)]
+    new = st.transform(lambda r: r, raw=True, on_error="raise")
+    err = new._err
 
     def project(row: Row) -> Row:
+        # 一进一出: 派生项求值失败置 None 并计数, 不丢整行; strict 则抛出
         out: Row = OrderedDict()
         for name, fn in plan:
             if fn is None:
                 if name in row:
                     out[name] = row[name]
-            else:
+                continue
+            try:
                 out[name] = fn(row)
+            except Exception as e:
+                if strict:
+                    raise
+                err.count += 1
+                if err.first is None:
+                    err.first = f"{name}: {type(e).__name__}: {e} (该项置 null)"
+                out[name] = None
         return dict(out)
 
-    return st.transform(project, raw=True, on_error=_on_error(strict))
+    new._iterator = map(project, st)
+    return new
 
 
 def explode_rows(
@@ -156,9 +187,9 @@ def sort_rows(
     for row in rows:
         try:
             keyed.append((0, keyfn(row), row))
-        except Exception as e:
+        except Exception:
             if strict:
-                raise ValueError(f"排序键求值失败: {type(e).__name__}: {e}") from e
+                raise  # 运行时数据错误原样抛出 (退出码 1), ValueError 留给用法错误
             failed += 1
             keyed.append((1, None, row))
     ok = [k for k in keyed if k[0] == 0]
@@ -190,6 +221,7 @@ def _hashable(v: Any) -> Any:
 
 
 _AGG_NS = {"mean": statistics.mean, "median": statistics.median}
+_AGG_ALLOWED = frozenset({"g", "key", "n", "mean", "median"})
 
 
 def group_rows(
@@ -212,7 +244,7 @@ def group_rows(
                 k = keyfn(row)
             except Exception as e:
                 if strict:
-                    raise ValueError(f"分组键求值失败: {type(e).__name__}: {e}") from e
+                    raise
                 failed += 1
                 first_err = first_err or f"{type(e).__name__}: {e}"
                 continue
@@ -225,10 +257,10 @@ def group_rows(
         new._first_error = new._first_error or first_err
         return new
 
-    plan = [(name, compile_in(expr)) for name, expr in parse_spec(agg)]
     for name, expr in parse_spec(agg):
         if expr is None:
             raise ValueError(f"--agg 每项都要是 name=表达式, 得到 {name!r}")
+    plan = [(name, compile_in(expr, _AGG_ALLOWED)) for name, expr in parse_spec(agg)]
     groups: Dict[Any, List[Row]] = OrderedDict()
     keys = {}
     failed = 0
@@ -238,7 +270,7 @@ def group_rows(
             k = keyfn(row)
         except Exception as e:
             if strict:
-                raise ValueError(f"分组键求值失败: {type(e).__name__}: {e}") from e
+                raise
             failed += 1
             first_err = first_err or f"{type(e).__name__}: {e}"
             continue
@@ -250,7 +282,14 @@ def group_rows(
         ns = {**_AGG_NS, "g": ListWrapper(members), "key": keys[hk], "n": len(members)}
         rec: Row = {"key": keys[hk], "n": len(members)}
         for name, fn in plan:
-            rec[name] = unwrap(fn(ns))
+            try:
+                rec[name] = unwrap(fn(ns))
+            except Exception as e:
+                if strict:
+                    raise
+                failed += 1
+                first_err = first_err or f"聚合 {name}: {type(e).__name__}: {e} (该项置 null)"
+                rec[name] = None
         out.append(rec)
     new = _materialize(st, out)
     new._error_count += failed

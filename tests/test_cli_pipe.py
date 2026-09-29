@@ -188,3 +188,37 @@ def test_end_to_end_shell_pipeline(tmp_path):
     rows = [json.loads(line) for line in r.stdout.splitlines()]
     assert [row["id"] for row in rows] == [1, 2, 4]
     assert all(row["text"] == f"t{row['id']}" and "messages" not in row for row in rows)
+
+
+class TestQaRegressions:
+    def test_stdin_gzip_auto_detected(self, monkeypatch, capsys, not_tty):
+        import gzip
+
+        raw = gzip.compress(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))
+        monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw)))
+        head("-", num=2)
+        assert [r["id"] for r in _stdout_rows(capsys)] == [1, 2]
+
+    def test_validate_filter_to_file_single_stdout_json(self, tmp_path, capsys, not_tty):
+        from dtflow.cli.validate import validate
+
+        f = tmp_path / "d.jsonl"
+        f.write_bytes(
+            b'{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}\n{"x":1}\n'
+        )
+        out = tmp_path / "v.jsonl"
+        validate(str(f), preset="openai_chat", output=str(out), filter_invalid=True)
+        payload = json.loads(capsys.readouterr().out)  # 只有一份 JSON
+        assert payload["action"] == "validate" and payload["stats"]["valid"] == 1
+        assert out.read_text().count("\n") == 1
+
+    def test_run_output_dash(self, tmp_path, capsys, not_tty):
+        from dtflow.cli.pipeline import run
+
+        f = tmp_path / "d.jsonl"
+        f.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))
+        cfg = tmp_path / "p.yaml"
+        cfg.write_text(f"input: {f}\noutput: o.jsonl\nsteps:\n  - type: head\n    num: 1\n")
+        run(str(cfg), output="-")
+        assert _stdout_rows(capsys) == [ROWS[0]]
+        assert not (tmp_path / "-").exists() and not (tmp_path / "o.jsonl").exists()

@@ -114,6 +114,16 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
     return None
 
 
+class _Errors:
+    """跳过/容错的行数与首个错误 (被生成器闭包共享, 见 StreamingTransformer.__init__)"""
+
+    __slots__ = ("count", "first")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.first: Optional[str] = None
+
+
 class StreamingTransformer:
     """
     流式数据转换器。
@@ -147,8 +157,25 @@ class StreamingTransformer:
         self._source_path = source_path
         self._total = total
         self._operations: List[Dict[str, Any]] = []
-        self._error_count = 0
-        self._first_error: Optional[str] = None
+        # 错误计数放在独立的小对象里: 生成器闭包只捕获它, 不捕获 self ——
+        # 否则 self → 生成器 → 闭包 → self 成环, 只能等 GC 回收, 期间底层文件/LMDB 句柄一直开着
+        self._err = _Errors()
+
+    @property
+    def _error_count(self) -> int:
+        return self._err.count
+
+    @_error_count.setter
+    def _error_count(self, v: int) -> None:
+        self._err.count = v
+
+    @property
+    def _first_error(self) -> Optional[str]:
+        return self._err.first
+
+    @_first_error.setter
+    def _first_error(self, v: Optional[str]) -> None:
+        self._err.first = v
 
     @classmethod
     def load_stream(cls, filepath: str, batch_size: int = 10000) -> "StreamingTransformer":
@@ -273,9 +300,11 @@ class StreamingTransformer:
         # 过滤后数量未知，不传递 total
         new_st = StreamingTransformer(iter([]), self._source_path, total=None)
         new_st._operations = self._operations + [{"type": "filter", "func": func}]
+        err = new_st._err
+        source = self._iterator
 
         def filtered_iterator():
-            for item in self._iterator:
+            for item in source:
                 try:
                     if func(wrapper_func(item)):
                         yield item
@@ -283,9 +312,9 @@ class StreamingTransformer:
                     if on_error == "raise":
                         raise
                     # 跳过/保留的错误行都要计数: 静默丢行会掩盖 x.scroe 这类拼写错
-                    new_st._error_count += 1
-                    if new_st._first_error is None:
-                        new_st._first_error = f"{type(e).__name__}: {e}"
+                    err.count += 1
+                    if err.first is None:
+                        err.first = f"{type(e).__name__}: {e}"
                     if on_error == "keep":
                         yield item
 
@@ -320,17 +349,19 @@ class StreamingTransformer:
         new_total = self._total if on_error == "raise" else None
         new_st = StreamingTransformer(iter([]), self._source_path, total=new_total)
         new_st._operations = self._operations + [{"type": "transform", "func": func}]
+        err = new_st._err
+        source = self._iterator
 
         def transformed_iterator():
-            for item in self._iterator:
+            for item in source:
                 try:
                     yield finish(func(wrapper_func(item)))
                 except Exception as e:
                     if on_error == "raise":
                         raise
-                    new_st._error_count += 1
-                    if new_st._first_error is None:
-                        new_st._first_error = f"{type(e).__name__}: {e}"
+                    err.count += 1
+                    if err.first is None:
+                        err.first = f"{type(e).__name__}: {e}"
 
         new_st._iterator = transformed_iterator()
         return new_st
@@ -657,13 +688,24 @@ class StreamingTransformer:
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        from dtflow.storage.io import is_gz, save_data
+
         # flaxkv: .flaxkv 后缀或无后缀（通过 _detect_format 判断）
         fmt = _fmt_of(path)
+        if is_gz(path) and fmt not in ("jsonl", "json"):
+            raise ValueError(
+                f"{fmt} 格式不支持 .gz 压缩写出 (只有 .jsonl.gz / .json.gz): {filepath}"
+            )
 
         if fmt == "flaxkv":
             count = self._save_flaxkv_stream(filepath, batch_size, show_progress)
         elif fmt in ("csv", "tsv", "parquet", "arrow"):
             count = self._save_batched(filepath, fmt, batch_size, show_progress)
+        elif fmt in ("json", "excel"):
+            # 整体格式 (JSON 数组 / Excel) 无法逐行追加, 只能收集后一次写出
+            rows = list(self._iterator)
+            save_data(rows, filepath)
+            count = len(rows)
         else:
             # jsonl/ndjson 及未知扩展名: 按 JSONL 写 (与 _detect_format 一致)
             count = self._save_jsonl(filepath, show_progress)
@@ -1014,17 +1056,31 @@ def load_stream(filepath: str, batch_size: int = 10000) -> StreamingTransformer:
     return StreamingTransformer.load_stream(filepath, batch_size)
 
 
+def _stdin_bytes():
+    """stdin 的二进制流; 以 gzip 魔数开头 (cat x.jsonl.gz | dt …) 就透明解压。"""
+    import io
+    import sys
+
+    buf = sys.stdin.buffer
+    if not hasattr(buf, "peek"):
+        buf = io.BufferedReader(buf)
+    if buf.peek(2)[:2] == b"\x1f\x8b":
+        import gzip
+
+        return gzip.GzipFile(fileobj=buf)
+    return buf
+
+
 def open_stream(filename: str) -> StreamingTransformer:
     """任意输入 → 数据流: ``-`` 读 stdin NDJSON; 流式格式 load_stream; 其余全量读后包成流。
 
     CLI 与 pipeline 共用的唯一入口 (CLI 层在外面加存在/格式校验与结构化报错)。
     """
-    import sys
 
     from dtflow.storage.io import data_suffix, load_data
 
     if filename == "-":
-        return StreamingTransformer(_iter_jsonl(sys.stdin.buffer, "<stdin>"), None, total=None)
+        return StreamingTransformer(_iter_jsonl(_stdin_bytes(), "<stdin>"), None, total=None)
     path = Path(filename)
     if data_suffix(path) in STREAMING_FORMATS or _is_flaxkv_path(path):
         return load_stream(filename)

@@ -320,8 +320,10 @@ def run_pipeline(
     if not input_path:
         raise ValueError("未指定输入文件，请在配置中设置 input 或使用 --input 参数")
     output_path = output_file or config.get("output")
-    if not output_path:
-        raise ValueError("未指定输出文件，请在配置中设置 output 或使用 --output 参数")
+    if not output_path or output_path == "-":
+        raise ValueError(
+            "未指定输出文件，请在配置中设置 output 或使用 --output 参数 (CLI 下 - 表示 stdout)"
+        )
 
     st = build_pipeline(config, str(input_path), verbose=verbose)
     steps = config.get("steps", []) or []
@@ -405,6 +407,39 @@ _REQUIRED = {
     "group": ("by",),
     "join": ("right",),
 }
+# 每种 step 认得的键 (= CLI 选项名): 拼错的键静默忽略等于假装执行了, 必须报出来
+_ALLOWED = {
+    "filter": {"expr", "strict"},
+    "map": {"code", "strict"},
+    "select": {"fields", "strict"},
+    "explode": {"field", "as", "index_as"},
+    "sort": {"by", "desc", "strict"},
+    "shuffle": {"seed"},
+    "group": {"by", "agg", "strict"},
+    "join": {"right", "on", "left_on", "right_on", "inner", "prefix"},
+    "dedupe": {"key", "similar"},
+    "sample": {"num", "seed"},
+    "head": {"num"},
+    "tail": {"num"},
+    "clean": {
+        "strip",
+        "drop_empty",
+        "min_len",
+        "max_len",
+        "keep",
+        "drop",
+        "rename",
+        "promote",
+        "add_field",
+        "fill",
+        "reorder",
+        "min_tokens",
+        "max_tokens",
+        "model",
+    },
+    "transform": {"preset", "params", "config", "strict"},
+    "split": {"ratio", "seed"},
+}
 _EXPR_KEYS = {"filter": "expr", "sort": "by", "group": "by", "select": None, "map": None}
 
 
@@ -430,6 +465,11 @@ def validate_pipeline(config_path: str) -> List[str]:
             continue
         if t in TERMINAL_STEPS and i != len(steps):
             errors.append(f"步骤 {i}: {t} 只能是最后一步")
+        unknown = sorted(str(k) for k in step if k not in _ALLOWED[t] | {"type", "name"})
+        if unknown:
+            errors.append(
+                f"步骤 {i}: {t} 不认识参数 {', '.join(unknown)}; 可用: {', '.join(sorted(_ALLOWED[t]))}"
+            )
         for key in _REQUIRED.get(t, ()):
             if step.get(key) in (None, ""):
                 errors.append(f"步骤 {i}: {t} 需要指定 {key}")
@@ -437,6 +477,8 @@ def validate_pipeline(config_path: str) -> List[str]:
             errors.append(f"步骤 {i}: transform 需要指定 preset 或 config")
         if t == "join" and not (step.get("on") or (step.get("left_on") and step.get("right_on"))):
             errors.append(f"步骤 {i}: join 需要 on, 或同时给 left_on 与 right_on")
+        if t == "join" and step.get("on") and (step.get("left_on") or step.get("right_on")):
+            errors.append(f"步骤 {i}: join 的 on 与 left_on/right_on 只能二选一")
         # 表达式语法
         exprs = []
         if t in ("filter", "sort", "group") and step.get(_EXPR_KEYS[t]):
@@ -451,7 +493,14 @@ def validate_pipeline(config_path: str) -> List[str]:
             try:
                 check_syntax(expr, mode)
             except ExprSyntaxError as e:
-                errors.append(f"步骤 {i}: {t} {e}")
+                errors.append(f"步骤 {i}: {t} {e}\n  {e.caret()}")
+        if t == "group" and step.get("agg"):
+            try:
+                for _name, e in ops.parse_spec(str(step["agg"])):
+                    if e:
+                        check_syntax(e, allowed=ops._AGG_ALLOWED)
+            except (ValueError, ExprSyntaxError) as e:
+                errors.append(f"步骤 {i}: group agg {e}")
         if t in ("select",) and step.get("fields"):
             try:
                 for _name, e in ops.parse_spec(str(step["fields"])):

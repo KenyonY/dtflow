@@ -171,8 +171,10 @@ def diff(
         dt diff a.jsonl b.jsonl --output=diff_report.json
         dt --format=json diff a.jsonl b.jsonl     # 强制 JSON 到 stdout
     """
+    from .common import field_path_arg
     from .pipe import input_label, is_stdin, load_rows
 
+    field_path_arg(key, "--key")
     if is_stdin(file1) and is_stdin(file2):
         die_usage("stdin (-) 只能出现一次")
     path1 = Path(input_label(file1))

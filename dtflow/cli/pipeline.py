@@ -58,6 +58,8 @@ def run(
     steps = cfg.get("steps") or []
     input_path = input or cfg.get("input")
     output_path = output or cfg.get("output")
+    if output_path == "-":
+        output_path = None
 
     if dry_run:
         planned = [{"step": s.get("type"), "config": s} for s in steps if isinstance(s, dict)]

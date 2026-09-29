@@ -535,7 +535,7 @@ dt validate data.jsonl --preset=dpo --max-errors=100  # 限制错误输出数量
 dt validate data.jsonl --preset=openai_chat --workers=4  # 多进程加速
 ```
 
-`.jsonl.gz` / `.json.gz` 透明读写：所有命令直接接受，输出文件带 `.gz` 后缀即压缩写出。
+`.jsonl.gz` / `.json.gz` 透明读写：所有命令直接接受（`cat x.jsonl.gz | dt filter - ...` 按魔数自动解压），输出文件带 `.gz` 后缀即压缩写出；其它格式不支持 `.gz`，会报用法错误。`-o -` 等同于写 stdout。
 
 ### 交互式数据浏览 (dt view)
 
@@ -630,8 +630,9 @@ dt select d.jsonl "id,n=len(x.messages),roles=[m.role for m in x.messages]"
 dt map    d.jsonl "x.text = x.text.strip(); x.messages.append({'role': 'assistant', 'content': x.a})"
 ```
 
-求值失败的行（缺字段、`None > 0.5`）默认**判为不匹配/跳过，结束时在 stderr 汇总一次**；`--strict` 则首个错误即退出码 1。
-语法错误退出码 2 并指出位置。不做沙箱：这是你本机 shell 里的工具，和 `dt transform` 执行 `.dt/*.py` 一样。
+求值失败的行（缺字段、`None > 0.5`）默认不中断，结束时在 stderr 汇总一次：`filter` 判为不匹配、`select` 该项置 `null`、`map` 该行原样保留、`sort` 排到末尾、`group --agg` 该项置 `null`（map/select/group 一进一出，不会静默少行）；`--strict` 则首个错误即退出码 1。
+漏写 `x.` 的裸字段名（`score > 0.5`）在编译期就报退出码 2，不会每行 NameError 却 0 命中。语法错误退出码 2 并指出位置。不做沙箱：这是你本机 shell 里的工具，和 `dt transform` 执行 `.dt/*.py` 一样。
+`--key/--by(sample)/--field` 这类字段路径参数写成 `x.meta.s` 会被拦下并提示去掉 `x.`。
 
 从旧语法迁移（0.9 起旧的 `字段 运算符 值` 写法已删除）：
 

@@ -102,7 +102,8 @@ dt group  d.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"  # g=组
 dt join   d.jsonl meta.jsonl --on x.id --prefix m_
 ```
 
-- 求值失败的行（缺字段、`None > 0.5`）默认**判不匹配/跳过并在 stderr 汇总一次**；`--strict` 首错即退出码 1
+- 求值失败的行（缺字段、`None > 0.5`）默认不中断并在 stderr 汇总一次：filter 判不匹配、select 该项置 null、map 该行原样保留、sort 排末尾、group --agg 该项置 null（一进一出的命令不会静默少行）；`--strict` 首错即退出码 1
+- 漏写 `x.` 的裸字段名（`score > 0.5`、`--by id`）编译期即退出码 2；字段路径参数（`--key/--by/--field`）写成 `x.a` 也会被拦下
 - 语法错误退出码 2 并指出位置；`in` 区分大小写，不分大小写写 `.lower()`
 - 旧的 `字段 运算符 值` / `~=` 语法已删除：`category=tech` → `x.category=='tech'`，`messages.#>=2` → `len(x.messages)>=2`，`content~=词` → `'词' in x.content.lower()`
 
