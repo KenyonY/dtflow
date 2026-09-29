@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Ci
+
+- **release**: Release 正文改由 git-cliff 生成, 不再依赖只统计 PR 的自动说明
+
+
 ## [0.9.0] - 2026-09-29
 
 ### Bug Fixes
@@ -25,6 +32,8 @@
 - **pipeline**: Step 类型 = CLI 命令名, 参数 = 选项名, 复用 dtflow.ops; split 作终态步骤
 - **where**: Sample/view/pipeline 的筛选语法统一为 Python 表达式
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.7...v0.9.0
+
 ## [0.8.7] - 2026-09-29
 
 ### Bug Fixes
@@ -47,6 +56,8 @@
 
 - Bump version to 0.8.7
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.6...v0.8.7
+
 ## [0.8.6] - 2026-09-19
 
 ### Bug Fixes
@@ -63,6 +74,8 @@
 
 - Bump version to 0.8.6
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.5...v0.8.6
+
 ## [0.8.5] - 2026-09-17
 
 ### Features
@@ -75,6 +88,8 @@
 
 - Bump version to 0.8.5
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.4...v0.8.5
+
 ## [0.8.4] - 2026-09-17
 
 ### Features
@@ -84,6 +99,8 @@
 ### Miscellaneous
 
 - Bump version to 0.8.4
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.3...v0.8.4
 
 ## [0.8.3] - 2026-09-17
 
@@ -95,6 +112,8 @@
 ### Miscellaneous
 
 - Bump version to 0.8.3
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.2...v0.8.3
 
 ## [0.8.2] - 2026-09-16
 
@@ -124,6 +143,8 @@
 
 - **view**: 值筛选 Ctrl+c 用例别真写系统剪贴板
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.1...v0.8.2
+
 ## [0.8.1] - 2026-09-14
 
 ### Features
@@ -133,6 +154,8 @@
 ### Miscellaneous
 
 - Bump version to 0.8.1
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.8.0...v0.8.1
 
 ## [0.8.0] - 2026-09-14
 
@@ -144,6 +167,8 @@
 ### Miscellaneous
 
 - Bump version to 0.8.0
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.8...v0.8.0
 
 ## [0.7.8] - 2026-09-08
 
@@ -159,6 +184,8 @@
 
 - **view**: 快速精确计数并按需索引尾窗
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.7...v0.7.8
+
 ## [0.7.7] - 2026-09-08
 
 ### Miscellaneous
@@ -168,6 +195,8 @@
 ### Performance
 
 - **view**: 按需建立 JSONL 索引以加快首屏
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.6...v0.7.7
 
 ## [0.7.6] - 2026-09-04
 
@@ -179,6 +208,8 @@
 
 - Bump version to 0.7.6
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.5...v0.7.6
+
 ## [0.7.5] - 2026-09-01
 
 ### Bug Fixes
@@ -189,6 +220,8 @@
 
 - Bump version to 0.7.5
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.4...v0.7.5
+
 ## [0.7.4] - 2026-09-01
 
 ### Bug Fixes
@@ -198,6 +231,8 @@
 ### Miscellaneous
 
 - Bump version to 0.7.4
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.3...v0.7.4
 
 ## [0.7.3] - 2026-08-24
 
@@ -217,6 +252,8 @@
 
 - Bump version to 0.7.3
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.2...v0.7.3
+
 ## [0.7.2] - 2026-07-24
 
 ### Features
@@ -227,6 +264,8 @@
 
 - Bump version to 0.7.2
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.1...v0.7.2
+
 ## [0.7.1] - 2026-07-23
 
 ### Features
@@ -236,6 +275,8 @@
 ### Miscellaneous
 
 - Bump version to 0.7.1
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.7.0...v0.7.1
 
 ## [0.7.0] - 2026-07-22
 
@@ -257,6 +298,8 @@
 
 - Bump version to 0.7.0
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.12...v0.7.0
+
 ## [0.6.12] - 2026-07-21
 
 ### Bug Fixes
@@ -271,11 +314,15 @@
 - 忽略私有目录, 不纳入版本管理
 - 更新 project.urls 为新仓库地址 KenyonY/dtflow
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.11...v0.6.12
+
 ## [0.6.11] - 2026-07-21
 
 ### Bug Fixes
 
 - **view**: 值筛选面板加宽, 修四按钮中"取消"被裁看不见
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.10...v0.6.11
 
 ## [0.6.10] - 2026-07-21
 
@@ -283,11 +330,15 @@
 
 - **view**: Excel 式列值勾选筛选 + 面板鼠标按钮
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.9...v0.6.10
+
 ## [0.6.9] - 2026-07-21
 
 ### Features
 
 - **view**: 冻结 # 索引列, 水平滚动时始终可见
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.8...v0.6.9
 
 ## [0.6.8] - 2026-07-21
 
@@ -299,6 +350,8 @@
 
 - **view**: 消除 DataTable 定宽列逐格 measure, 首屏/翻页提速约 4-5x
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.7...v0.6.8
+
 ## [0.6.7] - 2026-07-20
 
 ### Bug Fixes
@@ -309,11 +362,15 @@
 
 - Bump version to 0.6.7
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.6...v0.6.7
+
 ## [0.6.6] - 2026-07-16
 
 ### Bug Fixes
 
 - **view**: Tmux/screen 下 OSC52 剪贴板穿透
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.5...v0.6.6
 
 ## [0.6.5] - 2026-07-16
 
@@ -329,17 +386,23 @@
 
 - Bump version to 0.6.5
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.4...v0.6.5
+
 ## [0.6.4] - 2026-07-15
 
 ### Features
 
 - **view**: 详情字段级导航与定位 (widget 化重构)
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.3...v0.6.4
+
 ## [0.6.3] - 2026-07-15
 
 ### Features
 
 - **view**: 详情面板切样本保持字段位置
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.2...v0.6.3
 
 ## [0.6.2] - 2026-07-15
 
@@ -352,11 +415,15 @@
 - **view**: 管道模式 dt view - + 位置参数 NUM
 - **view**: 大文件偏移索引窗口化浏览 + 列宽修复
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.1...v0.6.2
+
 ## [0.6.1] - 2026-07-10
 
 ### Features
 
 - **view**: 交互精简与列宽/CSV 优化
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.6.0...v0.6.1
 
 ## [0.6.0] - 2026-07-09
 
@@ -367,6 +434,8 @@
 ### Features
 
 - 新增 dt view 交互式数据浏览器 + 预览渲染统一
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.14...v0.6.0
 
 ## [0.5.14] - 2026-04-08
 
@@ -379,6 +448,8 @@
 
 - Bump version to 0.5.14
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.13...v0.5.14
+
 ## [0.5.13] - 2026-03-12
 
 ### Miscellaneous
@@ -388,6 +459,8 @@
 ### Refactor
 
 - FlaxList 从 DataTransformer 持久化后端降级为纯 I/O 格式
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.12...v0.5.13
 
 ## [0.5.12] - 2026-02-24
 
@@ -404,6 +477,8 @@
 
 - Bump version to 0.5.12
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.11...v0.5.12
+
 ## [0.5.11] - 2026-02-13
 
 ### Features
@@ -415,11 +490,15 @@
 
 - 清理过时的 dtflow 核心文档
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.10...v0.5.11
+
 ## [0.5.10] - 2026-02-04
 
 ### Miscellaneous
 
 - 版本更新至 0.5.10
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.9...v0.5.10
 
 ## [0.5.9] - 2026-02-04
 
@@ -435,6 +514,8 @@
 ### Miscellaneous
 
 - 版本更新至 0.5.9
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.8...v0.5.9
 
 ## [0.5.8] - 2026-02-01
 
@@ -452,6 +533,8 @@
 
 - 版本更新至 0.5.8，完善 skill 描述
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.7...v0.5.8
+
 ## [0.5.7] - 2026-01-24
 
 ### Features
@@ -462,17 +545,23 @@
 
 - 移除 mcp 模块
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.6...v0.5.7
+
 ## [0.5.6] - 2026-01-22
 
 ### Features
 
 - Sample 命令添加 --where 筛选参数
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.5...v0.5.6
+
 ## [0.5.5] - 2026-01-20
 
 ### Miscellaneous
 
 - Sample 命令默认采样方式改为 random，版本更新至 0.5.5
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.4...v0.5.5
 
 ## [0.5.4] - 2026-01-19
 
@@ -483,6 +572,8 @@
 ### Performance
 
 - Head/tail/sample 大文件预览跳过行数统计
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.3...v0.5.4
 
 ## [0.5.3] - 2026-01-19
 
@@ -498,6 +589,8 @@
 ### Styling
 
 - 修复 ruff lint 问题
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.2...v0.5.3
 
 ## [0.5.2] - 2026-01-12
 
@@ -521,7 +614,11 @@
 
 - 功能增强和测试完善
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.5.0...v0.5.2
+
 ## [0.5.0] - 2026-01-08
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.4.3...v0.5.0
 
 ## [0.4.3] - 2026-01-07
 
@@ -530,11 +627,19 @@
 - Dt sample/head/tail 添加 --raw 参数支持完整 JSON 输出
 - 添加 validate() 数据验证方法
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.4.2...v0.4.3
+
 ## [0.4.2] - 2025-12-27
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.4.1...v0.4.2
 
 ## [0.4.1] - 2025-12-27
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.4.0...v0.4.1
+
 ## [0.4.0] - 2025-12-24
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.3.2...v0.4.0
 
 ## [0.3.2] - 2025-12-23
 
@@ -542,11 +647,15 @@
 
 - Concat 命令支持非流式格式文件
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.3.1...v0.3.2
+
 ## [0.3.1] - 2025-12-23
 
 ### Documentation
 
 - 精简路线图，删除重复功能
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.3.0...v0.3.1
 
 ## [0.3.0] - 2025-12-17
 
@@ -554,17 +663,23 @@
 
 - 添加 messages token 统计和训练框架格式支持
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.2.0...v0.3.0
+
 ## [0.2.0] - 2025-12-17
 
 ### Features
 
 - 添加 tokenizers 和 converters 模块
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.1.6...v0.2.0
+
 ## [0.1.6] - 2025-12-16
 
 ### Performance
 
 - 性能优化 - 流式采样、并行处理
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.1.5...v0.1.6
 
 ## [0.1.5] - 2025-12-16
 
@@ -573,9 +688,15 @@
 - 添加 dt clean 数据清洗命令
 - 添加数据去重和拼接功能
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.1.3...v0.1.5
+
 ## [0.1.3] - 2025-12-15
 
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.1.2...v0.1.3
+
 ## [0.1.2] - 2025-12-07
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.1.1...v0.1.2
 
 ## [0.1.1] - 2025-12-07
 
