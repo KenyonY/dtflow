@@ -114,6 +114,18 @@ def compile_where(
     return predicate
 
 
+def compile_in(expr: str) -> Callable[[Dict[str, Any]], Any]:
+    """表达式 → 在调用方给定的命名空间里求值 (group --agg 用: 名字是 g/key/n, 不是 x)。"""
+    code = _compile(expr.strip(), "eval")
+
+    def fn(names: Dict[str, Any]) -> Any:
+        ns = dict(_BASE)
+        ns.update(names)
+        return eval(code, ns)
+
+    return fn
+
+
 def compile_map(code_str: str) -> Callable[[Row], Row]:
     """
     语句 → 行变换函数: exec 后返回 x (原地修改)。

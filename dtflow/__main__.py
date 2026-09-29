@@ -32,6 +32,7 @@ Agent 探索入口:
 都支持 --dry-run，可先预演再执行实际写入。
 
 Commands:
+    filter/select/map/explode/sort/shuffle/group/join   数据原语 (可管道拼接)
     sample        从数据文件中采样
     head          显示文件的前 N 条数据
     tail          显示文件的后 N 条数据
@@ -66,14 +67,22 @@ from .cli.commands import concat as _concat
 from .cli.commands import dedupe as _dedupe
 from .cli.commands import diff as _diff
 from .cli.commands import eval as _eval
+from .cli.commands import explode_cmd as _explode
 from .cli.commands import export as _export
+from .cli.commands import filter_cmd as _filter
+from .cli.commands import group_cmd as _group
 from .cli.commands import head as _head
 from .cli.commands import history as _history
 from .cli.commands import install_skill as _install_skill
+from .cli.commands import join_cmd as _join
+from .cli.commands import map_cmd as _map
 from .cli.commands import run as _run
 from .cli.commands import sample as _sample
+from .cli.commands import select_cmd as _select
+from .cli.commands import shuffle_cmd as _shuffle
 from .cli.commands import skill_status as _skill_status
 from .cli.commands import slice_data as _slice_data
+from .cli.commands import sort_cmd as _sort
 from .cli.commands import split as _split
 from .cli.commands import stats as _stats
 from .cli.commands import tail as _tail
@@ -601,6 +610,154 @@ def clean(
     )
 
 
+# ============ 数据原语命令 (可管道拼接; 表达式即 Python, 当前行为 x) ============
+
+_OUT_HELP = "输出文件路径 (不指定则写 stdout)"
+_STRICT_HELP = "表达式求值失败即报错退出 (默认跳过该行并在结束时汇总)"
+
+
+@app.command("filter")
+def filter_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    expr: str = typer.Argument(..., help="Python 表达式, 当前行为 x"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
+):
+    """保留表达式为真的行
+
+    示例:
+        dt filter data.jsonl "x.score > 0.5 and 'wiki' in x.meta.source"
+        dt filter data.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'"
+        dt filter data.jsonl "any('退款' in m.content for m in x.messages)" -o hit.jsonl
+        dt filter data.jsonl "re.search(r'\\d{4}', x.text)" | dt head -
+    """
+    _filter(filename, expr, output, strict)
+
+
+@app.command("select")
+def select_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    spec: str = typer.Argument(..., help="字段列表: 字面字段名 或 新名=表达式, 逗号分隔"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
+):
+    """投影 / 重命名 / 派生字段 (输出键序 = SPEC 序)
+
+    示例:
+        dt select data.jsonl "id,text"                              # 只留两列
+        dt select data.jsonl "id,n=len(x.messages),last=x.messages[-1].content"
+        dt select data.jsonl "prompt=x.instruction,answer=x.output" # 重命名
+    """
+    _select(filename, spec, output, strict)
+
+
+@app.command("map")
+def map_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    code: str = typer.Argument(..., help="Python 语句, 原地修改 x (; 或换行分隔多句)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
+):
+    """对每行执行 Python 语句 (原地修改 x)
+
+    示例:
+        dt map data.jsonl "x.text = x.text.strip()"
+        dt map data.jsonl "x.n = len(x.messages); del x.debug"
+        dt map data.jsonl "x.messages.append({'role': 'assistant', 'content': x.answer})"
+    """
+    _map(filename, code, output, strict)
+
+
+@app.command("explode")
+def explode_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    field: str = typer.Option(..., "--field", "-f", help="要展开的 list 字段 (顶层)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    as_name: Optional[str] = typer.Option(None, "--as", help="展开后元素的字段名 (默认同名)"),
+    index_as: Optional[str] = typer.Option(None, "--index-as", help="把元素下标写入该字段"),
+):
+    """把 list 字段展开为多行 (其余字段复制)
+
+    示例:
+        dt explode data.jsonl --field messages                 # 每条消息一行
+        dt explode data.jsonl --field tags --as tag --index-as i
+    """
+    _explode(filename, field, output, as_name, index_as)
+
+
+@app.command("sort")
+def sort_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    by: str = typer.Option(..., "--by", "-b", help="排序键表达式, 如 x.score 或 (x.a, -x.b)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    desc: bool = typer.Option(False, "--desc", help="降序"),
+    strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
+):
+    """按表达式排序 (全量加载; 键求值失败的行排最后)
+
+    示例:
+        dt sort data.jsonl --by x.score --desc
+        dt sort data.jsonl --by "len(x.messages)"
+        dt sort data.jsonl --by "(x.source, -x.score)"
+    """
+    _sort(filename, by, output, desc, strict)
+
+
+@app.command("shuffle")
+def shuffle_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    seed: Optional[int] = typer.Option(None, "--seed", help="随机种子"),
+):
+    """全量打乱
+
+    示例:
+        dt shuffle data.jsonl --seed 42 -o shuffled.jsonl
+    """
+    _shuffle(filename, output, seed)
+
+
+@app.command("group")
+def group_cmd(
+    filename: str = typer.Argument(..., help="输入文件路径; - 表示 stdin"),
+    by: str = typer.Option(..., "--by", "-b", help="分组键表达式"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    agg: Optional[str] = typer.Option(
+        None, "--agg", help="聚合: name=表达式,... 可用 g(组内行) / key / n / mean / median"
+    ),
+    strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
+):
+    """按表达式分组: 默认流式计数, --agg 自定义聚合
+
+    示例:
+        dt group data.jsonl --by x.meta.source                 # {"key","count"} 按 count 降序
+        dt group data.jsonl --by "len(x.messages)"
+        dt group data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"
+    """
+    _group(filename, by, output, agg, strict)
+
+
+@app.command("join")
+def join_cmd(
+    left: str = typer.Argument(..., help="左表 (流式); - 表示 stdin"),
+    right: str = typer.Argument(..., help="右表 (入内存)"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help=_OUT_HELP),
+    on: Optional[str] = typer.Option(None, "--on", help="两侧共用的键表达式, 如 x.id"),
+    left_on: Optional[str] = typer.Option(None, "--left-on", help="左表键表达式"),
+    right_on: Optional[str] = typer.Option(None, "--right-on", help="右表键表达式"),
+    inner: bool = typer.Option(False, "--inner", help="内连接: 丢弃未命中的左行 (默认左连接)"),
+    prefix: Optional[str] = typer.Option(None, "--prefix", help="右表字段统一加前缀"),
+):
+    """按键连接两个数据集 (左表流式, 右表入内存; 左表字段优先)
+
+    示例:
+        dt join data.jsonl meta.jsonl --on x.id
+        dt join data.jsonl meta.jsonl --left-on x.uid --right-on x.user_id --prefix m_
+        dt join data.jsonl labels.jsonl --on x.id --inner -o labeled.jsonl
+    """
+    _join(left, right, output, on, left_on, right_on, inner, prefix)
+
+
 # ============ 数据统计命令 ============
 
 
@@ -615,17 +772,25 @@ def stats(
     expand: Optional[List[str]] = typer.Option(
         None, "--expand", help="展开 list 字段统计（可多次使用）"
     ),
+    schema: bool = typer.Option(
+        False,
+        "--schema",
+        "-s",
+        help="推断嵌套结构 (类型/非空率/list 元素/低基数取值), agent 先看这个",
+    ),
+    sample: int = typer.Option(1000, "--sample", help="--schema 扫描前 N 行 (0=全量)"),
 ):
     """显示数据文件的统计信息
 
     示例:
         dt stats data.jsonl                       # 快速模式: 字段结构
+        dt stats data.jsonl --schema              # 嵌套 schema (先了解全貌再写表达式)
         dt stats data.jsonl --full                # 完整模式: 值分布/唯一值
         dt stats data.jsonl --full --field=label  # 仅统计 label 字段
         dt stats data.jsonl --full --expand=tags  # 展开 list 字段
         dt --format=json stats data.jsonl         # 机器可读报告
     """
-    _stats(filename, top, full, field, expand)
+    _stats(filename, top, full, field, expand, schema=schema, sample=sample)
 
 
 @app.command("token-stats")

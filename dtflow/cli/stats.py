@@ -24,6 +24,8 @@ def stats(
     fields: Optional[List[str]] = None,
     expand_fields: Optional[List[str]] = None,
     format: Optional[str] = None,
+    schema: bool = False,
+    sample: int = 1000,
 ) -> None:
     """
     显示数据文件的统计信息。
@@ -53,6 +55,10 @@ def stats(
 
     fmt = resolve_format(format, default_for_tty="table")
 
+    if schema:
+        _schema_stats(filename, filepath.name, sample, fmt)
+        return
+
     # 快速模式：忽略 --field 和 --expand 参数 (stdin 无文件可探, 直接走完整模式)
     if not full and not is_stdin(filename):
         if fields or expand_fields:
@@ -80,6 +86,52 @@ def stats(
             "fields": field_stats,
         }
         emit_json(payload)
+
+
+def _schema_stats(filename: str, label: str, sample: int, fmt: str) -> None:
+    """--schema: 推断嵌套结构。JSON 到 stdout; TTY 下画成树到 stderr。"""
+    from ..ops import infer_schema
+    from .pipe import open_input
+
+    st = open_input(filename)
+    if sample > 0:
+        st = st.head(sample)
+    result = infer_schema(st)
+    result["file"] = label
+    if fmt != "table":
+        emit_json(result)
+        return
+
+    from rich.tree import Tree
+
+    from .output import stderr_console
+
+    def label_of(name: str, node: dict) -> str:
+        t = node["type"]
+        t = "|".join(t) if isinstance(t, list) else t
+        s = f"[bold]{name}[/bold]: [cyan]{t}[/cyan]"
+        if node.get("non_null", 1.0) < 1.0:
+            s += f" [dim]非空 {node['non_null']:.0%}[/dim]"
+        if node.get("values"):
+            from rich.markup import escape
+
+            s += f" [dim]∈ {escape(str(node['values']))}[/dim]"
+        return s
+
+    def add(tree: Tree, fields: dict) -> None:
+        for name, node in fields.items():
+            branch = tree.add(label_of(name, node))
+            if node.get("fields"):
+                add(branch, node["fields"])
+            if node.get("items"):
+                item = node["items"]
+                sub = branch.add(label_of("[*]", item))
+                if item.get("fields"):
+                    add(sub, item["fields"])
+
+    tree = Tree(f"[bold]{label}[/bold] [dim](扫描 {result['rows_scanned']} 行)[/dim]")
+    add(tree, result["fields"])
+    stderr_console.print(tree)
 
 
 def _quick_stats(filepath: Path, fmt: str = "table") -> None:

@@ -28,6 +28,18 @@ from .io_ops import concat, diff
 # 血缘追踪命令
 from .lineage import history
 
+# 数据原语命令
+from .ops import (
+    explode_cmd,
+    filter_cmd,
+    group_cmd,
+    join_cmd,
+    map_cmd,
+    select_cmd,
+    shuffle_cmd,
+    sort_cmd,
+)
+
 # Pipeline 命令
 from .pipeline import run
 from .sample import head, sample, slice_data, tail
@@ -64,6 +76,15 @@ __all__ = [
     # IO 操作
     "concat",
     "diff",
+    # 数据原语
+    "filter_cmd",
+    "select_cmd",
+    "map_cmd",
+    "explode_cmd",
+    "sort_cmd",
+    "shuffle_cmd",
+    "group_cmd",
+    "join_cmd",
     # Pipeline
     "run",
     # 血缘
