@@ -278,7 +278,7 @@ _HELP = """[b]dt view 快捷键[/b]
   f            全量筛选 (扫全文件 → 命中子集): 列名取表头所见
                  单条件  列名 运算符 值   运算符: > >= < <= == != = ~=(包含,不分大小写)
                  例: chars>2000 · turns>=6 · source==alpaca · messages.#>=2(深层字段)
-                 包含: first_user~=退款 · tools~=get_weather · messages[0].content~=报错
+                 包含: first_user~=退款 · calls~=get_weather · messages[0].content~=报错
                        messages[*].content:join~=词  (搜整段对话, :join 不可省)
                  多条件  and / or 组合   例: turns>=6 and chars<2000
                  可反复按 f 叠加多条 (多条之间是 and; 需要括号语义就拆成多条)

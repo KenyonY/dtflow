@@ -106,12 +106,12 @@ def _agent_row():
 
 
 def test_tool_calls_derived_columns():
-    # content=null 的调用消息不再算成 "None"; tools 列列出调用过的函数; 工具返回记 t
+    # content=null 的调用消息不再算成 "None"; calls 列列出调用过的函数; 工具返回记 t
     row = _agent_row()
     cols = R.build_columns([row], "openai_chat")
     cells = dict(zip(cols, R.row_cells(0, row, "openai_chat", cols), strict=False))
     assert cells["roles"] == "u→a→t→a"
-    assert cells["tools"] == "get_weather,search"
+    assert cells["calls"] == "get_weather,search"
     assert cells["turns"] == "4"
     # chars = 正文 + 思维链 + 函数名 + 参数, 不含 "None"
     expected = (
@@ -125,7 +125,7 @@ def test_tool_calls_derived_columns():
         + len("22 度")
     )
     assert cells["chars"] == str(expected)
-    assert "tools" in R.derived_columns("openai_chat")  # 筛选 tools~=get_weather 走派生列
+    assert "calls" in R.derived_columns("openai_chat")  # 筛选 calls~=get_weather 走派生列
 
 
 def test_tool_calls_render_detail():
@@ -164,7 +164,7 @@ def test_sharegpt_function_call_and_observation():
     cols = R.build_columns([row], "sharegpt")
     cells = dict(zip(cols, R.row_cells(0, row, "sharegpt", cols), strict=False))
     assert cells["roles"] == "u→a→t→a"  # 与 openai_chat 一致: 发起调用是 a, 返回是 t
-    assert cells["tools"] == "get_weather"
+    assert cells["calls"] == "get_weather"
     from rich.console import Console
 
     out = Console(width=60)
@@ -309,3 +309,77 @@ def test_row_cells_preview_limits():
     assert note == "y" * 120 + "…"
     full = R.row_cells(0, row, "openai_chat", ["first_user", "note"], preview=False)
     assert full == ["x" * 500, "y" * 500]
+
+
+def test_calls_column_does_not_shadow_top_level_tools_field():
+    # 顶层 tools 是工具定义的标准字段 (OpenAI/LLaMA-Factory), 派生列不能撞名把它挤掉
+    row = {
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+    }
+    cols = R.build_columns([row], "openai_chat")
+    assert "tools" in cols and "calls" in cols
+    cells = dict(zip(cols, R.row_cells(0, row, "openai_chat", cols), strict=False))
+    assert cells["calls"] == "" and "get_weather" in cells["tools"]
+
+
+def test_bad_tool_call_entries_are_flagged():
+    from rich.console import Console
+
+    def rendered(row, fmt="openai_chat"):
+        out = Console(width=60)
+        with out.capture() as cap:
+            out.print(R.render_detail(row, fmt))
+        return cap.get()
+
+    # sharegpt function_call 不是合法 JSON / 没有 name: 不能悄悄当普通文本, 要标红且进 calls
+    for value, warn in (
+        ("{name: get_weather", "⚠ arguments 不是合法 JSON"),
+        ('{"foo": 1}', "⚠ 缺少函数名"),
+    ):
+        row = {"conversations": [{"from": "function_call", "value": value}]}
+        cols = R.build_columns([row], "sharegpt")
+        cells = dict(zip(cols, R.row_cells(0, row, "sharegpt", cols), strict=False))
+        assert cells["calls"] == "?"
+        text = rendered(row, "sharegpt")
+        assert warn in text and "⚙ ?" in text
+
+    # arguments/name 为 null: 不显示成 null/None, 标红
+    row = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "c1", "function": {"name": None, "arguments": None}}],
+            }
+        ]
+    }
+    text = rendered(row)
+    assert "⚙ ?" in text and "⚠ arguments 不是合法 JSON" in text
+    assert "None" not in text and "null" not in text
+
+
+def test_legacy_function_call_field_rendered():
+    # 旧版 OpenAI: assistant 带 function_call 单个 dict, 与 tool_calls 同样渲染
+    row = {
+        "messages": [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": None,
+                "function_call": {"name": "get_weather", "arguments": '{"city": "北京"}'},
+            },
+            {"role": "function", "name": "get_weather", "content": '{"temp": 1}'},
+        ]
+    }
+    cols = R.build_columns([row], "openai_chat")
+    cells = dict(zip(cols, R.row_cells(0, row, "openai_chat", cols), strict=False))
+    assert cells["calls"] == "get_weather" and cells["roles"] == "u→a→t"
+    secs = R.render_detail_sections(row, "openai_chat", split_turns=True)
+    assert secs[1][2].startswith("[assistant → get_weather]")
+
+
+def test_call_id_searchable_on_calling_turn():
+    # 搜 call_1 时 * 既能跳到 tool 返回, 也能跳到发起调用的那条 (纯文本与渲染同源)
+    secs = R.render_detail_sections(_agent_row(), "openai_chat", split_turns=True)
+    assert "call_1" in secs[1][2] and "call_1" in secs[2][2]

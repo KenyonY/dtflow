@@ -85,7 +85,13 @@ class Turn(NamedTuple):
 
 
 def _parse_tool_calls(raw: Any) -> Tuple[ToolCall, ...]:
-    """openai 的 tool_calls 列表 → ToolCall 元组; 结构不对的条目保留原样便于发现。"""
+    """tool_calls 列表 (或旧版 function_call 单个 dict) → ToolCall 元组。
+
+    结构不对的条目不丢: name 缺失记 "?", arguments 缺失/为 null 记空串 (渲染时会标红),
+    坏掉的调用恰恰是要找的东西。
+    """
+    if isinstance(raw, dict):  # 旧版 OpenAI: "function_call": {"name", "arguments"}
+        raw = [raw]
     if not isinstance(raw, list):
         return ()
     out = []
@@ -94,10 +100,12 @@ def _parse_tool_calls(raw: Any) -> Tuple[ToolCall, ...]:
             out.append(ToolCall("?", str(tc), ""))
             continue
         fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
-        args = fn.get("arguments", "")
-        if not isinstance(args, str):  # 有的数据直接放 dict
+        args = fn.get("arguments")
+        if args is None:
+            args = ""
+        elif not isinstance(args, str):  # 有的数据直接放 dict
             args = orjson.dumps(args).decode()
-        out.append(ToolCall(str(fn.get("name", "?")), args, str(tc.get("id") or "")))
+        out.append(ToolCall(str(fn.get("name") or "?"), args, str(tc.get("id") or "")))
     return tuple(out)
 
 
@@ -114,7 +122,7 @@ def _normalize_turns(row: Dict, fmt: str) -> List[Turn]:
                 role=str(m.get("role", "")),
                 content=_as_text(m.get("content")),
                 reasoning=_as_text(m.get("reasoning_content") or m.get("reasoning")),
-                tool_calls=_parse_tool_calls(m.get("tool_calls")),
+                tool_calls=_parse_tool_calls(m.get("tool_calls") or m.get("function_call")),
                 call_id=str(m.get("tool_call_id") or ""),
             )
             for m in msgs
@@ -131,7 +139,9 @@ def _normalize_turns(row: Dict, fmt: str) -> List[Turn]:
                     fc = None
                 if isinstance(fc, dict) and "name" in fc:
                     calls = _parse_tool_calls([fc])
-                    value = None
+                else:  # 解析不了/没有 name: 原文当参数, 渲染时标红, 别让坏样本混过 calls 筛选
+                    calls = (ToolCall("?", _as_text(value), ""),)
+                value = None
             turns.append(Turn(role=role, content=_as_text(value), tool_calls=calls))
         return turns
     return []
@@ -181,8 +191,12 @@ def _roles_sig(turns: List[Turn]) -> str:
     return "→".join(seq)
 
 
-def _tools_sig(turns: List[Turn]) -> str:
-    """样本里调用过的函数名 (按首次出现顺序去重), 无工具调用为空。"""
+def _calls_sig(turns: List[Turn]) -> str:
+    """样本里调用过的函数名 (按首次出现顺序去重), 无工具调用为空。
+
+    列名叫 calls 而不是 tools: 顶层 ``tools`` 是 OpenAI/LLaMA-Factory 存工具定义的标准字段,
+    派生列撞名会把它从列目录里挤掉。
+    """
     seen: List[str] = []
     for t in turns:
         for c in t.tool_calls:
@@ -216,8 +230,8 @@ def _top_level_fields(rows: List[Dict], skip: set, reserved: set) -> List[str]:
 # 各格式的"派生列"名 (计算列, 无对应字段路径; 与标量元数据列区分)。
 # 筛选时: 派生列按表格显示值比较, 其余名字当真实字段路径解析。
 _DERIVED_COLUMNS = {
-    "openai_chat": ["turns", "roles", "first_user", "chars", "tools"],
-    "sharegpt": ["turns", "roles", "first_user", "chars", "tools"],
+    "openai_chat": ["turns", "roles", "first_user", "chars", "calls"],
+    "sharegpt": ["turns", "roles", "first_user", "chars", "calls"],
     "dpo": ["prompt", "chosen_chars", "rejected_chars"],
     "alpaca": ["instruction", "has_input", "out_chars"],
 }
@@ -293,7 +307,7 @@ def row_cells(
             roles=_roles_sig(turns),
             first_user=_preview(first_user, n_long),
             chars=str(sum(t.chars for t in turns)),
-            tools=_tools_sig(turns),
+            calls=_calls_sig(turns),
         )
     elif fmt == "dpo":
         derived.update(
@@ -417,7 +431,9 @@ def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableT
         title = Text(f"⚙ {call.name}", style="bold yellow")
         if call.call_id:
             title.append(f"  {call.call_id}", style="dim")
-        parts.append(title)
+        parts.append(_hl(title, highlight))
+        if call.name == "?":
+            parts.append(Text("⚠ 缺少函数名", style="bold red"))
         block, valid = _json_block(call.arguments)
         if block is not None:
             parts.append(block)
@@ -436,7 +452,7 @@ def _turn_plain(turn: Turn) -> str:
     if turn.content:
         lines.append(turn.content)
     for c in turn.tool_calls:
-        lines.append(f"{c.name}({c.arguments})")
+        lines.append(f"{c.name}({c.arguments}) {c.call_id}".rstrip())
     return "\n".join(lines)
 
 
