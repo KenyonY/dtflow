@@ -31,37 +31,51 @@ _SHAREGPT_TO_ROLE = {
 _ROLE_TO_SHAREGPT = {"user": "human", "assistant": "gpt", "system": "system", "tool": "observation"}
 
 
+def _parse_function_call(value: Any) -> tuple:
+    """function_call 的 value (JSON 字符串或 dict) → (name, arguments 字符串)"""
+    try:
+        spec = json.loads(value) if isinstance(value, str) else value
+        name = spec.get("name", "")
+        args = spec.get("arguments", {})
+        arguments = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+        return name, arguments
+    except (ValueError, AttributeError):
+        return "", str(value)
+
+
 def _sharegpt_to_messages(convs: List[Dict]) -> List[Dict]:
-    """sharegpt conversations → OpenAI messages; function_call/observation 转成 tool_calls/tool。"""
+    """sharegpt conversations → OpenAI messages。
+
+    连续的 function_call 合并成一条带多个 tool_calls 的 assistant 消息 (紧跟在 gpt 文本后面时
+    直接挂到那条消息上); observation 按先进先出配给尚未回复的 call —— 并行工具调用不丢、不错配。
+    """
     out: List[Dict] = []
-    last_call_id: Optional[str] = None
+    pending: List[str] = []  # 已发出、还没收到 observation 的 call id
     for i, c in enumerate(convs):
         src, value = c.get("from", ""), c.get("value", "")
         if src == "function_call":
             call_id = f"call_{i}"
-            last_call_id = call_id
-            try:
-                spec = json.loads(value) if isinstance(value, str) else value
-                name = spec.get("name", "")
-                args = spec.get("arguments", {})
-                arguments = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
-            except (ValueError, AttributeError):
-                name, arguments = "", str(value)
+            name, arguments = _parse_function_call(value)
+            call = {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+            if out and out[-1].get("role") == "assistant" and not pending:
+                out[-1].setdefault("tool_calls", []).append(call)  # 文本 + 调用同一条
+            elif out and out[-1].get("role") == "assistant" and out[-1].get("tool_calls"):
+                out[-1]["tool_calls"].append(call)  # 并行调用
+            else:
+                out.append({"role": "assistant", "content": "", "tool_calls": [call]})
+            pending.append(call_id)
+        elif src == "observation":
             out.append(
                 {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": call_id,
-                            "type": "function",
-                            "function": {"name": name, "arguments": arguments},
-                        }
-                    ],
+                    "role": "tool",
+                    "tool_call_id": pending.pop(0) if pending else "",
+                    "content": value,
                 }
             )
-        elif src == "observation":
-            out.append({"role": "tool", "tool_call_id": last_call_id or "", "content": value})
         else:
             out.append({"role": _SHAREGPT_TO_ROLE.get(src, src), "content": value})
     return out
@@ -70,28 +84,43 @@ def _sharegpt_to_messages(convs: List[Dict]) -> List[Dict]:
 def _messages_to_sharegpt(
     messages: List[Dict], mapping: Optional[Dict[str, str]] = None
 ) -> List[Dict]:
+    """OpenAI messages → sharegpt。assistant 的文本与每个 tool_call 各占一条, 一个都不丢。"""
     mapping = mapping or _ROLE_TO_SHAREGPT
     out: List[Dict] = []
     for m in messages:
         role = m.get("role", "")
-        if role == "assistant" and m.get("tool_calls"):
-            fn = m["tool_calls"][0].get("function", {})
-            args = fn.get("arguments", "")
-            try:
-                args = json.loads(args) if isinstance(args, str) else args
-            except ValueError:
-                pass
-            out.append(
-                {
-                    "from": "function_call",
-                    "value": json.dumps(
-                        {"name": fn.get("name", ""), "arguments": args}, ensure_ascii=False
-                    ),
-                }
-            )
+        content = m.get("content")
+        calls = m.get("tool_calls") or []
+        if role == "assistant" and calls:
+            if content:
+                out.append({"from": mapping.get("assistant", "gpt"), "value": content})
+            for call in calls:
+                fn = call.get("function", {})
+                args = fn.get("arguments", "")
+                try:
+                    args = json.loads(args) if isinstance(args, str) else args
+                except ValueError:
+                    pass
+                out.append(
+                    {
+                        "from": "function_call",
+                        "value": json.dumps(
+                            {"name": fn.get("name", ""), "arguments": args}, ensure_ascii=False
+                        ),
+                    }
+                )
         else:
-            out.append({"from": mapping.get(role, role), "value": m.get("content", "")})
+            out.append(
+                {"from": mapping.get(role, role), "value": content if content is not None else ""}
+            )
     return out
+
+
+def _text_of(value: Any) -> Any:
+    """HF 风格 DPO 的 chosen/rejected 可以是消息列表: 取最后一条的 content"""
+    if isinstance(value, list) and value and isinstance(value[-1], dict) and "content" in value[-1]:
+        return value[-1]["content"]
+    return value
 
 
 def _pair(row: Dict, user_field: str, assistant_field: str, explicit: bool) -> Optional[tuple]:
@@ -106,7 +135,7 @@ def _pair(row: Dict, user_field: str, assistant_field: str, explicit: bool) -> O
             u = f"{u}\n\n{row['input']}"
         return u, row["output"]
     if row.get("prompt") and row.get("chosen"):  # dpo → 取 chosen
-        return row["prompt"], row["chosen"]
+        return _text_of(row["prompt"]), _text_of(row["chosen"])
     u, a = get_field_value(row, user_field), get_field_value(row, assistant_field)
     if u and a:
         return u, a
@@ -127,6 +156,16 @@ def _to_messages(item: Any, user_field: str, assistant_field: str, explicit: boo
         return [dict(m) for m in row["messages"]]
     if isinstance(row.get("conversations"), list) and row["conversations"]:
         return _sharegpt_to_messages(row["conversations"])
+    prompt, chosen = row.get("prompt"), row.get("chosen")
+    if (
+        isinstance(prompt, list) and prompt and chosen
+    ):  # HF 风格 dpo: prompt 是对话, chosen 是消息列表或文本
+        tail = (
+            [dict(m) for m in chosen]
+            if isinstance(chosen, list)
+            else [{"role": "assistant", "content": chosen}]
+        )
+        return [dict(m) for m in prompt] + tail
     pair = _pair(row, user_field, assistant_field, False)
     if pair:
         return [{"role": "user", "content": pair[0]}, {"role": "assistant", "content": pair[1]}]
@@ -219,7 +258,7 @@ def sharegpt(
 def dpo_pair(
     prompt_field: str = "prompt", chosen_field: str = "chosen", rejected_field: str = "rejected"
 ) -> Callable:
-    """→ DPO 偏好对 {"prompt", "chosen", "rejected"}。三个字段缺一即报错。"""
+    """→ DPO 偏好对 {"prompt", "chosen", "rejected"}。只按字段名取值 (不做形态识别), 三个字段缺一即报错。"""
 
     def transform(item: Any) -> dict:
         row = _row(item)

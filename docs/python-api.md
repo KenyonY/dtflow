@@ -76,7 +76,7 @@ dt.transform(func)                                          # same, returns a Da
 dt.transform(preset="alpaca")
 ```
 
-Presets detect what they are given: OpenAI `messages`, ShareGPT `conversations`, Alpaca `instruction`/`input`/`output`, DPO `prompt`/`chosen`, or a `q`/`a` pair (field names configurable, explicit names win). ShareGPT `function_call`/`observation` turns become `tool_calls`/`tool` messages and back. A row of unknown shape raises `ValueError`, which `to()` skips and reports by default (`on_error="raise"` to stop).
+`openai_chat`, `alpaca`, `sharegpt` and `simple_qa` detect what they are given: OpenAI `messages`, ShareGPT `conversations`, Alpaca `instruction`/`input`/`output`, DPO `prompt`/`chosen` (text or HF-style message lists), or a `q`/`a` pair (field names configurable, explicit names win). ShareGPT `function_call`/`observation` turns become `tool_calls`/`tool` messages and back, parallel calls included. A row of unknown shape raises `ValueError`, which `to()` skips and reports by default (`on_error="raise"` to stop). `dpo_pair` only picks fields by name.
 
 | Preset | Output |
 |---------|---------|
@@ -93,8 +93,9 @@ Presets are a convenience layer. `transform(lambda x: ...)` covers everything el
 ```python
 dt.to(func, on_error="skip")    # skip failing rows (default), summary on stderr
 dt.to(func, on_error="raise")   # raise on the first failure
-dt.to(func, on_error="keep")    # keep the original row
+dt.to(func, on_error="null")    # keep a None in place of each failing row
 result, errors = dt.to(func, return_errors=True)
+dt.filter(func, on_error="keep")   # filter can also keep failing rows
 ```
 
 ## Tokens

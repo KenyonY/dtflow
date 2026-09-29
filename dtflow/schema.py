@@ -497,7 +497,11 @@ def _check_message(m: Any) -> Union[bool, str]:
     if m.get("role") == "tool" and not m.get("tool_call_id"):
         return "tool 消息缺少 tool_call_id"
     if isinstance(content, list):
-        return True if content else "content 为空"
+        if not content:
+            return "content 为空"
+        if not all(isinstance(p, dict) and "type" in p for p in content):
+            return "content 为 list 时每个元素须是带 type 的多模态片段"
+        return True
     if not isinstance(content, str):
         return "content 必须是字符串"
     if not content:

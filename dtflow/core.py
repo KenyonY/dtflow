@@ -214,6 +214,8 @@ class DataTransformer:
             >>> dt.to(lambda x: {"q": x["q"]}, raw=True)
         """
         func = _resolve_func(func, preset, preset_kwargs)
+        if on_error not in ("skip", "raise", "null"):
+            raise ValueError(f"on_error 只能是 skip / raise / null, 得到 {on_error!r}")
         results = []
         errors = []
 

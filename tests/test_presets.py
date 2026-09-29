@@ -159,3 +159,84 @@ class TestSchemasAcceptToolCalls:
     def test_sharegpt_schema(self):
         assert sharegpt_schema().validate(SG_TOOL).valid
         assert not sharegpt_schema(extra_roles=[]).validate(SG_TOOL).valid
+
+
+class TestQaRegressions:
+    PAR = {
+        "messages": [
+            {"role": "user", "content": "weather in A and B?"},
+            {
+                "role": "assistant",
+                "content": "let me check",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "f1", "arguments": '{"city": "A"}'},
+                    },
+                    {
+                        "id": "c2",
+                        "type": "function",
+                        "function": {"name": "f2", "arguments": '{"city": "B"}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+            {"role": "assistant", "content": "A: r1, B: r2"},
+        ]
+    }
+
+    def test_parallel_tool_calls_round_trip(self):
+        sg = get_preset("sharegpt")(self.PAR)["conversations"]
+        assert [c["from"] for c in sg] == [
+            "human",
+            "gpt",
+            "function_call",
+            "function_call",
+            "observation",
+            "observation",
+            "gpt",
+        ]
+        back = get_preset("openai_chat")({"conversations": sg})["messages"]
+        assert back[1]["content"] == "let me check"
+        assert [c["function"]["name"] for c in back[1]["tool_calls"]] == ["f1", "f2"]
+        ids = [c["id"] for c in back[1]["tool_calls"]]
+        assert [m["tool_call_id"] for m in back[2:4]] == ids  # observation 按顺序配给各自的 call
+        assert [m["content"] for m in back[2:4]] == ["r1", "r2"]
+        assert openai_chat_schema().validate({"messages": back}).valid
+
+    def test_hf_style_dpo(self):
+        row = {
+            "prompt": [{"role": "user", "content": "q"}],
+            "chosen": [{"role": "assistant", "content": "good"}],
+            "rejected": [{"role": "assistant", "content": "bad"}],
+        }
+        assert get_preset("openai_chat")(row)["messages"] == [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "good"},
+        ]
+        assert get_preset("alpaca")(row) == {"instruction": "q", "input": "", "output": "good"}
+        assert (
+            get_preset("openai_chat")(
+                {"prompt": "q", "chosen": [{"role": "assistant", "content": "good"}]}
+            )["messages"][1]["content"]
+            == "good"
+        )
+        # content 为消息列表不再被当成多模态片段放行
+        bad = {
+            "messages": [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": [{"role": "assistant", "content": "x"}]},
+            ]
+        }
+        assert not openai_chat_schema().validate(bad).valid
+        assert (
+            openai_chat_schema()
+            .validate({"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]})
+            .valid
+        )
+
+    def test_on_error_value_is_checked(self):
+        with pytest.raises(ValueError, match="on_error"):
+            DataTransformer([QA]).to(lambda x: x, on_error="keep")

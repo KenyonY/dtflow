@@ -48,7 +48,7 @@ from dtflow import DataTransformer, load_stream
 
 (DataTransformer.load("data.jsonl")
     .filter(lambda x: x.score > 0.8)
-    .to(preset="openai_chat", user_field="q", assistant_field="a")
+    .transform(preset="openai_chat", user_field="q", assistant_field="a")
     .dedupe("messages[0].content")
     .save("train.jsonl"))
 

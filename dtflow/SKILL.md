@@ -191,7 +191,7 @@ from dtflow import DataTransformer, load_stream
 **Python 侧对外 API**（详见源码 docstring，这里只列路标）：
 
 - `DataTransformer` / `DictWrapper` — 核心类，支持 `.filter / .to / .map / .dedupe / .split / .save`
-- 预设模板：`openai_chat / alpaca / sharegpt / dpo_pair / simple_qa`（`dt.to(preset="openai_chat", ...)`）
+- 预设模板：`openai_chat / alpaca / sharegpt / dpo_pair / simple_qa`（`dt.transform(preset="openai_chat", ...)`）。前四者自动识别输入形态（messages / sharegpt / alpaca / dpo / q-a），sharegpt 的 function_call/observation 与 OpenAI tool_calls/tool 互转（含并行调用）；认不出的行跳过并在 stderr 汇总，不会产出空 content
 - Schema：`openai_chat_schema / alpaca_schema / sharegpt_schema / dpo_schema`（`dt.validate_schema(...)`）
 - Token：`count_tokens / token_counter / token_filter / messages_token_counter`
 - 转换器：`to_hf_dataset / to_openai_batch / to_llama_factory / to_swift_messages / messages_to_text`
