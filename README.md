@@ -32,7 +32,7 @@ pip install datasets          # HuggingFace Dataset 转换
 
 ## 交互式数据浏览：dt view
 
-`dt view <file>` 打开一个 master-detail 终端浏览器：左侧表格扫视样本（`turns/roles/first_user/chars` 派生列 + 元数据列），右侧详情按格式渲染当前行——对话按 role 上色、代码块语法高亮、dpo 左右对比。JSONL/CSV/Parquet 都能开，几十万行的文件也是秒开（窗口化加载，搜索/筛选/排序走并行全量扫描）。
+`dt view <file>` 打开一个 master-detail 终端浏览器：左侧表格扫视样本（`turns/roles/first_user/chars/calls` 派生列 + 元数据列），右侧详情按格式渲染当前行——对话按 role 上色、代码块语法高亮、工具调用格式化并标出坏参数、dpo 左右对比。JSONL/CSV/Parquet 都能开，几十万行的文件也是秒开（窗口化加载，搜索/筛选/排序走并行全量扫描）。
 
 <table>
   <tr>
