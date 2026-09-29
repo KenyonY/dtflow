@@ -15,94 +15,10 @@ from dtflow.pipeline import (
     _execute_tail,
     _execute_transform,
     _format_step_description,
-    _parse_condition,
     generate_pipeline_template,
     run_pipeline,
     validate_pipeline,
 )
-
-
-class TestParseCondition:
-    """Test cases for _parse_condition function."""
-
-    def test_parse_greater_than(self):
-        """Test > operator."""
-        func = _parse_condition("score > 0.5")
-        assert func({"score": 0.8}) is True
-        assert func({"score": 0.3}) is False
-
-    def test_parse_less_than(self):
-        """Test < operator."""
-        func = _parse_condition("score < 0.5")
-        assert func({"score": 0.3}) is True
-        assert func({"score": 0.8}) is False
-
-    def test_parse_greater_equal(self):
-        """Test >= operator."""
-        func = _parse_condition("score >= 0.5")
-        assert func({"score": 0.5}) is True
-        assert func({"score": 0.4}) is False
-
-    def test_parse_less_equal(self):
-        """Test <= operator."""
-        func = _parse_condition("score <= 0.5")
-        assert func({"score": 0.5}) is True
-        assert func({"score": 0.6}) is False
-
-    def test_parse_equal_number(self):
-        """Test == with number."""
-        func = _parse_condition("score == 0.5")
-        assert func({"score": 0.5}) is True
-        assert func({"score": 0.6}) is False
-
-    def test_parse_not_equal_number(self):
-        """Test != with number."""
-        func = _parse_condition("score != 0.5")
-        assert func({"score": 0.6}) is True
-        assert func({"score": 0.5}) is False
-
-    def test_parse_len_greater(self):
-        """Test len() >."""
-        func = _parse_condition("len(text) > 5")
-        assert func({"text": "hello world"}) is True
-        assert func({"text": "hi"}) is False
-
-    def test_parse_len_less(self):
-        """Test len() <."""
-        func = _parse_condition("len(text) < 5")
-        assert func({"text": "hi"}) is True
-        assert func({"text": "hello world"}) is False
-
-    def test_parse_is_not_empty(self):
-        """Test 'is not empty'."""
-        func = _parse_condition("text is not empty")
-        assert func({"text": "hello"}) is True
-        assert func({"text": ""}) is False
-        assert func({"text": None}) is False
-
-    def test_parse_is_not_none(self):
-        """Test 'is not None'."""
-        func = _parse_condition("value is not None")
-        assert func({"value": "hello"}) is True
-        assert func({"value": None}) is False
-        assert func({}) is False
-
-    def test_parse_string_equal(self):
-        """Test == with string."""
-        func = _parse_condition("category == 'A'")
-        assert func({"category": "A"}) is True
-        assert func({"category": "B"}) is False
-
-    def test_parse_string_not_equal(self):
-        """Test != with string."""
-        func = _parse_condition("category != 'A'")
-        assert func({"category": "B"}) is True
-        assert func({"category": "A"}) is False
-
-    def test_parse_invalid_condition(self):
-        """Test invalid condition raises error."""
-        with pytest.raises(ValueError):
-            _parse_condition("invalid condition")
 
 
 class TestExecuteFilter:
@@ -118,13 +34,13 @@ class TestExecuteFilter:
             ]
         )
 
-        result = _execute_filter(dt, {"condition": "score > 0.5"})
+        result = _execute_filter(dt, {"expr": "x.score > 0.5"})
 
         assert len(result) == 2
         assert all(item["score"] > 0.5 for item in result.data)
 
-    def test_filter_with_field(self):
-        """Test filter with field only (non-empty check)."""
+    def test_filter_truthy_field(self):
+        """expr 直接写字段: 真值判断即非空过滤"""
         dt = DataTransformer(
             [
                 {"text": "hello"},
@@ -133,12 +49,11 @@ class TestExecuteFilter:
             ]
         )
 
-        result = _execute_filter(dt, {"field": "text"})
+        result = _execute_filter(dt, {"expr": "x.text"})
 
         assert len(result) == 2
 
-    def test_filter_no_condition_or_field(self):
-        """Test filter without condition or field raises error."""
+    def test_filter_without_expr(self):
         dt = DataTransformer([{"text": "hello"}])
 
         with pytest.raises(ValueError):
@@ -364,9 +279,9 @@ class TestFormatStepDescription:
 
     def test_format_filter(self):
         """Test formatting filter step."""
-        desc = _format_step_description({"type": "filter", "condition": "score > 0.5"})
+        desc = _format_step_description({"type": "filter", "expr": "x.score > 0.5"})
         assert "filter" in desc
-        assert "score > 0.5" in desc
+        assert "x.score > 0.5" in desc
 
     def test_format_transform(self):
         """Test formatting transform step."""
@@ -429,7 +344,7 @@ input: {input_file}
 output: {tmp_path}/output.jsonl
 steps:
   - type: filter
-    condition: "score > 0.5"
+    expr: "x.score > 0.5"
   - type: transform
     preset: openai_chat
     params:
@@ -517,7 +432,7 @@ steps:
 version: "1.0"
 input: {input_file}
 steps:
-  - condition: "score > 0.5"
+  - expr: "x.score > 0.5"
 """
         )
 
@@ -536,7 +451,7 @@ class TestValidatePipeline:
 version: "1.0"
 steps:
   - type: filter
-    condition: "score > 0.5"
+    expr: "x.score > 0.5"
   - type: transform
     preset: openai_chat
 """
@@ -566,7 +481,7 @@ version: "1.0"
             """
 version: "1.0"
 steps:
-  - condition: "score > 0.5"
+  - expr: "x.score > 0.5"
 """
         )
 
@@ -617,7 +532,20 @@ steps:
 
         errors = validate_pipeline(str(config_file))
 
-        assert any("condition" in e or "field" in e for e in errors)
+        assert any("expr" in e for e in errors)
+
+    def test_validate_filter_syntax_error(self, tmp_path):
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(
+            """
+version: "1.0"
+steps:
+  - type: filter
+    expr: "x.score >"
+"""
+        )
+        errors = validate_pipeline(str(config_file))
+        assert any("语法错误" in e for e in errors)
 
     def test_validate_invalid_yaml(self, tmp_path):
         """Test validating invalid YAML."""

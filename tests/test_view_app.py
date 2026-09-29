@@ -179,7 +179,7 @@ async def test_refined_subset_equals_full_rescan():
 
     app = _chat_app(30)
     async with app.run_test() as pilot:
-        app._apply_filter("source==a")  # 奇数 idx, 15 条 = 全量的一半
+        app._apply_filter("x.source=='a'")  # 奇数 idx, 15 条 = 全量的一半
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._applied_spec is not None
@@ -310,7 +310,7 @@ async def test_filter_zero_hits_clears_view():
     # 0 命中: 子集空, 视图清空且不崩; reset 恢复全量
     app = _chat_app(20)
     async with app.run_test() as pilot:
-        app._apply_filter("source==zzz")  # 无匹配
+        app._apply_filter("x.source=='zzz'")  # 无匹配
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == []
@@ -378,7 +378,7 @@ async def test_sort_stacks_with_filter():
     # 排序与筛选共用一条管线: 先筛后排, 两者同时生效
     app = _make_app(_chat_rows(30))
     async with app.run_test() as pilot:
-        app._apply_filter("source=a")  # 奇数 idx
+        app._apply_filter("x.source=='a'")  # 奇数 idx
         await app.workers.wait_for_complete()
         await pilot.pause()
         app._apply_sort("-chars")
@@ -435,7 +435,7 @@ async def test_search_and_filter_and_reset():
         app.action_reset()
         await pilot.pause()
         assert app._subset is None  # 退出子集, 回到全量
-        app._apply_filter("source=a")
+        app._apply_filter("x.source=='a'")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == [1, 3]  # 奇数 idx source=a
@@ -935,7 +935,7 @@ async def test_markup_like_content_does_not_crash():
 
 
 def test_compile_where_derived_vs_field_path():
-    # 派生列名 (chars/turns) → 按表格显示值比较; 其余名字 → 真实字段路径, 无需任何包裹符
+    # 派生列名 (chars/turns) 直接当变量 (原始 int); 其余字段走 x.
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {
@@ -945,20 +945,22 @@ def test_compile_where_derived_vs_field_path():
         ],
         "source": "alpaca",
     }
-    # 派生列直接用列名
     assert _compile_where("chars>2000", "openai_chat")(row) is True  # chars=3001
     assert _compile_where("chars<2000", "openai_chat")(row) is False
     assert _compile_where("turns>=2", "openai_chat")(row) is True
-    # 标量列名 → 当字段路径解析 (完整值)
-    assert _compile_where("source==alpaca", "openai_chat")(row) is True
-    assert _compile_where("source==other", "openai_chat")(row) is False
-    # 深层字段路径仍可用
-    assert _compile_where("messages.#>=2", "openai_chat")(row) is True
-    assert _compile_where("messages.#>5", "openai_chat")(row) is False
+    assert _compile_where("x.source=='alpaca'", "openai_chat")(row) is True
+    assert _compile_where("x.source=='other'", "openai_chat")(row) is False
+    assert _compile_where("len(x.messages)>=2", "openai_chat")(row) is True
+    assert _compile_where("x.messages[-1].role=='assistant'", "openai_chat")(row) is True
+    # 缺字段 / 非 dict 行: 不命中而不是炸
+    assert _compile_where("x.nope>1", "openai_chat")(row) is False
+    assert _compile_where("turns>=2", "openai_chat")("not a row") is False
+    # 语法错误在编译期就抛 ValueError (TUI 靠它提示)
+    with pytest.raises(ValueError):
+        _compile_where("chars >", "openai_chat")
 
 
-def test_compile_where_and_or_multi_column():
-    # 多列组合: and 全满足 / or 任一满足; and 优先级高于 or; 值内 "and" 子串不误分
+def test_compile_where_and_or_parens():
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     def mk(nchars, src):
@@ -970,29 +972,13 @@ def test_compile_where_and_or_multi_column():
             "source": src,
         }
 
-    long_a = mk(3000, "alpaca")  # chars 大, source=alpaca
-    short_a = mk(10, "alpaca")  # chars 小, source=alpaca
-    long_b = mk(3000, "android")  # chars 大, source=android (值内含 "and")
-
-    # and: 两条件都要满足
-    p_and = _compile_where("chars>2000 and source==alpaca", "openai_chat")
-    assert p_and(long_a) is True
-    assert p_and(short_a) is False  # chars 不够
-    assert p_and(long_b) is False  # source 不符
-
-    # or: 任一满足
-    p_or = _compile_where("chars>2000 or source==alpaca", "openai_chat")
-    assert p_or(short_a) is True  # source 命中
-    assert p_or(long_b) is True  # chars 命中
-
-    # and 优先级高于 or: "chars<100 or chars>2000 and source==alpaca"
-    p_mix = _compile_where("chars<100 or chars>2000 and source==alpaca", "openai_chat")
-    assert p_mix(short_a) is True  # 左侧 chars<100 命中
-    assert p_mix(long_a) is True  # 右侧 and 组命中
-    assert p_mix(long_b) is False  # chars>2000 但 source 不符, 且 chars 不 <100
-
-    # 值内含 "and" 不被误分 (source==android 是单条件)
-    assert _compile_where("source==android", "openai_chat")(long_b) is True
+    long_a, short_a, long_b = mk(3000, "alpaca"), mk(10, "alpaca"), mk(3000, "android")
+    p_and = _compile_where("chars>2000 and x.source=='alpaca'", "openai_chat")
+    assert (p_and(long_a), p_and(short_a), p_and(long_b)) == (True, False, False)
+    p_or = _compile_where("chars>2000 or x.source=='alpaca'", "openai_chat")
+    assert (p_or(short_a), p_or(long_b)) == (True, True)
+    p_mix = _compile_where("(chars<100 or chars>2000) and x.source=='alpaca'", "openai_chat")
+    assert (p_mix(short_a), p_mix(long_a), p_mix(long_b)) == (True, True, False)
 
 
 @pytest.mark.asyncio
@@ -1021,7 +1007,7 @@ async def test_global_filter_builds_subset_across_windows():
     # 50 行 cap=20: 全量筛选 source=a (奇数 idx, 25 命中) → 子集跨多窗口, 可分页
     app = _make_app(_chat_rows(50), cap=20)
     async with app.run_test() as pilot:
-        app._apply_filter("source=a")
+        app._apply_filter("x.source=='a'")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(1, 50, 2))  # [1,3,...,49] 共 25
@@ -1065,7 +1051,7 @@ async def test_snapshot_numeric_full_and_subset(monkeypatch):
         await pilot.pause()
         assert "非数值列" in msgs[-1] and "dt stats" in msgs[-1]
         # 先全量筛选出子集 (source=a → 奇数 idx), 再快照 chars → scope=子集, 仅统计命中行
-        app._apply_filter("source=a")
+        app._apply_filter("x.source=='a'")
         await app.workers.wait_for_complete()
         await pilot.pause()
         sub = [c for i, c in enumerate(chars) if i % 2]  # 奇数 idx 的 chars
@@ -1093,10 +1079,9 @@ async def test_rapid_refresh_no_duplicate_ids():
 
 
 # --------------------------------------------------------------------------- #
-# 包含筛选 (~=): 派生列按全文匹配, 真实字段路径交给 _parse_where
+# 包含筛选: 派生列 first_user 在表达式里是全文 (不是表格里截断的预览)
 # --------------------------------------------------------------------------- #
-def test_contains_operator_on_derived_column_matches_full_text():
-    # first_user 表格里只显示前 160 字, 但 ~= 必须搜全文, 否则靠后的词被静默漏掉
+def test_derived_text_column_is_full_text_in_expr():
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {
@@ -1106,22 +1091,14 @@ def test_contains_operator_on_derived_column_matches_full_text():
         ],
         "source": "alpaca_zh",
     }
-    assert _compile_where("first_user~=尾部关键词", "openai_chat")(row)  # 预览截断外
-    assert not _compile_where("first_user~=不存在的词", "openai_chat")(row)
-    assert _compile_where("source~=alpaca", "openai_chat")(row)  # 真实字段走 _parse_where
-    assert _compile_where("messages[-1].content~=ok", "openai_chat")(row)  # 深层路径
-    # 与其他条件组合
-    assert _compile_where("turns==2 and first_user~=尾部", "openai_chat")(row)
-    assert not _compile_where("turns==3 and first_user~=尾部", "openai_chat")(row)
-
-
-def test_contains_operator_never_numeric():
-    # chars~=200 是子串语义 ("200" in "2003"), 不能被当成数值比较而炸掉
-    from dtflow.cli.view.scan import compile_where as _compile_where
-
-    row = {"messages": [{"role": "user", "content": "x" * 2003}]}
-    assert _compile_where("chars~=200", "openai_chat")(row)
-    assert not _compile_where("chars~=999", "openai_chat")(row)
+    assert _compile_where("'尾部关键词' in first_user", "openai_chat")(row)  # 预览截断外
+    assert not _compile_where("'不存在的词' in first_user", "openai_chat")(row)
+    assert _compile_where("'alpaca' in x.source", "openai_chat")(row)
+    assert _compile_where("'ok' in x.messages[-1].content", "openai_chat")(row)
+    assert _compile_where("turns==2 and '尾部' in first_user", "openai_chat")(row)
+    assert not _compile_where("turns==3 and '尾部' in first_user", "openai_chat")(row)
+    # 派生列只在被引用时才计算: 不引用也不影响结果
+    assert _compile_where("x.source.endswith('zh')", "openai_chat")(row)
 
 
 @pytest.mark.asyncio
@@ -1326,21 +1303,15 @@ async def test_help_screen_fits_and_scrolls(size):
             assert box.max_scroll_y > 0
 
 
-def test_contains_operator_is_case_insensitive():
-    """~= 是"找包含某个词", 三个入口 (f 的 ~= / 全量搜索 / 值面板搜索框) 必须同语义。
-
-    要区分大小写用 == / !=。此前 ~= 敏感而另两个不敏感, 同一个词换个入口就 0 命中。
-    """
-    from dtflow.cli.sample import _parse_where
+def test_expr_contains_is_case_sensitive_unless_lowered():
+    """表达式 in 是精确子串; 要不分大小写显式 .lower() (与 / 搜索的不分大小写不同, 文档注明)。"""
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {"messages": [{"role": "user", "content": "A" * 100 + "TAIL_Key"}], "source": "Alpaca_ZH"}
-    assert _compile_where("first_user~=tail_key", "openai_chat")(row)  # 派生列
-    assert _compile_where("first_user~=TAIL_KEY", "openai_chat")(row)
-    assert _compile_where("source~=ALPACA", "openai_chat")(row)  # 真实字段路径
-    assert _compile_where("source~=alpaca", "openai_chat")(row)
-    assert _parse_where("source~=ALPACA")(row)  # CLI --where 同语义
-    assert not _compile_where("source==alpaca", "openai_chat")(row)  # == 仍精确
+    assert _compile_where("'TAIL_Key' in first_user", "openai_chat")(row)
+    assert not _compile_where("'tail_key' in first_user", "openai_chat")(row)
+    assert _compile_where("'tail_key' in first_user.lower()", "openai_chat")(row)
+    assert _compile_where("'alpaca' in x.source.lower()", "openai_chat")(row)
 
 
 @pytest.mark.asyncio
@@ -1376,7 +1347,7 @@ async def test_multiple_filters_stack_with_and():
     # 连按两次 f 追加条件而非覆盖; 需要括号语义时就靠"拆成多条"表达
     app = _make_app(_chat_rows(30))
     async with app.run_test() as pilot:
-        app._apply_filter("source=a")  # 奇数 idx
+        app._apply_filter("x.source=='a'")  # 奇数 idx
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(1, 30, 2))
@@ -1392,7 +1363,7 @@ async def test_search_and_filter_do_not_overwrite_each_other():
     """回归: 搜索与 f 曾共用一个槽位, 先 f 再 / 会静默丢掉 f 的条件 (README 却说可叠加)。"""
     app = _make_app(_chat_rows(30))
     async with app.run_test() as pilot:
-        app._apply_filter("source=a")  # 奇数 idx
+        app._apply_filter("x.source=='a'")  # 奇数 idx
         await app.workers.wait_for_complete()
         await pilot.pause()
         app._apply_search("q1")  # 含 q1 的: 1, 10-19
@@ -1476,7 +1447,7 @@ async def test_export_subset_to_jsonl_with_lineage(tmp_path):
     app.filepath = str(tmp_path / "src.jsonl")
     out = tmp_path / "out.jsonl"
     async with app.run_test() as pilot:
-        app._apply_filter("source=a")  # 奇数 idx, 15 条
+        app._apply_filter("x.source=='a'")  # 奇数 idx, 15 条
         await app.workers.wait_for_complete()
         await pilot.pause()
         app._apply_export(str(out))
@@ -1488,7 +1459,7 @@ async def test_export_subset_to_jsonl_with_lineage(tmp_path):
         # 血缘 sidecar: 条件与可复现命令都记下了
         rec = orjson.loads((tmp_path / "out.jsonl.lineage.json").read_bytes())
         params = rec["operations"][0]["params"]
-        assert params["where"] == ["source=a"]
+        assert params["where"] == ["x.source=='a'"]
         assert "--where" in params["command"]
         assert rec["operations"][0]["output_count"] == 15
 
@@ -1548,22 +1519,47 @@ async def test_build_command_translates_all_constraints():
         await pilot.pause()
         cmd, skipped = app._build_command()
         assert not skipped
-        # 单列多值 → 一条 where 内 or; 多条 where 之间 AND (表达式没有括号, 靠这层表达)
+        # 单列多值 → 一条 where 内 in (...); 多条 where 之间 AND
         # 值经 shlex.quote, 含 > 或空格的会带引号 —— 粘回终端才不会被 shell 当重定向
         assert "--where='turns>=2'" in cmd
-        assert "--where='source==a or source==b'" in cmd
+        assert (
+            "--where='str(x.get('\"'\"'source'\"'\"')) in ('\"'\"'a'\"'\"', '\"'\"'b'\"'\"',)'"
+            in cmd
+        )
         assert "--search='报错'" in cmd and "--sort=-chars" in cmd
+        # 翻译出的表达式本身必须可编译 (吃回去不报错)
+        from dtflow.cli.view.scan import compile_where as _cw
+
+        pred = _cw(app._value_filter_expr("source", {"a", "b"}), "openai_chat")
+        assert pred({"source": "a"}) and not pred({"source": "c"})
+
+
+def test_value_filter_expr_by_column_type():
+    # 值筛选比的是单元格字符串: 数值派生列比数, has_input 比真值, 真实字段按 str() 比, 空值单独表达
+    app = _chat_app(3)
+    from dtflow.cli.view.scan import compile_where as _cw
+
+    assert app._value_filter_expr("turns", {"2", "3"}) == "turns in (2, 3,)"
+    e = app._value_filter_expr("id", {"5", ""})
+    p = _cw(e, "openai_chat")
+    assert p({"id": 5}) and p({"id": None}) and p({}) and not p({"id": 6})
+    app.fmt = "alpaca"
+    assert app._value_filter_expr("has_input", {"✓"}) == "has_input"
+    assert app._value_filter_expr("has_input", {""}) == "not has_input"
 
 
 @pytest.mark.asyncio
 async def test_build_command_skips_unsafe_values():
-    # 值含运算符/被截断 → 无法安全写进 where 表达式, 如实说明而不是生成错命令
+    # 值被截断 (含 …) → 原值已不可知, 如实说明而不是生成错命令; 含引号/运算符的值 repr 能表达
     app = _chat_app(5)
     app.filepath = "d.jsonl"
     async with app.run_test():
-        app._col_value_filters = {"source": {"a=b"}}
+        app._col_value_filters = {"source": {"abc…"}}
         cmd, skipped = app._build_command()
         assert "source" not in cmd and skipped
+        app._col_value_filters = {"source": {"a=b 'q'"}}
+        cmd, skipped = app._build_command()
+        assert not skipped and "--where" in cmd
 
 
 @pytest.mark.asyncio
@@ -1586,7 +1582,7 @@ async def test_startup_constraints_apply():
         20000,
         "openai_chat",
         "t.jsonl",
-        where=["source=a"],
+        where=["x.source=='a'"],
         sort="-chars",
     )
     async with app.run_test() as pilot:
@@ -1698,11 +1694,11 @@ async def test_filter_during_scan_is_refused_not_half_applied():
     导出血缘却在描述新条件, 复现出来的行数与屏幕对不上。宁可拒绝, 不可半改。"""
     app = _slow_app()
     async with app.run_test() as pilot:
-        app._apply_filter("id<100")
+        app._apply_filter("x.id<100")
         await pilot.pause()
         assert app._scan_cancel is not None  # 扫描确实在跑
-        app._apply_filter("id<5")  # 扫描中的第二条: 应被拒绝
-        assert app._wheres == ["id<100"]
+        app._apply_filter("x.id<5")  # 扫描中的第二条: 应被拒绝
+        assert app._wheres == ["x.id<100"]
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(app._subset) == 100
@@ -1714,7 +1710,7 @@ async def test_filter_during_scan_is_refused_not_half_applied():
 async def test_sort_during_scan_is_refused():
     app = _slow_app()
     async with app.run_test() as pilot:
-        app._apply_filter("id<100")
+        app._apply_filter("x.id<100")
         await pilot.pause()
         app._apply_sort("-id")
         assert app._sort_spec is None  # 状态栏不会声称"已排序"而顺序纹丝不动
@@ -1728,7 +1724,7 @@ async def test_reset_during_scan_is_not_revived_by_late_result():
     """r 在扫描中必须有效 (它正是"不想等了"的出口), 且迟到的结果不得把筛选复活。"""
     app = _slow_app()
     async with app.run_test() as pilot:
-        app._apply_filter("id<100")
+        app._apply_filter("x.id<100")
         await pilot.pause()
         app.action_reset()
         await app.workers.wait_for_complete()
@@ -1736,7 +1732,7 @@ async def test_reset_during_scan_is_not_revived_by_late_result():
             await pilot.pause()  # 让迟到的完成回调有机会落地
         assert app._subset is None and app._filter_label is None and app._wheres == []
         assert app._scan_cancel is None  # 槽位已释放, 不会把后续操作卡死
-        app._apply_filter("id<7")  # 重置后仍可正常使用
+        app._apply_filter("x.id<7")  # 重置后仍可正常使用
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(7))
@@ -1779,10 +1775,10 @@ async def test_cancelled_filter_leaves_no_trace(tmp_path):
     条件, 于是 C 命令和导出血缘都在描述另一个视图。取消就该是"什么都没发生"。"""
     app = _slow_app()
     async with app.run_test() as pilot:
-        await _cancel_scan(app, pilot, ["f", *"id<100", "enter"])
+        await _cancel_scan(app, pilot, ["f", *"x.id<100", "enter"])
         assert app._wheres == [] and app._subset is None
         cmd, _ = app._build_command()
-        assert "id<100" not in cmd
+        assert "x.id<100" not in cmd
         out = tmp_path / "o.jsonl"
         app._apply_export(str(out))
         await app.workers.wait_for_complete()
@@ -1807,12 +1803,12 @@ async def test_cancelled_condition_is_not_silently_revived():
     """取消掉的条件不得在下一次操作时被静默 AND 进去。"""
     app = _slow_app()
     async with app.run_test() as pilot:
-        await _cancel_scan(app, pilot, ["f", *"id<100", "enter"])
-        for k in ["f", *"id>=200", "enter"]:
+        await _cancel_scan(app, pilot, ["f", *"x.id<100", "enter"])
+        for k in ["f", *"x.id>=200", "enter"]:
             await pilot.press(k)
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert app._wheres == ["id>=200"]
+        assert app._wheres == ["x.id>=200"]
         assert len(app._subset) == 100  # 200..299, 而非 id<100 and id>=200 的 0 命中
 
 
@@ -1833,7 +1829,7 @@ async def test_malformed_line_is_browsable_not_fatal(tmp_path):
         await pilot.pause()
         assert app.query_one("#table").row_count == 3  # 坏行占一行, 行号不错位
         assert PARSE_ERROR_FIELD in app._visible_columns()  # 坏在哪看得见
-        app._apply_filter("id>=1")  # 扫描不再崩, 也不回滚
+        app._apply_filter("x.id>=1")  # 扫描不再崩, 也不回滚
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.is_running and app._subset == [1, 2]
@@ -1868,7 +1864,7 @@ async def test_scan_worker_error_is_reported_not_fatal():
     src = _BoomSource()
     app = ViewApp(src, src.window(0, 5), 0, 5, "openai_chat", "t.jsonl", filepath="t.jsonl")
     async with app.run_test() as pilot:
-        app._apply_filter("id>=0")
+        app._apply_filter("x.id>=0")
         await app.workers.wait_for_complete()
         for _ in range(4):
             await pilot.pause()
@@ -2113,7 +2109,7 @@ async def test_g_then_filter_sort_and_reset_cover_whole_file(tmp_path):
     async with app.run_test() as pilot:
         await pilot.press("G")
         await app.workers.wait_for_complete()
-        app._apply_filter("i<8")
+        app._apply_filter("x.i<8")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(8)) and app.source.fully_indexed
@@ -2155,7 +2151,7 @@ async def test_cancel_or_new_navigation_does_not_resurrect_pending_g(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_head_initial_search_and_sort_cover_rows_outside_first_window(tmp_path):
-    app = _head_app(tmp_path, where=["i>=6"], sort="-i")
+    app = _head_app(tmp_path, where=["x.i>=6"], sort="-i")
     async with app.run_test() as pilot:
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -2250,7 +2246,7 @@ async def test_follow_filter_scans_history_then_applies_to_new_rows(tmp_path):
     app = _file_app(p, follow=True)
 
     async with app.run_test() as pilot:
-        app._apply_filter("id>=5")
+        app._apply_filter("x.id>=5")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.source.fully_indexed
@@ -2271,7 +2267,7 @@ async def test_follow_expands_absolute_row_numbers_after_counting_history(tmp_pa
     p.write_text("".join(f'{{"id":{i}}}\n' for i in range(9)))
     app = _file_app(p, follow=True)
     async with app.run_test() as pilot:
-        app._apply_filter("id>=0")
+        app._apply_filter("x.id>=0")
         await app.workers.wait_for_complete()
         await pilot.pause()
         with p.open("a") as f:
@@ -2312,7 +2308,7 @@ async def test_follow_rotation_refreshes_filter_index_without_dropping_visible_t
     app = _file_app(p, follow=True)
 
     async with app.run_test() as pilot:
-        app._apply_filter("id>=3")
+        app._apply_filter("x.id>=3")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert [row["id"] for row in app.all_rows] == [3, 4, 5]
@@ -3162,7 +3158,7 @@ async def test_filter_keeps_horizontal_scroll_and_cursor():
         await pilot.pause()
         keep = app._cursor_global_no()
 
-        app._apply_filter("source==a")  # 奇数 idx 命中
+        app._apply_filter("x.source=='a'")  # 奇数 idx 命中
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert t.scroll_x == 40
@@ -3191,7 +3187,7 @@ async def test_filtered_out_sample_falls_back_to_first_row():
         t.scroll_x = 35
         await pilot.pause()
 
-        app._apply_filter("source==a")
+        app._apply_filter("x.source=='a'")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert t.cursor_row == 0

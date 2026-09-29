@@ -229,13 +229,15 @@ def _top_level_fields(rows: List[Dict], skip: set, reserved: set) -> List[str]:
 
 
 # 各格式的"派生列"名 (计算列, 无对应字段路径; 与标量元数据列区分)。
-# 筛选时: 派生列按表格显示值比较, 其余名字当真实字段路径解析。
+# where 表达式里派生列名可直接当变量用 (derived_values 注入, 原始类型), 其余走 x.字段。
 _DERIVED_COLUMNS = {
     "openai_chat": ["turns", "roles", "first_user", "chars", "calls"],
     "sharegpt": ["turns", "roles", "first_user", "chars", "calls"],
     "dpo": ["prompt", "chosen_chars", "rejected_chars"],
     "alpaca": ["instruction", "has_input", "out_chars"],
 }
+# 数值型派生列: 值筛选翻译回 --where 时直接比数, 其余按字符串
+NUMERIC_DERIVED = frozenset({"turns", "chars", "chosen_chars", "rejected_chars", "out_chars"})
 
 _TRAINING_FORMATS = frozenset(_DERIVED_COLUMNS)
 _TRAINING_META_LIMIT = 8
@@ -245,6 +247,37 @@ _DIAGNOSTIC_COLUMNS = ("_parse_error", "_raw_line")
 def derived_columns(fmt: str) -> set:
     """该格式的派生列名集合 (计算列, 无字段路径)。供筛选区分列名 vs 字段路径。"""
     return set(_DERIVED_COLUMNS.get(fmt, ()))
+
+
+def derived_values(row: Dict, fmt: str) -> Dict[str, Any]:
+    """该格式全部派生列的**原始值** (int/bool/全文, 不截断): 表格显示与 where 表达式共用。
+
+    表达式里 ``turns>=6`` 要的是 int, ``'退款' in first_user`` 要的是全文 —— 表格的
+    字符串/预览形态只在 row_cells 里最后一步生成, 免得两处各算一遍还算不一样。
+    """
+    if fmt in ("openai_chat", "sharegpt"):
+        turns = _normalize_turns(row, fmt)
+        first_user = next((t.content for t in turns if t.role in ("user", "human")), "")
+        return {
+            "turns": len(turns),
+            "roles": _roles_sig(turns),
+            "first_user": first_user,
+            "chars": sum(t.chars for t in turns),
+            "calls": _calls_sig(turns),
+        }
+    if fmt == "dpo":
+        return {
+            "prompt": _as_text(row.get("prompt", "")),
+            "chosen_chars": len(_as_text(row.get("chosen", ""))),
+            "rejected_chars": len(_as_text(row.get("rejected", ""))),
+        }
+    if fmt == "alpaca":
+        return {
+            "instruction": _as_text(row.get("instruction", "")),
+            "has_input": bool(row.get("input")),
+            "out_chars": len(_as_text(row.get("output") or row.get("response") or "")),
+        }
+    return {}
 
 
 def build_columns(rows: List[Dict], fmt: str) -> List[str]:
@@ -299,29 +332,15 @@ def row_cells(
     n_meta = 120 if preview else None  # 普通标量列
     display_no = idx + 1 if row_no is None else (row_no if row_no < 0 else row_no + 1)
     derived: Dict[str, Any] = {"#": str(display_no)}
-
-    if fmt in ("openai_chat", "sharegpt"):
-        turns = _normalize_turns(row, fmt)
-        first_user = next((t.content for t in turns if t.role in ("user", "human")), "")
-        derived.update(
-            turns=str(len(turns)),
-            roles=_roles_sig(turns),
-            first_user=_preview(first_user, n_long),
-            chars=str(sum(t.chars for t in turns)),
-            calls=_calls_sig(turns),
-        )
-    elif fmt == "dpo":
-        derived.update(
-            prompt=_preview(_as_text(row.get("prompt", "")), n_long),
-            chosen_chars=str(len(_as_text(row.get("chosen", "")))),
-            rejected_chars=str(len(_as_text(row.get("rejected", "")))),
-        )
-    elif fmt == "alpaca":
-        derived.update(
-            instruction=_preview(_as_text(row.get("instruction", "")), n_long),
-            has_input="✓" if row.get("input") else "",
-            out_chars=str(len(_as_text(row.get("output") or row.get("response") or ""))),
-        )
+    for name, v in derived_values(row, fmt).items():
+        if isinstance(v, bool):
+            derived[name] = "✓" if v else ""
+        elif isinstance(v, int):
+            derived[name] = str(v)
+        elif name in ("roles", "calls"):
+            derived[name] = v
+        else:  # 长文本列
+            derived[name] = _preview(v, n_long)
 
     cells = []
     for col in columns:

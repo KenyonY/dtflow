@@ -335,58 +335,44 @@ class TestWhereFilter:
     """Test --where filter functionality."""
 
     def test_where_equal(self, sample_qa_file, tmp_path, capsys):
-        """Test where filter with = operator."""
         filepath, _ = sample_qa_file
-        output = tmp_path / "filtered.jsonl"
-
-        sample(str(filepath), num=100, output=str(output), where=["category=cat0"])
-
+        output = tmp_path / "output.jsonl"
+        sample(str(filepath), num=100, output=str(output), where=["x.category=='cat0'"])
         result = load_data(str(output))
         assert len(result) > 0
         assert all(item["category"] == "cat0" for item in result)
 
     def test_where_not_equal(self, sample_qa_file, tmp_path, capsys):
-        """Test where filter with != operator."""
         filepath, _ = sample_qa_file
-        output = tmp_path / "filtered.jsonl"
-
-        sample(str(filepath), num=100, output=str(output), where=["category!=cat0"])
-
+        output = tmp_path / "output.jsonl"
+        sample(str(filepath), num=100, output=str(output), where=["x.category!='cat0'"])
         result = load_data(str(output))
         assert len(result) > 0
         assert all(item["category"] != "cat0" for item in result)
 
     def test_where_contains(self, sample_qa_file, tmp_path, capsys):
-        """Test where filter with ~= (contains) operator."""
         filepath, _ = sample_qa_file
-        output = tmp_path / "filtered.jsonl"
-
-        sample(str(filepath), num=100, output=str(output), where=["question~=Question 1"])
-
+        output = tmp_path / "output.jsonl"
+        sample(str(filepath), num=100, output=str(output), where=["'Question 1' in x.question"])
         result = load_data(str(output))
         assert len(result) > 0
         assert all("Question 1" in item["question"] for item in result)
 
-    def test_where_contains_is_case_insensitive(self):
-        """~= 是"找包含某个词"，不区分大小写；要区分大小写用 = / !=。
-
-        dt view 的 f 筛选、/ 搜索、值面板搜索框共用这个语义，四处必须一致。
-        """
-        from dtflow.cli.sample import _parse_where
-
-        item = {"question": "What is Alpha_ZH?"}
-        assert _parse_where("question~=alpha")(item)
-        assert _parse_where("question~=ALPHA")(item)
-        assert _parse_where("question~=Alpha")(item)
-        assert not _parse_where("question=alpha")(item)  # = 仍精确
-        assert not _parse_where("question~=beta")(item)
+    def test_where_eval_failure_counts_as_no_match(self, sample_qa_file, tmp_path, capsys):
+        """缺字段/类型错误的行判为不匹配, stderr 汇总一次而不是静默"""
+        filepath, _ = sample_qa_file
+        output = tmp_path / "output.jsonl"
+        with pytest.raises(typer.Exit):
+            sample(str(filepath), num=100, output=str(output), where=["x.nope > 1"])
+        captured = capsys.readouterr()
+        assert "求值失败" in captured.err and "AttributeError" in captured.err
 
     def test_where_nested_field(self, sample_nested_file, tmp_path, capsys):
         """Test where filter on nested fields."""
         filepath, _ = sample_nested_file
         output = tmp_path / "filtered.jsonl"
 
-        sample(str(filepath), num=100, output=str(output), where=["meta.source=source0"])
+        sample(str(filepath), num=100, output=str(output), where=["x.meta.source=='source0'"])
 
         result = load_data(str(output))
         assert len(result) > 0
@@ -397,7 +383,7 @@ class TestWhereFilter:
         filepath, _ = sample_nested_file
         output = tmp_path / "filtered.jsonl"
 
-        sample(str(filepath), num=100, output=str(output), where=["id>=10"])
+        sample(str(filepath), num=100, output=str(output), where=["x.id>=10"])
 
         result = load_data(str(output))
         assert len(result) > 0
@@ -412,7 +398,7 @@ class TestWhereFilter:
             str(filepath),
             num=100,
             output=str(output),
-            where=["category=cat0", "question~=Question 0"],
+            where=["x.category=='cat0'", "'Question 0' in x.question"],
         )
 
         result = load_data(str(output))
@@ -427,7 +413,7 @@ class TestWhereFilter:
         filepath, _ = sample_qa_file
 
         with pytest.raises(typer.Exit) as exc_info:
-            sample(str(filepath), num=10, where=["category=nonexistent"])
+            sample(str(filepath), num=10, where=["x.category=='nonexistent'"])
         assert exc_info.value.exit_code == 1
         captured = capsys.readouterr()
         assert "筛选后无数据" in captured.err
@@ -437,10 +423,10 @@ class TestWhereFilter:
         filepath, _ = sample_qa_file
 
         with pytest.raises(typer.Exit) as exc_info:
-            sample(str(filepath), num=10, where=["invalid_condition"])
+            sample(str(filepath), num=10, where=["x.a >"])
         assert exc_info.value.exit_code == 2  # USAGE
         captured = capsys.readouterr()
-        assert "无效的 where 条件" in captured.err
+        assert "表达式语法错误" in captured.err
 
 
 # ============== FlaxKV Format Conversion Tests ==============
@@ -560,7 +546,7 @@ class TestFlaxKVFormatConversion:
         """FlaxKV 采样 + where 过滤"""
         filepath, _ = flaxkv_file
         output = tmp_path / "filtered.jsonl"
-        sample(str(filepath), num=100, output=str(output), where=["id>=20"])
+        sample(str(filepath), num=100, output=str(output), where=["x.id>=20"])
 
         result = load_data(str(output))
         assert len(result) == 10  # id 20-29

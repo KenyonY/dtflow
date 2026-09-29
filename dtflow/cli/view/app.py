@@ -275,13 +275,13 @@ _HELP = """[b]dt view 快捷键[/b]
   S            列快照 (某列的 n·min·max·mean·非空率, 当前浏览序列; 完整分布用 dt stats)
   /            全量搜索 (整条记录的每个值, 含 assistant 回复; 不分大小写, re: 前缀走正则)
                  → 命中子集 + 表格/详情里黄底高亮, 再用 * 逐个跳过去
-  f            全量筛选 (扫全文件 → 命中子集): 列名取表头所见
-                 单条件  列名 运算符 值   运算符: > >= < <= == != = ~=(包含,不分大小写)
-                 例: chars>2000 · turns>=6 · source==alpaca · messages.#>=2(深层字段)
-                 包含: first_user~=退款 · calls~=get_weather · messages[0].content~=报错
-                       messages[*].content:join~=词  (搜整段对话, :join 不可省)
-                 多条件  and / or 组合   例: turns>=6 and chars<2000
-                 可反复按 f 叠加多条 (多条之间是 and; 需要括号语义就拆成多条)
+  f            全量筛选 (扫全文件 → 命中子集): 表达式即 Python, 当前行叫 x
+                 派生列名直接用: chars>2000 · turns>=6 · '退款' in first_user
+                 其余字段走 x.: x.source=='alpaca' · len(x.messages)>=2
+                       x.messages[-1].role=='assistant' · 'get_weather' in calls
+                       any('报错' in m.content for m in x.messages)   (搜整段对话)
+                 and/or/not/括号随意: turns>=6 and (chars<2000 or x.source=='a')
+                 可反复按 f 叠加多条 (多条之间是 and)
   F / 点列头   列值勾选筛选 (Excel 式): 列出该列唯一值+频次, 勾选保留哪些 → 子集
                  顶部搜索框按子串过滤候选值; 有搜索词时应用 = 只保留勾选的匹配项
                  点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
@@ -1994,9 +1994,33 @@ class ViewApp(App):
     # ------------------------------------------------------------------ #
     # 复现当前视图的命令: 把约束翻译回 dt view 的命令行参数
     # ------------------------------------------------------------------ #
-    # 值不能安全塞进 where 表达式的情形: 空值; 含运算符字符 (会被重新切成别的条件);
-    # 含 and/or 分隔词 (会被拆成多个条件); 含 … (表格预览截断过, 原值已不可知)。
-    _UNSAFE_VALUE = re.compile(r"^\s*$|[=<>!~…]|\s(and|or)\s", re.IGNORECASE)
+    # 值不能安全塞进 where 表达式的情形: 含 … (表格预览截断过, 原值已不可知)。
+    # 其余 (引号/运算符/空值) 都由 repr 与 _value_filter_expr 妥善表达。
+    _UNSAFE_VALUE = re.compile("…")
+
+    def _value_filter_expr(self, col: str, kept: set) -> str:
+        """列值勾选 → 等价的 where 表达式 (值筛选比的是表格单元格字符串, 翻译要按列的类型)。"""
+        vals = sorted(kept)
+        if col in render.derived_columns(self.fmt):
+            if col in render.NUMERIC_DERIVED:
+                return f"{col} in ({', '.join(vals)},)"
+            if col == "has_input":
+                want = {v == "✓" for v in vals}
+                return (
+                    "has_input"
+                    if want == {True}
+                    else "not has_input"
+                    if want == {False}
+                    else "True"
+                )
+            return f"{col} in ({', '.join(map(repr, vals))},)"
+        parts = []
+        nonempty = [v for v in vals if v != ""]
+        if nonempty:
+            parts.append(f"str(x.get({col!r})) in ({', '.join(map(repr, nonempty))},)")
+        if "" in vals:
+            parts.append(f"x.get({col!r}) in (None, '')")
+        return " or ".join(parts)
 
     def _build_command(self) -> Tuple[Optional[str], List[str]]:
         """(可复现当前视图的 dt view 命令, 无法表达的部分说明)。"""
@@ -2014,9 +2038,8 @@ class ViewApp(App):
             if bad:
                 skipped.append(f"{col} 的 {len(bad)} 个值含特殊字符/被截断, 无法写进命令")
                 continue
-            # 多列值筛选之间是 AND, 各写一条 --where; 单列内多值是 OR, 写在一条里 ——
-            # where 表达式没有括号, 靠"多条 --where 之间 AND"来表达这层嵌套
-            wheres.append(" or ".join(f"{col}=={v}" for v in sorted(kept)))
+            # 多列值筛选之间是 AND, 各写一条 --where; 单列内多值是 in (...)
+            wheres.append(self._value_filter_expr(col, kept))
 
         parts = ["dt", "view", shlex.quote(self.filepath)]
         if self._start_at_end:
@@ -2429,8 +2452,8 @@ class ViewApp(App):
     def action_filter(self) -> None:
         self._open_prompt(
             "filter",
-            "全量筛选 列名 运算符 值 (~= 为包含); and/or 组合 "
-            "(如 turns>=6 and first_user~=退款):",
+            "全量筛选 (Python 表达式, 当前行 x; 派生列名直接用) "
+            "如 turns>=6 and '退款' in first_user · x.source=='a':",
         )
 
     def action_value_filter(self) -> None:

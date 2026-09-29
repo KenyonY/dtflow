@@ -3,7 +3,7 @@ CLI 通用工具函数
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import orjson
 
@@ -464,3 +464,52 @@ def _pad_to_width(s: str, target_width: int) -> str:
     if current_width >= target_width:
         return s
     return s + " " * (target_width - current_width)
+
+
+# --------------------------------------------------------------------------- #
+# --where: 统一 Python 表达式 (dtflow.expr), 多条之间 AND
+# --------------------------------------------------------------------------- #
+def build_where(exprs: Sequence[str]) -> Callable[[dict], bool]:
+    """多条 --where 编译成一个谓词 (AND)。语法错误 → 用法错误 (退出码 2) 并指出位置。"""
+    from ..expr import ExprSyntaxError, compile_where
+    from .output import die_usage
+
+    preds = []
+    for e in exprs:
+        try:
+            preds.append(compile_where(e))
+        except ExprSyntaxError as err:
+            die_usage(str(err), suggestion=err.caret())
+    if len(preds) == 1:
+        return preds[0]
+    return lambda row: all(p(row) for p in preds)
+
+
+def apply_where(rows: List[Dict], exprs: Sequence[str], strict: bool = False) -> List[Dict]:
+    """内存数据上应用 --where。
+
+    行内求值失败 (缺字段 AttributeError / None 比较 TypeError 等) 判为不匹配, 结束时
+    stderr 汇总一次 —— 异构 jsonl 里缺字段是常态, 但完全静默会掩盖 x.scroe 这种拼写错。
+    strict=True 时首个失败即报错退出。
+    """
+    from .output import die, log
+
+    pred = build_where(exprs)
+    kept: List[Dict] = []
+    failed = 0
+    first_err: Optional[str] = None
+    for row in rows:
+        try:
+            ok = pred(row)
+        except Exception as e:
+            if strict:
+                die("where_error", f"表达式求值失败: {type(e).__name__}: {e}", exit_code=1)
+            failed += 1
+            if first_err is None:
+                first_err = f"{type(e).__name__}: {e}"
+            continue
+        if ok:
+            kept.append(row)
+    if failed:
+        log(f"⚠ {failed}/{len(rows)} 行 --where 求值失败, 已视为不匹配 (首个: {first_err})")
+    return kept

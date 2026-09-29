@@ -86,10 +86,12 @@ def test_memory_source_has_no_ranges(tmp_path):
     [
         ScanSpec(fmt=FMT, search="ans"),
         ScanSpec(fmt=FMT, search="re:q1[0-9] "),
-        ScanSpec(fmt=FMT, wheres=("source==a",)),
+        ScanSpec(fmt=FMT, wheres=("x.source=='a'",)),
         ScanSpec(fmt=FMT, wheres=("turns>=2", "chars>5")),
         ScanSpec(fmt=FMT, value_filters=(("source", ("a",)),)),
-        ScanSpec(fmt=FMT, search="ans", wheres=("source==b",), sort_col="chars", sort_desc=True),
+        ScanSpec(
+            fmt=FMT, search="ans", wheres=("x.source=='b'",), sort_col="chars", sort_desc=True
+        ),
         ScanSpec(fmt=FMT, sort_col="chars"),  # 纯排序: 全部行按键重排
     ],
 )
@@ -195,7 +197,7 @@ def test_refine_base_rejects_big_subset():
 def test_refine_rows_equals_full_scan(tmp_path):
     src = _source(tmp_path)
     old = ScanSpec(fmt=FMT, search="ans")
-    new = ScanSpec(fmt=FMT, search="ans", wheres=("source==a",))
+    new = ScanSpec(fmt=FMT, search="ans", wheres=("x.source=='a'",))
     subset = scan.scan_rows(src, old)
     assert scan.refine_rows(src, subset, new) == scan.scan_rows(src, new)
 
@@ -206,7 +208,7 @@ def test_refine_rows_keeps_sorted_order(tmp_path):
     spec = ScanSpec(fmt=FMT, search="ans", sort_col="chars", sort_desc=True)
     subset = scan.scan_rows(src, spec)
     tighter = ScanSpec(
-        fmt=FMT, search="ans", wheres=("source==a",), sort_col="chars", sort_desc=True
+        fmt=FMT, search="ans", wheres=("x.source=='a'",), sort_col="chars", sort_desc=True
     )
     refined = scan.refine_rows(src, subset, tighter)
     assert refined == [i for i in subset if i in set(refined)]
@@ -231,7 +233,7 @@ def test_scan_values_rows_match_full_scan(tmp_path, parallel):
 def test_scan_values_applies_other_constraints(tmp_path):
     # 算候选值时带上"除本列外"的约束, 本列自己的约束要排除掉 (否则筛掉的值加不回来)
     src = _source(tmp_path)
-    spec = ScanSpec(fmt=FMT, wheres=("source==a",))
+    spec = ScanSpec(fmt=FMT, wheres=("x.source=='a'",))
     values = scan.scan_values(src, "turns", spec)
     assert sum(len(v) for v in values.values()) == len(scan.scan_rows(src, spec))
     assert ScanSpec(fmt=FMT, value_filters=(("turns", ("2",)),)).without_column(

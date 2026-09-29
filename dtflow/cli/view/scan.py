@@ -39,90 +39,27 @@ REFINE_MAX_RATIO = 0.1
 # --------------------------------------------------------------------------- #
 # 表达式编译 (主进程校验用户输入、子进程重建谓词, 同一套代码)
 # --------------------------------------------------------------------------- #
-def _compile_atom(expr: str, fmt: str):
-    """编译单个条件 ``字段 运算符 值`` → predicate(row)->bool。
+def compile_where(expr: str, fmt: str):
+    """where 表达式 → predicate(row)->bool。
 
-    字段直接用表格里看到的列名 (turns/roles/chars/source 等):
-    - 若是**派生列** (计算列, 无字段路径, 如 chars/turns/first_user) → 按该列的值比较;
-      ``~=`` (包含) 匹配未截断的完整文本, 不是表格里那 80 字的预览。
-    - 否则当**真实字段路径**交给 _parse_where (标量列名 source, 或深层 messages.#>=2)。
+    表达式即 Python (见 dtflow.expr), 当前行为 ``x``; 表头上的**派生列名**
+    (turns/chars/first_user/… 见 render.derived_columns) 可直接当变量用, 值为原始类型
+    (int / 全文不截断), 其余字段走 ``x.source`` / ``x.messages[-1].role``。
+    语法错误抛 ExprSyntaxError (ValueError 子类) 给调用方提示; 行内求值失败 (缺字段等)
+    判为不命中 —— TUI 没有逐行报错的通道, 静默过滤是这里唯一合理的选择。
     """
-    import operator
+    from ...expr import compile_where as _compile
 
-    from ..sample import _parse_where
-
-    ops = [
-        (">=", operator.ge),
-        ("<=", operator.le),
-        ("!=", operator.ne),
-        # 包含; 必须排在 "=" 之前。不区分大小写, 与 _parse_where、/ 搜索、值面板搜索框一致
-        ("~=", lambda cell, v: v.lower() in cell.lower()),
-        ("==", operator.eq),
-        (">", operator.gt),
-        ("<", operator.lt),
-        ("=", operator.eq),
-    ]
-    field_name = op = value = None
-    token = ""
-    for token, _op in ops:
-        if token in expr:
-            field_name, _, value = expr.partition(token)
-            op = _op
-            break
-    field_s = (field_name or "").strip()
-    if field_s not in render.derived_columns(fmt):
-        return _parse_where(expr)  # 标量列名 / 深层字段路径, 走原生解析
-
-    col = field_s
-    value = (value or "").strip()
-    if token == "~=":  # 包含永远是字符串语义, 不能把 "2000" 当数字比
-        numeric, cmp_value = False, value
-    else:
-        try:
-            cmp_value = float(value)
-            numeric = True
-        except ValueError:
-            cmp_value = value
-            numeric = False
-    # 包含筛选要看全文 (预览只有 80 字, 截断会静默漏掉靠后的关键词)
-    preview = token != "~="
+    names = frozenset(render.derived_columns(fmt))
+    pred = _compile(expr, extra=lambda row: render.derived_values(row, fmt), extra_names=names)
 
     def predicate(row) -> bool:
         if not isinstance(row, dict):
             return False
-        cell = render.row_cells(0, row, fmt, [col], preview=preview)[0]
-        if cell == "":
+        try:
+            return pred(row)
+        except Exception:
             return False
-        if numeric:
-            try:
-                return op(float(cell), cmp_value)
-            except (ValueError, TypeError):
-                return False
-        return op(str(cell), str(cmp_value))
-
-    return predicate
-
-
-def compile_where(expr: str, fmt: str):
-    """把筛选表达式编译成 predicate(row)->bool, 支持 ``and``/``or`` 多条件组合。
-
-    用带空格的 `` and `` / `` or `` 分隔 (避免误伤值内子串如 source==android);
-    ``and`` 优先级高于 ``or`` (标准语义, 不支持括号)。每个子条件形如 ``列名 运算符 值``,
-    列名取表头所见 —— 这样 ``turns>=6 and chars<2000`` 这类多列筛选直接可写。
-
-    不支持括号是刻意的: 需要 ``(a or b) and (c or d)`` 时改用多条 where
-    (TUI 内连按两次 f, 命令行传两个 --where), 多条之间是 AND。
-    """
-    or_groups = []
-    for or_part in re.split(r"\s+or\s+", expr, flags=re.IGNORECASE):
-        ands = [
-            _compile_atom(a.strip(), fmt)
-            for a in re.split(r"\s+and\s+", or_part, flags=re.IGNORECASE)
-        ]
-        or_groups.append(ands)
-
-    def predicate(row) -> bool:
-        return any(all(p(row) for p in ands) for ands in or_groups)
 
     return predicate
 

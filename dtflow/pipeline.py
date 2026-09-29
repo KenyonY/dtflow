@@ -6,11 +6,11 @@ Pipeline 配置模块
 
 import random
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from .core import DataTransformer
 from .presets import PRESETS, get_preset
-from .storage.io import load_data, save_data
+from .storage.io import load_data
 
 # ============ Pipeline 配置格式 ============
 
@@ -22,7 +22,7 @@ def _load_yaml(filepath: str) -> Dict[str, Any]:
     try:
         import yaml
     except ImportError:
-        raise ImportError("需要安装 PyYAML: pip install pyyaml")
+        raise ImportError("需要安装 PyYAML: pip install pyyaml") from None
 
     with open(filepath, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -33,7 +33,7 @@ def _save_yaml(data: Dict[str, Any], filepath: str) -> None:
     try:
         import yaml
     except ImportError:
-        raise ImportError("需要安装 PyYAML: pip install pyyaml")
+        raise ImportError("需要安装 PyYAML: pip install pyyaml") from None
 
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
@@ -45,88 +45,17 @@ def _save_yaml(data: Dict[str, Any], filepath: str) -> None:
 
 def _execute_filter(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
     """
-    执行 filter 步骤。
+    执行 filter 步骤: ``expr`` 为 Python 表达式, 当前行为 x (与 CLI --where 同一套语法)。
 
-    支持的条件格式：
-    - 简单比较：field > value, field == value, field != value
-    - 长度过滤：len(field) > value
-    - 非空过滤：field is not None, field is not empty
+        - type: filter
+          expr: "x.score > 0.5 and len(x.text) > 10"
     """
-    condition = step.get("condition", "")
-    field = step.get("field")
+    from .expr import compile_where
 
-    if not condition and not field:
-        raise ValueError("filter 步骤需要指定 condition 或 field")
-
-    # 简单字段非空过滤
-    if field and not condition:
-        return dt.filter(lambda x, f=field: bool(x.get(f)), raw=True)
-
-    # 解析条件表达式
-    filter_func = _parse_condition(condition)
-    return dt.filter(filter_func, raw=True)
-
-
-def _parse_condition(condition: str) -> Callable:
-    """
-    解析条件表达式为过滤函数。
-
-    支持的格式：
-    - "score > 0.5"
-    - "len(text) > 10"
-    - "category == 'A'"
-    - "field is not empty"
-    """
-    import re
-
-    condition = condition.strip()
-
-    # 长度比较：len(field) op value
-    len_match = re.match(r"len\((\w+)\)\s*(>|<|>=|<=|==|!=)\s*(\d+)", condition)
-    if len_match:
-        field, op, value = len_match.groups()
-        value = int(value)
-        ops = {
-            ">": lambda a, b: a > b,
-            "<": lambda a, b: a < b,
-            ">=": lambda a, b: a >= b,
-            "<=": lambda a, b: a <= b,
-            "==": lambda a, b: a == b,
-            "!=": lambda a, b: a != b,
-        }
-        return lambda x, f=field, o=ops[op], v=value: o(len(str(x.get(f, ""))), v)
-
-    # 非空判断：field is not empty / field is not None
-    nonempty_match = re.match(r"(\w+)\s+is\s+not\s+(empty|None)", condition)
-    if nonempty_match:
-        field = nonempty_match.group(1)
-        return lambda x, f=field: bool(x.get(f))
-
-    # 数值比较：field op value
-    num_match = re.match(r"(\w+)\s*(>|<|>=|<=|==|!=)\s*([\d.]+)", condition)
-    if num_match:
-        field, op, value = num_match.groups()
-        value = float(value)
-        ops = {
-            ">": lambda a, b: a > b,
-            "<": lambda a, b: a < b,
-            ">=": lambda a, b: a >= b,
-            "<=": lambda a, b: a <= b,
-            "==": lambda a, b: a == b,
-            "!=": lambda a, b: a != b,
-        }
-        return lambda x, f=field, o=ops[op], v=value: o(float(x.get(f, 0)), v)
-
-    # 字符串比较：field == 'value' 或 field != 'value'
-    str_match = re.match(r"(\w+)\s*(==|!=)\s*['\"](.+)['\"]", condition)
-    if str_match:
-        field, op, value = str_match.groups()
-        if op == "==":
-            return lambda x, f=field, v=value: x.get(f) == v
-        else:
-            return lambda x, f=field, v=value: x.get(f) != v
-
-    raise ValueError(f"无法解析条件表达式: {condition}")
+    expr = step.get("expr")
+    if not expr:
+        raise ValueError("filter 步骤需要指定 expr")
+    return dt.filter(compile_where(expr), raw=True)
 
 
 def _execute_transform(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
@@ -306,8 +235,7 @@ def _format_step_description(step: Dict[str, Any]) -> str:
     step_type = step.get("type", "")
 
     if step_type == "filter":
-        cond = step.get("condition") or step.get("field")
-        return f"filter ({cond})"
+        return f"filter ({step.get('expr')})"
     elif step_type == "transform":
         preset = step.get("preset", "")
         return f"transform ({preset})"
@@ -380,7 +308,7 @@ def generate_pipeline_template(
         config["steps"].append(
             {
                 "type": "filter",
-                "condition": f"len({fields[0]}) > 0",
+                "expr": f"len(x.{fields[0]}) > 0",
             }
         )
 
@@ -454,7 +382,16 @@ def validate_pipeline(config_path: str) -> List[str]:
         if step_type == "transform" and "preset" not in step:
             errors.append(f"步骤 {i}: transform 需要指定 preset")
 
-        if step_type == "filter" and not step.get("condition") and not step.get("field"):
-            errors.append(f"步骤 {i}: filter 需要指定 condition 或 field")
+        if step_type == "filter":
+            expr = step.get("expr")
+            if not expr:
+                errors.append(f"步骤 {i}: filter 需要指定 expr (Python 表达式, 当前行为 x)")
+            else:
+                from .expr import ExprSyntaxError, check_syntax
+
+                try:
+                    check_syntax(str(expr))
+                except ExprSyntaxError as e:
+                    errors.append(f"步骤 {i}: filter expr {e}")
 
     return errors

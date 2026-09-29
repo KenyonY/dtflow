@@ -2,9 +2,8 @@
 CLI 采样相关命令
 """
 
-import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from rich.markup import escape
 
@@ -17,6 +16,7 @@ from .common import (
     _parse_field_list,
     _print_samples,
     _require_file_exists,
+    apply_where,
 )
 from .output import (
     die,
@@ -29,99 +29,6 @@ from .output import (
     log,
     resolve_format,
 )
-
-# where 条件解析正则：field op value
-_WHERE_PATTERN = re.compile(r"^(.+?)(!=|~=|>=|<=|==|>|<|=)(.*)$")
-
-
-def _parse_where(condition: str) -> Callable[[dict], bool]:
-    """
-    解析 where 条件字符串，返回筛选函数。
-
-    支持的操作符:
-        =   等于
-        !=  不等于
-        ~=  包含（子串，不区分大小写）
-        >   大于
-        >=  大于等于
-        <   小于
-        <=  小于等于
-
-    Examples:
-        _parse_where("category=tech")
-        _parse_where("meta.source!=wiki")
-        _parse_where("content~=机器学习")
-        _parse_where("messages.#>=2")
-    """
-    match = _WHERE_PATTERN.match(condition)
-    if not match:
-        raise ValueError(f"无效的 where 条件: {condition}")
-
-    field, op, value = match.groups()
-
-    # 尝试转换 value 为数值
-    def parse_value(v: str) -> Any:
-        if v.lower() == "true":
-            return True
-        if v.lower() == "false":
-            return False
-        try:
-            return int(v)
-        except ValueError:
-            try:
-                return float(v)
-            except ValueError:
-                return v
-
-    parsed_value = parse_value(value)
-
-    def filter_fn(item: dict) -> bool:
-        field_value = get_field_with_spec(item, field)
-
-        if op in ("=", "=="):
-            # 字符串比较或数值比较
-            if field_value is None:
-                return value == "" or value.lower() == "none"
-            return str(field_value) == value or field_value == parsed_value
-        elif op == "!=":
-            if field_value is None:
-                return value != "" and value.lower() != "none"
-            return str(field_value) != value and field_value != parsed_value
-        elif op == "~=":
-            # 包含: 不区分大小写 —— "包含某个词"是人在找数据, 不是精确比对;
-            # 要区分大小写用 = / !=。dt view 的 / 搜索和值面板搜索框同此语义。
-            if field_value is None:
-                return False
-            return value.lower() in str(field_value).lower()
-        elif op in (">", ">=", "<", "<="):
-            # 数值比较
-            if field_value is None:
-                return False
-            try:
-                num_field = float(field_value)
-                num_value = float(value)
-                if op == ">":
-                    return num_field > num_value
-                elif op == ">=":
-                    return num_field >= num_value
-                elif op == "<":
-                    return num_field < num_value
-                else:  # <=
-                    return num_field <= num_value
-            except (ValueError, TypeError):
-                return False
-        return False
-
-    return filter_fn
-
-
-def _apply_where_filters(data: List[Dict], where_conditions: List[str]) -> List[Dict]:
-    """应用多个 where 条件（AND 关系）"""
-    if not where_conditions:
-        return data
-
-    filters = [_parse_where(cond) for cond in where_conditions]
-    return [item for item in data if all(f(item) for f in filters)]
 
 
 def _sample_from_list(
@@ -178,7 +85,7 @@ def sample(
         uniform: 均匀采样模式（需配合 --by 使用），各组采样相同数量
         fields: 只显示指定字段（逗号分隔），仅在预览模式下有效
         raw: 输出原始 JSON 格式（不截断，完整显示所有内容）
-        where: 筛选条件列表，支持 =, !=, ~=, >, >=, <, <= 操作符
+        where: 筛选表达式列表 (Python 表达式, 当前行为 x), 多条之间 AND
         dist: 自定义分布 JSON 字符串（需配合 --by 使用，与 --uniform 互斥），
             如 '{"A":0.5,"B":0.3,"C":0.2}'
 
@@ -193,9 +100,9 @@ def sample(
         dt sample data.jsonl 1000 --by=category --uniform # 均匀分层采样
         dt sample data.jsonl 1000 --by=label --dist='{"合规":0.5,"违规":0.3,"中立":0.2}'
         dt sample data.jsonl --fields=question,answer     # 只显示指定字段
-        dt sample data.jsonl --where="category=tech"      # 筛选 category 为 tech 的数据
-        dt sample data.jsonl --where="meta.source~=wiki"  # 筛选 meta.source 包含 wiki
-        dt sample data.jsonl --where="messages.#>=2"      # 筛选消息数量 >= 2
+        dt sample data.jsonl --where="x.category=='tech'"        # 筛选 category 为 tech
+        dt sample data.jsonl --where="'wiki' in x.meta.source"   # meta.source 包含 wiki
+        dt sample data.jsonl --where="len(x.messages)>=2"        # 消息数量 >= 2
     """
     # type 未指定时：n=0 默认 head（保序），其他默认 random
     if type is None:
@@ -243,20 +150,17 @@ def sample(
 
     if where_conditions:
         # 有 where 条件时，先加载全部数据再筛选
-        try:
-            all_data = load_data(str(filepath))
-            original_count = len(all_data)
-            filtered_data = _apply_where_filters(all_data, where_conditions)
-            log(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
-            if not filtered_data:
-                die(
-                    "empty_result",
-                    "筛选后无数据",
-                    suggestion="放宽 --where 条件或检查字段路径",
-                    exit_code=1,
-                )
-        except ValueError as e:
-            die_usage(f"无效的 where 条件: {e}")
+        all_data = load_data(str(filepath))
+        original_count = len(all_data)
+        filtered_data = apply_where(all_data, where_conditions)
+        log(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
+        if not filtered_data:
+            die(
+                "empty_result",
+                "筛选后无数据",
+                suggestion="放宽 --where 条件或检查字段路径",
+                exit_code=1,
+            )
 
     # 分层采样模式
     if by:

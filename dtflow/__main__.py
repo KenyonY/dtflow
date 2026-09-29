@@ -236,7 +236,7 @@ def sample(
         None,
         "--where",
         "-w",
-        help="筛选条件 字段 运算符 值, 可多次使用 (与关系); 运算符 = != > >= < <= ~=(包含,不分大小写)",
+        help="筛选表达式 (Python, 当前行为 x, 如 \"x.score>0.5 and 'a' in x.text\"), 可多次 (与关系)",
     ),
 ):
     """从数据文件中采样指定数量的数据
@@ -244,8 +244,8 @@ def sample(
     示例:
         dt sample data.jsonl --num=10                     # 随机 10 条
         dt sample data.jsonl 100 --by=category            # 按字段分层 100 条
-        dt sample data.jsonl --where="messages.#>=2"      # 筛选后采样
-        dt sample data.jsonl -w "meta.source~=alpaca"     # 包含子串 (不分大小写)
+        dt sample data.jsonl --where="len(x.messages)>=2"      # 筛选后采样
+        dt sample data.jsonl -w "'alpaca' in x.meta.source"   # 包含子串
         dt sample data.jsonl --dist='{"A":0.5,"B":0.5}' --by=label
         dt --format=json sample data.jsonl                # stdout 输出 JSON
 
@@ -340,7 +340,7 @@ def view(
         None,
         "--where",
         "-w",
-        help="启动即筛选，列名取表头所见，可多次使用（与关系）；单条内可用 and/or",
+        help="启动即筛选 (Python 表达式, 当前行为 x, 派生列名 turns/chars 等可直接用), 可多次 (与关系)",
     ),
     search: Optional[str] = typer.Option(
         None, "--search", "-s", help="启动即全字段搜索（不分大小写；re: 前缀走正则），命中处高亮"
