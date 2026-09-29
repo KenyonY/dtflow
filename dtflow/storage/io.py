@@ -95,9 +95,30 @@ def load_data(filepath: str, file_format: Optional[str] = None) -> List[Dict[str
         raise ValueError(f"Unknown file format: {file_format}")
 
 
+def data_suffix(filepath: Path) -> str:
+    """去掉 .gz 后的数据后缀 (小写): x.jsonl.gz → .jsonl。格式门禁与格式判断都以它为准。"""
+    name = filepath.name.lower()
+    if name.endswith(".gz"):
+        return Path(name[:-3]).suffix
+    return filepath.suffix.lower()
+
+
+def is_gz(filepath: Path) -> bool:
+    return filepath.name.lower().endswith(".gz")
+
+
+def _open_bin(filepath: Path, mode: str):
+    """按后缀选 gzip.open / open (二进制)。jsonl/json 的 Python 读写路径统一走这里。"""
+    if is_gz(filepath):
+        import gzip
+
+        return gzip.open(filepath, mode)
+    return open(filepath, mode)
+
+
 def _detect_format(filepath: Path) -> str:
-    """Detect file format from extension."""
-    ext = filepath.suffix.lower()
+    """Detect file format from extension (.gz 透明: x.jsonl.gz 视同 jsonl)."""
+    ext = data_suffix(filepath)
     if ext == ".jsonl":
         return "jsonl"
     elif ext == ".json":
@@ -124,7 +145,7 @@ def _detect_format(filepath: Path) -> str:
 
 def _save_jsonl(data: List[Dict[str, Any]], filepath: Path) -> None:
     """Save data in JSONL format."""
-    with open(filepath, "wb") as f:
+    with _open_bin(filepath, "wb") as f:
         for item in data:
             f.write(orjson.dumps(item) + b"\n")
 
@@ -164,7 +185,7 @@ def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
     data = []
     use_fallback = False
 
-    with open(filepath, "rb") as f:
+    with _open_bin(filepath, "rb") as f:
         for i, line in enumerate(f):
             line = line.strip()
             if not line:
@@ -201,7 +222,7 @@ def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
 
 def _save_json(data: List[Dict[str, Any]], filepath: Path) -> None:
     """Save data in JSON format."""
-    with open(filepath, "wb") as f:
+    with _open_bin(filepath, "wb") as f:
         f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
 
 
@@ -213,7 +234,7 @@ def _load_json(filepath: Path) -> List[Dict[str, Any]]:
     import json
     import sys
 
-    with open(filepath, "rb") as f:
+    with _open_bin(filepath, "rb") as f:
         content = f.read()
 
     try:
@@ -542,7 +563,7 @@ def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
 
         result: List[Dict[str, Any]] = []
         skipped: List[int] = []
-        with open(filepath, "rb") as f:
+        with _open_bin(filepath, "rb") as f:
             for i, line in enumerate(f):
                 line = line.strip()
                 if line:
@@ -597,7 +618,7 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
         )
 
         total_lines = 0
-        with open(filepath, "rb") as f:
+        with _open_bin(filepath, "rb") as f:
             for _ in f:
                 total_lines += 1
 
@@ -606,7 +627,7 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
         skip_count = max(0, total_lines - num)
         result: List[Dict[str, Any]] = []
         skipped: List[int] = []
-        with open(filepath, "rb") as f:
+        with _open_bin(filepath, "rb") as f:
             for i, line in enumerate(f):
                 if i < skip_count:
                     continue
@@ -660,7 +681,7 @@ def _count_sample_jsonl(
         total_lines = pl.scan_ndjson(filepath).select(pl.len()).collect().item()
     except Exception:
         # 回退到 Python 计数
-        with open(filepath, "rb") as f:
+        with _open_bin(filepath, "rb") as f:
             total_lines = sum(1 for _ in f)
 
     if total_lines == 0:
@@ -678,7 +699,7 @@ def _count_sample_jsonl(
     # Step 3: 只解析选中的行
     result: List[Dict[str, Any]] = []
     skipped: List[int] = []
-    with open(filepath, "rb") as f:
+    with _open_bin(filepath, "rb") as f:
         for i, line in enumerate(f):
             if i in selected_indices:
                 line = line.strip()
@@ -774,7 +795,7 @@ def append_to_file(
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     if file_format == "jsonl":
-        with open(filepath, "ab") as f:
+        with _open_bin(filepath, "ab") as f:
             for item in data:
                 f.write(orjson.dumps(item) + b"\n")
     elif file_format == "flaxkv":
@@ -786,7 +807,7 @@ def append_to_file(
 def count_lines(filepath: str) -> int:
     """Count number of lines in a JSONL file."""
     count = 0
-    with open(filepath, "r", encoding="utf-8") as f:
+    with _open_bin(Path(filepath), "rb") as f:
         for _ in f:
             count += 1
     return count
@@ -795,7 +816,7 @@ def count_lines(filepath: str) -> int:
 def stream_jsonl(filepath: str, chunk_size: int = 1000):
     """Stream JSONL file in chunks."""
     chunk = []
-    with open(filepath, "rb") as f:
+    with _open_bin(Path(filepath), "rb") as f:
         for line in f:
             line = line.strip()
             if line:

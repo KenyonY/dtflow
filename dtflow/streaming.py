@@ -61,12 +61,17 @@ def _is_flaxkv_path(path: Path) -> bool:
 
 def _count_rows_fast(filepath: str) -> Optional[int]:
     """快速统计文件行数（不加载数据）"""
+    from dtflow.storage.io import data_suffix, is_gz
+
     path = Path(filepath)
-    ext = path.suffix.lower()
+    ext = data_suffix(path)
     fmt = _fmt_of(path)
 
     try:
         if fmt == "jsonl":
+            if is_gz(path):
+                # count_jsonl_rows 数的是原始字节, gz 要交给 polars 解压后数
+                return pl.scan_ndjson(filepath).select(pl.len()).collect().item()
             from .utils.jsonl import count_jsonl_rows
 
             return count_jsonl_rows(path)
@@ -87,7 +92,9 @@ def _count_rows_fast(filepath: str) -> Optional[int]:
             # JSON: 整体是一个数组，必须全量解析
             import orjson
 
-            with open(filepath, "rb") as f:
+            from dtflow.storage.io import _open_bin
+
+            with _open_bin(path, "rb") as f:
                 obj = orjson.loads(f.read())
             return len(obj) if isinstance(obj, list) else 1
         elif ext in (".flaxkv", ".kv") or _is_flaxkv_path(path):
@@ -150,8 +157,10 @@ class StreamingTransformer:
         Returns:
             StreamingTransformer 实例
         """
+        from dtflow.storage.io import data_suffix
+
         path = Path(filepath)
-        ext = path.suffix.lower()
+        ext = data_suffix(path)
         is_flaxkv = _is_flaxkv_path(path)
 
         # 存在性检查：flaxkv 检查 DB 目录，其他格式检查文件
@@ -653,7 +662,9 @@ class StreamingTransformer:
         return count
 
     def _save_jsonl(self, filepath: str, show_progress: bool) -> int:
-        """JSONL 逐行流式保存（使用 orjson）"""
+        """JSONL 逐行流式保存（使用 orjson; .gz 后缀则 gzip 压缩）"""
+        from dtflow.storage.io import _open_bin
+
         count = 0
 
         if show_progress:
@@ -680,13 +691,13 @@ class StreamingTransformer:
 
             with Progress(*columns) as progress:
                 task = progress.add_task("处理中", total=self._total)
-                with open(filepath, "wb") as f:
+                with _open_bin(Path(filepath), "wb") as f:
                     for item in self._iterator:
                         f.write(orjson.dumps(item) + b"\n")
                         count += 1
                         progress.update(task, advance=1)
         else:
-            with open(filepath, "wb") as f:
+            with _open_bin(Path(filepath), "wb") as f:
                 for item in self._iterator:
                     f.write(orjson.dumps(item) + b"\n")
                     count += 1
@@ -1063,9 +1074,11 @@ def _stream_jsonl(filepath: str) -> Generator[Dict[str, Any], None, None]:
     import json
     import sys
 
+    from dtflow.storage.io import _open_bin
+
     use_fallback = False
 
-    with open(filepath, "rb") as f:
+    with _open_bin(Path(filepath), "rb") as f:
         for i, line in enumerate(f):
             line = line.strip()
             if not line:

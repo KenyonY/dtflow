@@ -208,6 +208,7 @@ def concat(
 
 def _concat_streaming(file_paths: List[Path], output: str) -> int:
     """流式拼接多个文件"""
+    from ..storage.io import data_suffix
     from ..streaming import (
         StreamingTransformer,
         _stream_arrow,
@@ -218,8 +219,8 @@ def _concat_streaming(file_paths: List[Path], output: str) -> int:
 
     def generator():
         for filepath in file_paths:
-            ext = filepath.suffix.lower()
-            if ext == ".jsonl":
+            ext = data_suffix(filepath)
+            if ext in (".jsonl", ".ndjson"):
                 yield from _stream_jsonl(str(filepath))
             elif ext == ".csv":
                 yield from _stream_csv(str(filepath))

@@ -834,3 +834,30 @@ class TestStreamingEnhancements:
         assert len(parts) == 2
         assert len(parts[0].collect()) + len(parts[1].collect()) == 100
         os.unlink(temp_jsonl)
+
+
+class TestGzipStreaming:
+    def _gz(self, tmp_path, n=120):
+        import gzip
+
+        p = tmp_path / "d.jsonl.gz"
+        with gzip.open(p, "wb") as f:
+            for i in range(n):
+                f.write(json.dumps({"id": i}).encode() + b"\n")
+        return p
+
+    def test_load_stream_gz(self, tmp_path):
+        from dtflow.streaming import _count_rows_fast
+
+        p = self._gz(tmp_path)
+        st = load_stream(str(p))
+        assert st._total == 120
+        assert _count_rows_fast(str(p)) == 120
+        assert [r["id"] for r in st.filter(lambda x: x.id % 2 == 0).head(3).collect()] == [0, 2, 4]
+
+    def test_save_stream_to_gz(self, tmp_path):
+        p = self._gz(tmp_path, 10)
+        out = tmp_path / "o.jsonl.gz"
+        n = load_stream(str(p)).transform(lambda x: {"id2": x.id * 2}).save(str(out))
+        assert n == 10 and out.read_bytes()[:2] == b"\x1f\x8b"
+        assert [r["id2"] for r in load_stream(str(out)).collect()] == list(range(0, 20, 2))

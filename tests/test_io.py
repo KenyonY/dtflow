@@ -782,3 +782,50 @@ class TestLoadErrors:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestGzip:
+    """.jsonl.gz / .json.gz 透明读写: 后缀剥 .gz 后按原格式处理"""
+
+    def test_detect_format_strips_gz(self):
+        from dtflow.storage.io import _detect_format, data_suffix, is_gz
+
+        assert _detect_format(Path("d.jsonl.gz")) == "jsonl"
+        assert _detect_format(Path("d.JSON.GZ")) == "json"
+        assert data_suffix(Path("d.ndjson.gz")) == ".ndjson"
+        assert is_gz(Path("d.jsonl.gz")) and not is_gz(Path("d.jsonl"))
+
+    def test_jsonl_gz_roundtrip_is_really_compressed(self, tmp_path):
+        import gzip
+
+        rows = [{"i": i, "m": [{"r": "u", "c": "x" * 50}]} for i in range(200)]
+        p = tmp_path / "d.jsonl.gz"
+        save_data(rows, str(p))
+        assert p.read_bytes()[:2] == b"\x1f\x8b"
+        with gzip.open(p, "rb") as f:
+            assert len(f.read().splitlines()) == 200
+        assert load_data(str(p)) == rows
+
+    def test_json_gz_roundtrip(self, tmp_path):
+        rows = [{"a": 1}, {"a": 2}]
+        p = tmp_path / "d.json.gz"
+        save_data(rows, str(p))
+        assert p.read_bytes()[:2] == b"\x1f\x8b"
+        assert load_data(str(p)) == rows
+
+    def test_head_tail_random_on_gz(self, tmp_path):
+        rows = [{"i": i} for i in range(50)]
+        p = tmp_path / "d.jsonl.gz"
+        save_data(rows, str(p))
+        assert _stream_head_jsonl(p, 3) == rows[:3]
+        assert _stream_tail_jsonl(p, 2) == rows[-2:]
+        got = sample_file(str(p), num=5, sample_type="random", seed=1)
+        assert len(got) == 5 and all(r in rows for r in got)
+        assert count_lines(str(p)) == 50
+        assert sum(len(c) for c in stream_jsonl(str(p), chunk_size=7)) == 50
+
+    def test_append_gz(self, tmp_path):
+        p = tmp_path / "d.jsonl.gz"
+        save_data([{"i": 0}], str(p))
+        append_to_file([{"i": 1}], str(p))
+        assert load_data(str(p)) == [{"i": 0}, {"i": 1}]

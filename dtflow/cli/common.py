@@ -41,8 +41,10 @@ STREAMING_FORMATS = {
 
 
 def _is_streaming_supported(filepath: Path) -> bool:
-    """检查文件是否支持流式处理"""
-    return filepath.suffix.lower() in STREAMING_FORMATS or _is_flaxkv_path(filepath)
+    """检查文件是否支持流式处理 (.gz 透明)"""
+    from ..storage.io import data_suffix
+
+    return data_suffix(filepath) in STREAMING_FORMATS or _is_flaxkv_path(filepath)
 
 
 def _is_flaxkv_path(filepath: Path) -> bool:
@@ -70,7 +72,9 @@ def _check_file_format(filepath: Path) -> bool:
     行为: 不支持则通过 `die` 以结构化错误终止进程（退出码 2，写 stderr）。
     为保持历史返回约定，成功路径返回 True；调用方无需再检查。
     """
-    ext = filepath.suffix.lower()
+    from ..storage.io import data_suffix
+
+    ext = data_suffix(filepath)
     if ext not in SUPPORTED_FORMATS and not _is_flaxkv_path(filepath):
         from .output import die_unsupported_format
 

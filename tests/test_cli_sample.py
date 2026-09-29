@@ -585,3 +585,21 @@ class TestMarkupLikeContent:
         out = tmp_path / "out.jsonl"
         sample(str(f), num=4, by="label", output=str(out))
         assert len(load_data(str(out))) == 4
+
+
+class TestGzipCli:
+    def test_head_and_where_on_gz(self, tmp_path, capsys):
+        import gzip
+
+        import orjson
+
+        p = tmp_path / "d.jsonl.gz"
+        with gzip.open(p, "wb") as f:
+            for i in range(30):
+                f.write(orjson.dumps({"id": i, "s": "a" if i % 2 else "b"}) + b"\n")
+        out = tmp_path / "o.jsonl.gz"
+        head(str(p), num=3, output=str(out))
+        assert [r["id"] for r in load_data(str(out))] == [0, 1, 2]
+        out2 = tmp_path / "o2.jsonl"
+        sample(str(p), num=100, output=str(out2), where=["x.s=='a' and x.id<10"])
+        assert sorted(r["id"] for r in load_data(str(out2))) == [1, 3, 5, 7, 9]
