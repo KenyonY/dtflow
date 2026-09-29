@@ -1014,6 +1014,24 @@ def load_stream(filepath: str, batch_size: int = 10000) -> StreamingTransformer:
     return StreamingTransformer.load_stream(filepath, batch_size)
 
 
+def open_stream(filename: str) -> StreamingTransformer:
+    """任意输入 → 数据流: ``-`` 读 stdin NDJSON; 流式格式 load_stream; 其余全量读后包成流。
+
+    CLI 与 pipeline 共用的唯一入口 (CLI 层在外面加存在/格式校验与结构化报错)。
+    """
+    import sys
+
+    from dtflow.storage.io import data_suffix, load_data
+
+    if filename == "-":
+        return StreamingTransformer(_iter_jsonl(sys.stdin.buffer, "<stdin>"), None, total=None)
+    path = Path(filename)
+    if data_suffix(path) in STREAMING_FORMATS or _is_flaxkv_path(path):
+        return load_stream(filename)
+    data = load_data(filename)
+    return StreamingTransformer(iter(data), filename, total=len(data))
+
+
 def load_sharded(pattern: str, batch_size: int = 10000) -> StreamingTransformer:
     """
     加载分片文件。

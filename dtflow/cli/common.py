@@ -369,33 +369,7 @@ def _format_file_size(size: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _is_empty_value(v: Any) -> bool:
-    """判断值是否为空"""
-    if v is None:
-        return True
-    if isinstance(v, str) and v.strip() == "":
-        return True
-    if isinstance(v, (list, dict)) and len(v) == 0:
-        return True
-    return False
-
-
-def _get_value_len(value: Any) -> int:
-    """
-    获取值的长度。
-
-    - str/list/dict: 返回 len()
-    - int/float: 直接返回该数值（用于 messages.# 这种返回数量的场景）
-    - None: 返回 0
-    - 其他: 转为字符串后返回长度
-    """
-    if value is None:
-        return 0
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, (str, list, dict)):
-        return len(value)
-    return len(str(value))
+from ..ops import _get_value_len, _is_empty_value  # noqa: E402,F401  库层实现, 此处保留旧名
 
 
 def _infer_type(values: List[Any]) -> str:

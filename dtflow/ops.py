@@ -13,9 +13,10 @@ import statistics
 from collections import Counter, OrderedDict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .core import ListWrapper, unwrap
+from .core import DictWrapper, ListWrapper, unwrap
 from .expr import compile_in, compile_map, compile_value, compile_where
 from .streaming import StreamingTransformer
+from .utils.field_path import get_field_with_spec
 
 Row = Dict[str, Any]
 
@@ -303,6 +304,258 @@ def join_rows(
 
 
 # --------------------------------------------------------------------------- #
+# clean: 声明式的批量卫生 (CLI dt clean 与 pipeline clean 步骤共用)
+# --------------------------------------------------------------------------- #
+def _is_empty_value(v: Any) -> bool:
+    """None / 空白字符串 / 空 list / 空 dict 视为空"""
+    if v is None:
+        return True
+    if isinstance(v, str) and v.strip() == "":
+        return True
+    if isinstance(v, (list, dict)) and len(v) == 0:
+        return True
+    return False
+
+
+def _get_value_len(value: Any) -> int:
+    """str/list/dict 取 len; 数值直接当长度 (messages.# 这类); None 为 0"""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (str, list, dict)):
+        return len(value)
+    return len(str(value))
+
+
+def _rename_item(item: Row, rename_map: Dict[str, str]) -> Row:
+    """重命名字段，保持字段顺序"""
+    return {rename_map.get(k, k): v for k, v in item.items()}
+
+
+def _promote_fields(item: Row, promote_list: List[tuple]) -> Row:
+    """提升嵌套字段到顶层（始终添加字段，即使值为 None）"""
+    item = dict(item)
+    for src_path, dst_name in promote_list:
+        item[dst_name] = get_field_with_spec(item, src_path)
+    return item
+
+
+def _add_fields(item: Row, add_field_map: Dict[str, str]) -> Row:
+    item = dict(item)
+    item.update(add_field_map)
+    return item
+
+
+def _fill_empty(item: Row, fill_map: Dict[str, str]) -> Row:
+    """填充空值（字段不存在时也会添加）"""
+    item = dict(item)
+    for field, default in fill_map.items():
+        if field not in item or _is_empty_value(item[field]):
+            item[field] = default
+    return item
+
+
+def _reorder_item(item: Row, reorder_fields: List[str]) -> Row:
+    """按指定顺序重排字段，未列出的字段追加在后面"""
+    ordered = {}
+    for f in reorder_fields:
+        if f in item:
+            ordered[f] = item[f]
+    for k, v in item.items():
+        if k not in ordered:
+            ordered[k] = v
+    return ordered
+
+
+def clean_rows(
+    st: StreamingTransformer,
+    strip: bool = False,
+    empty_fields: Optional[List[str]] = None,
+    min_len_field: Optional[str] = None,
+    min_len_value: Optional[int] = None,
+    max_len_field: Optional[str] = None,
+    max_len_value: Optional[int] = None,
+    keep_set: Optional[set] = None,
+    drop_fields_set: Optional[set] = None,
+    rename_map: Optional[Dict[str, str]] = None,
+    promote_list: Optional[List[tuple]] = None,
+    add_field_map: Optional[Dict[str, str]] = None,
+    fill_map: Optional[Dict[str, str]] = None,
+    reorder_fields: Optional[List[str]] = None,
+    min_tokens_field: Optional[str] = None,
+    min_tokens_value: Optional[int] = None,
+    max_tokens_field: Optional[str] = None,
+    max_tokens_value: Optional[int] = None,
+    token_model: str = "cl100k_base",
+) -> StreamingTransformer:
+    """把清洗步骤按固定顺序挂到数据流上 (惰性):
+    strip → 过滤 (空值/长度/token) → promote → keep/drop → rename → add → fill → reorder。
+    """
+    _count_tokens = None
+    if min_tokens_field is not None or max_tokens_field is not None:
+        from .tokenizers import count_tokens as _count_tokens
+
+    def clean_filter(item: Row) -> bool:
+        if empty_fields is not None:
+            if len(empty_fields) == 0:
+                if any(_is_empty_value(v) for v in item.values()):
+                    return False
+            elif any(_is_empty_value(get_field_with_spec(item, f)) for f in empty_fields):
+                return False
+        if min_len_field is not None:
+            if _get_value_len(get_field_with_spec(item, min_len_field, default="")) < min_len_value:
+                return False
+        if max_len_field is not None:
+            if _get_value_len(get_field_with_spec(item, max_len_field, default="")) > max_len_value:
+                return False
+        if min_tokens_field is not None:
+            value = get_field_with_spec(item, min_tokens_field, default="")
+            if _count_tokens(str(value), model=token_model) < min_tokens_value:
+                return False
+        if max_tokens_field is not None:
+            value = get_field_with_spec(item, max_tokens_field, default="")
+            if _count_tokens(str(value), model=token_model) > max_tokens_value:
+                return False
+        return True
+
+    # strip 先做, 空值检测才准
+    if strip:
+        st = st.transform(
+            lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()}, raw=True
+        )
+    if (
+        empty_fields is not None
+        or min_len_field is not None
+        or max_len_field is not None
+        or min_tokens_field is not None
+        or max_tokens_field is not None
+    ):
+        st = st.filter(clean_filter, raw=True)
+    # promote 在 drop 之前, 否则父字段被删后无法提取
+    if promote_list is not None:
+        st = st.transform(lambda item: _promote_fields(item, promote_list), raw=True)
+    if keep_set is not None:
+        st = st.transform(lambda item: {k: v for k, v in item.items() if k in keep_set}, raw=True)
+    elif drop_fields_set is not None:
+        st = st.transform(
+            lambda item: {k: v for k, v in item.items() if k not in drop_fields_set}, raw=True
+        )
+    if rename_map is not None:
+        st = st.transform(lambda item: _rename_item(item, rename_map), raw=True)
+    if add_field_map is not None:
+        st = st.transform(lambda item: _add_fields(item, add_field_map), raw=True)
+    if fill_map is not None:
+        st = st.transform(lambda item: _fill_empty(item, fill_map), raw=True)
+    if reorder_fields is not None:
+        st = st.transform(lambda item: _reorder_item(item, reorder_fields), raw=True)
+    return st
+
+
+# --------------------------------------------------------------------------- #
+# transform / dedupe / split 核心 (CLI 与 pipeline 共用)
+# --------------------------------------------------------------------------- #
+def load_transform_config(config_path: str) -> Dict[str, Any]:
+    """动态加载 .dt/*.py 配置, 返回模块的公开名字 (含 transform 函数与 output)。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("dt_config", config_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {name: getattr(module, name) for name in dir(module) if not name.startswith("_")}
+
+
+def transform_rows(
+    st: StreamingTransformer,
+    preset: Optional[str] = None,
+    params: Optional[Dict[str, Any]] = None,
+    config: Optional[str] = None,
+    strict: bool = False,
+) -> StreamingTransformer:
+    """按预设 (preset + params) 或配置文件 (config 的 transform 函数) 逐行转换。"""
+    if preset:
+        from .presets import get_preset
+
+        func = get_preset(preset, **(params or {}))
+    elif config:
+        ns = load_transform_config(config)
+        if "transform" not in ns:
+            raise ValueError(f"配置文件未定义 transform 函数: {config}")
+        func = ns["transform"]
+    else:
+        raise ValueError("transform 需要指定 preset 或 config")
+    return st.transform(
+        lambda item: unwrap(func(DictWrapper(item))), raw=True, on_error=_on_error(strict)
+    )
+
+
+def dedupe_key(key: Optional[str]) -> Any:
+    """--key 'a,b' → ['a', 'b']; 单个 → 'a'; 空 → None (全量)"""
+    if not key:
+        return None
+    keys = [k.strip() for k in key.split(",")]
+    return keys[0] if len(keys) == 1 else keys
+
+
+def dedupe_rows(
+    st: StreamingTransformer, key: Optional[str] = None, similar: Optional[float] = None
+) -> StreamingTransformer:
+    """精确去重流式 (O(唯一键)); 相似度去重 (MinHash) 需全量。"""
+    if similar is None:
+        return st.dedupe(dedupe_key(key), raw=True)
+    if not key:
+        raise ValueError("相似度去重需要指定 key")
+    from .core import DataTransformer
+
+    rows = DataTransformer(st.collect()).dedupe_similar(key, threshold=similar).data
+    return _materialize(st, rows)
+
+
+def parse_ratio(ratio: Any) -> List[float]:
+    """ "0.8" → [0.8, 0.2]; "0.7,0.15,0.15" → 三段; 也接受数字 0.8 或 list。"""
+    if isinstance(ratio, (int, float)):
+        parts = [float(ratio)]
+    elif isinstance(ratio, (list, tuple)):
+        parts = [float(x) for x in ratio]
+    else:
+        parts = [float(x.strip()) for x in str(ratio).split(",")]
+    if len(parts) == 1:
+        if not (0 < parts[0] < 1):
+            raise ValueError(f"比例必须在 0-1 之间: {parts[0]}")
+        parts.append(round(1 - parts[0], 10))
+    if abs(sum(parts) - 1.0) > 1e-6:
+        raise ValueError(f"比例之和必须为 1.0，当前为 {sum(parts)}")
+    if any(p <= 0 for p in parts):
+        raise ValueError("每个比例都必须大于 0")
+    return parts
+
+
+def split_names(count: int) -> List[str]:
+    """二分 train/test; 三分 train/val/test; 更多追加 part4..."""
+    if count == 2:
+        return ["train", "test"]
+    names = ["train", "val", "test"]
+    for i in range(3, count):
+        names.append(f"part{i + 1}")
+    return names
+
+
+def split_rows(rows: List[Row], ratios: List[float], seed: Optional[int] = None) -> List[List[Row]]:
+    """打乱后按比例切成 len(ratios) 段 (最后一段吃掉取整余数)。"""
+    data = list(rows)
+    _random.Random(seed).shuffle(data)
+    total = len(data)
+    parts: List[List[Row]] = []
+    prev = 0
+    for r in ratios[:-1]:
+        cut = prev + int(total * r)
+        parts.append(data[prev:cut])
+        prev = cut
+    parts.append(data[prev:])
+    return parts
+
+
+# --------------------------------------------------------------------------- #
 # schema 推断: 给 agent "先了解全貌" 用
 # --------------------------------------------------------------------------- #
 _LOW_CARDINALITY = 10
@@ -394,5 +647,13 @@ __all__ = [
     "shuffle_rows",
     "group_rows",
     "join_rows",
+    "clean_rows",
+    "transform_rows",
+    "load_transform_config",
+    "dedupe_rows",
+    "dedupe_key",
+    "parse_ratio",
+    "split_names",
+    "split_rows",
     "infer_schema",
 ]

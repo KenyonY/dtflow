@@ -363,11 +363,7 @@ def _run_transform(
 
 
 def _load_config(config_path: Path) -> Dict[str, Any]:
-    """动态加载 Python 配置文件"""
-    import importlib.util
+    """动态加载 Python 配置文件 (实现在 ops.load_transform_config, pipeline 共用)"""
+    from ..ops import load_transform_config
 
-    spec = importlib.util.spec_from_file_location("dt_config", config_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    return {name: getattr(module, name) for name in dir(module) if not name.startswith("_")}
+    return load_transform_config(str(config_path))

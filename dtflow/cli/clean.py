@@ -7,9 +7,21 @@ from typing import Any, Dict, List, Optional
 from rich.markup import escape
 
 from ..core import DataTransformer
+from ..ops import (  # noqa: F401  测试与 _clean_data_single_pass 仍按旧名引用
+    _add_fields,
+    _fill_empty,
+    _get_value_len,
+    _is_empty_value,
+    _promote_fields,
+    _rename_item,
+    _reorder_item,
+    clean_rows,
+    dedupe_key,
+    dedupe_rows,
+)
 from ..streaming import StreamingTransformer
 from ..utils.field_path import get_field_with_spec
-from .common import _get_value_len, _is_empty_value, _parse_field_list
+from .common import _parse_field_list
 from .output import die, die_io_error, die_usage, emit_action, log
 from .pipe import input_label, open_input, resolve_output, write_output
 
@@ -84,7 +96,7 @@ def dedupe(
                     "missing_dependency", str(e), suggestion="pip install datasketch 或改用精确去重"
                 )
         else:
-            result = dt.dedupe(_dedupe_key(key)).data
+            result = dt.dedupe(dedupe_key(key)).data
         stats.update(
             input_rows=len(data), output_rows=len(result), removed_rows=len(data) - len(result)
         )
@@ -95,24 +107,13 @@ def dedupe(
             return
         st = StreamingTransformer(iter(result), st._source_path, total=len(result))
     else:
-        dedupe_key = _dedupe_key(key)
-        if dedupe_key is None:
-            log("🔑 全量精确去重")
-        else:
-            log(f"🔑 按字段精确去重: {escape(str(dedupe_key))}")
+        k = dedupe_key(key)
+        log("🔑 全量精确去重" if k is None else f"🔑 按字段精确去重: {escape(str(k))}")
         if st._total is not None:
             stats["input_rows"] = st._total
-        st = st.dedupe(dedupe_key, raw=True)
+        st = dedupe_rows(st, key)
 
     write_output(st, out, action="dedupe", inputs=[filename], stats=stats)
-
-
-def _dedupe_key(key: Optional[str]) -> Any:
-    """--key 'a,b' → ['a', 'b']; 单个 → 'a'; 空 → None (全量)"""
-    if not key:
-        return None
-    keys = [k.strip() for k in key.split(",")]
-    return keys[0] if len(keys) == 1 else keys
 
 
 def clean(
@@ -284,7 +285,7 @@ def clean(
         return
 
     log(f"📊 流式处理: {input_label(filename)}")
-    st = build_clean_stream(
+    st = clean_rows(
         st,
         strip=strip,
         empty_fields=empty_fields,
@@ -359,47 +360,6 @@ def _parse_kv_param(param: str, param_name: str) -> Dict[str, str]:
             raise ValueError(f"{param_name} 参数格式错误: {pair}，key 不能为空")
         kv_map[key] = value
     return kv_map
-
-
-def _rename_item(item: Dict, rename_map: Dict[str, str]) -> Dict:
-    """重命名字段，保持字段顺序"""
-    return {rename_map.get(k, k): v for k, v in item.items()}
-
-
-def _promote_fields(item: Dict, promote_list: List[tuple]) -> Dict:
-    """提升嵌套字段到顶层（始终添加字段，即使值为 None）"""
-    item = dict(item)
-    for src_path, dst_name in promote_list:
-        item[dst_name] = get_field_with_spec(item, src_path)
-    return item
-
-
-def _add_fields(item: Dict, add_field_map: Dict[str, str]) -> Dict:
-    """添加常量字段"""
-    item = dict(item)
-    item.update(add_field_map)
-    return item
-
-
-def _fill_empty(item: Dict, fill_map: Dict[str, str]) -> Dict:
-    """填充空值（字段不存在时也会添加）"""
-    item = dict(item)
-    for field, default in fill_map.items():
-        if field not in item or _is_empty_value(item[field]):
-            item[field] = default
-    return item
-
-
-def _reorder_item(item: Dict, reorder_fields: List[str]) -> Dict:
-    """按指定顺序重排字段，未列出的字段追加在后面"""
-    ordered = {}
-    for f in reorder_fields:
-        if f in item:
-            ordered[f] = item[f]
-    for k, v in item.items():
-        if k not in ordered:
-            ordered[k] = v
-    return ordered
 
 
 def _parse_len_param(param: str) -> tuple:
@@ -572,135 +532,3 @@ def _clean_data_single_pass(
         step_stats.append("reorder")
 
     return result, step_stats
-
-
-def build_clean_stream(
-    st: StreamingTransformer,
-    strip: bool = False,
-    empty_fields: Optional[List[str]] = None,
-    min_len_field: Optional[str] = None,
-    min_len_value: Optional[int] = None,
-    max_len_field: Optional[str] = None,
-    max_len_value: Optional[int] = None,
-    keep_set: Optional[set] = None,
-    drop_fields_set: Optional[set] = None,
-    rename_map: Optional[Dict[str, str]] = None,
-    promote_list: Optional[List[tuple]] = None,
-    add_field_map: Optional[Dict[str, str]] = None,
-    fill_map: Optional[Dict[str, str]] = None,
-    reorder_fields: Optional[List[str]] = None,
-    min_tokens_field: Optional[str] = None,
-    min_tokens_value: Optional[int] = None,
-    max_tokens_field: Optional[str] = None,
-    max_tokens_value: Optional[int] = None,
-    token_model: str = "cl100k_base",
-) -> int:
-    """把清洗步骤挂到数据流上 (惰性)。CLI 与 pipeline 共用。"""
-
-    # 延迟导入 count_tokens（仅在需要时）
-    _count_tokens = None
-    if min_tokens_field is not None or max_tokens_field is not None:
-        from ..tokenizers import count_tokens as _count_tokens
-
-    def clean_filter(item: Dict) -> bool:
-        """过滤函数：返回 True 保留，False 过滤（支持嵌套路径）"""
-        # 空值过滤
-        if empty_fields is not None:
-            if len(empty_fields) == 0:
-                if any(_is_empty_value(v) for v in item.values()):
-                    return False
-            else:
-                # 支持嵌套路径
-                if any(_is_empty_value(get_field_with_spec(item, f)) for f in empty_fields):
-                    return False
-
-        # 最小长度过滤（支持嵌套路径）
-        if min_len_field is not None:
-            if _get_value_len(get_field_with_spec(item, min_len_field, default="")) < min_len_value:
-                return False
-
-        # 最大长度过滤（支持嵌套路径）
-        if max_len_field is not None:
-            if _get_value_len(get_field_with_spec(item, max_len_field, default="")) > max_len_value:
-                return False
-
-        # 最小 token 数过滤
-        if min_tokens_field is not None:
-            value = get_field_with_spec(item, min_tokens_field, default="")
-            if _count_tokens(str(value), model=token_model) < min_tokens_value:
-                return False
-
-        # 最大 token 数过滤
-        if max_tokens_field is not None:
-            value = get_field_with_spec(item, max_tokens_field, default="")
-            if _count_tokens(str(value), model=token_model) > max_tokens_value:
-                return False
-
-        return True
-
-    def clean_transform(item: Dict) -> Dict:
-        """转换函数：strip + 字段管理"""
-        # strip 处理
-        if strip:
-            item = {k: v.strip() if isinstance(v, str) else v for k, v in item.items()}
-
-        # 字段管理
-        if keep_set is not None:
-            item = {k: v for k, v in item.items() if k in keep_set}
-        elif drop_fields_set is not None:
-            item = {k: v for k, v in item.items() if k not in drop_fields_set}
-
-        return item
-
-    # 以下所有 transform/filter 均使用 raw=True，因为清洗函数直接操作原始 dict
-
-    # 如果需要 strip，先执行 strip 转换（在过滤之前，这样空值检测更准确）
-    if strip:
-        st = st.transform(
-            lambda x: {k: v.strip() if isinstance(v, str) else v for k, v in x.items()},
-            raw=True,
-        )
-
-    # 执行过滤
-    if (
-        empty_fields is not None
-        or min_len_field is not None
-        or max_len_field is not None
-        or min_tokens_field is not None
-        or max_tokens_field is not None
-    ):
-        st = st.filter(clean_filter, raw=True)
-
-    # 提升嵌套字段（在 drop 之前，否则父字段被删后无法提取）
-    if promote_list is not None:
-        st = st.transform(lambda item: _promote_fields(item, promote_list), raw=True)
-
-    # 执行字段管理（keep/drop）
-    if keep_set is not None or drop_fields_set is not None:
-
-        def field_transform(item):
-            if keep_set is not None:
-                return {k: v for k, v in item.items() if k in keep_set}
-            elif drop_fields_set is not None:
-                return {k: v for k, v in item.items() if k not in drop_fields_set}
-            return item
-
-        st = st.transform(field_transform, raw=True)
-
-    # 执行字段重命名
-    if rename_map is not None:
-        st = st.transform(lambda item: _rename_item(item, rename_map), raw=True)
-
-    # 添加常量字段
-    if add_field_map is not None:
-        st = st.transform(lambda item: _add_fields(item, add_field_map), raw=True)
-
-    # 填充空值
-    if fill_map is not None:
-        st = st.transform(lambda item: _fill_empty(item, fill_map), raw=True)
-
-    # 字段排序（最后执行）
-    if reorder_fields is not None:
-        st = st.transform(lambda item: _reorder_item(item, reorder_fields), raw=True)
-
-    return st

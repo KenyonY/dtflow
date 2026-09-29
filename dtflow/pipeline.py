@@ -1,149 +1,298 @@
 """
-Pipeline 配置模块
+Pipeline: 用 YAML 把一串 dt 命令固化下来, 可复现地执行。
 
-支持将数据处理流程导出为 YAML 配置，实现可复现的数据处理。
+step 的 type 就是 CLI 命令名, 参数就是 CLI 选项名 (下划线形式), 一套语法两处用:
+
+    version: "1.0"
+    input: data.jsonl
+    output: out.jsonl
+    steps:
+      - type: filter
+        expr: "x.score > 0.5 and len(x.messages) >= 2"
+      - type: select
+        fields: "id,text,n=len(x.messages)"
+      - type: clean
+        strip: true
+        drop_empty: "text"
+      - type: dedupe
+        key: text
+      - type: transform
+        preset: openai_chat
+        params: {user_field: q, assistant_field: a}
+      - type: split          # 只能是最后一步: 按 output 派生 out_train.jsonl / out_test.jsonl
+        ratio: 0.9
+        seed: 42
+
+执行载体是 StreamingTransformer, 能惰性的步骤不落内存。
 """
 
-import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .core import DataTransformer
-from .presets import PRESETS, get_preset
+from . import ops
+from .expr import ExprSyntaxError, check_syntax
 from .storage.io import load_data
-
-# ============ Pipeline 配置格式 ============
+from .streaming import StreamingTransformer, open_stream
 
 PIPELINE_VERSION = "1.0"
 
 
 def _load_yaml(filepath: str) -> Dict[str, Any]:
-    """加载 YAML 配置文件"""
     try:
         import yaml
     except ImportError:
         raise ImportError("需要安装 PyYAML: pip install pyyaml") from None
-
     with open(filepath, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def _save_yaml(data: Dict[str, Any], filepath: str) -> None:
-    """保存 YAML 配置文件"""
     try:
         import yaml
     except ImportError:
         raise ImportError("需要安装 PyYAML: pip install pyyaml") from None
-
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
-# ============ 步骤执行器 ============
+# ============ 步骤执行器: (st, step) -> st ============
 
 
-def _execute_filter(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """
-    执行 filter 步骤: ``expr`` 为 Python 表达式, 当前行为 x (与 CLI --where 同一套语法)。
-
-        - type: filter
-          expr: "x.score > 0.5 and len(x.text) > 10"
-    """
-    from .expr import compile_where
-
-    expr = step.get("expr")
-    if not expr:
-        raise ValueError("filter 步骤需要指定 expr")
-    return dt.filter(compile_where(expr), raw=True)
+def _norm_step(step: Any) -> Any:
+    """YAML 1.1 把裸 ``on:`` 解析成布尔 True; join 的 on 是最自然的写法, 不能让用户去加引号。"""
+    if isinstance(step, dict) and True in step:
+        step = dict(step)
+        step["on"] = step.pop(True)
+    return step
 
 
-def _execute_transform(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """执行 transform 步骤"""
-    preset = step.get("preset")
-    params = step.get("params", {})
-
-    if not preset:
-        raise ValueError("transform 步骤需要指定 preset")
-
-    if preset not in PRESETS:
-        available = ", ".join(PRESETS.keys())
-        raise ValueError(f"未知预设: {preset}。可用预设: {available}")
-
-    transform_func = get_preset(preset, **params)
-    return dt.transform(transform_func)
+def _need(step: Dict[str, Any], key: str) -> Any:
+    v = step.get(key)
+    if v in (None, ""):
+        raise ValueError(f"{step.get('type')} 步骤需要指定 {key}")
+    return v
 
 
-def _execute_dedupe(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """执行 dedupe 步骤"""
+def _s_filter(st, step):
+    return ops.filter_rows(st, str(_need(step, "expr")), bool(step.get("strict")))
+
+
+def _s_map(st, step):
+    return ops.map_rows(st, str(_need(step, "code")), bool(step.get("strict")))
+
+
+def _s_select(st, step):
+    return ops.select_rows(st, str(_need(step, "fields")), bool(step.get("strict")))
+
+
+def _s_explode(st, step):
+    return ops.explode_rows(st, _need(step, "field"), step.get("as"), step.get("index_as"))
+
+
+def _s_sort(st, step):
+    return ops.sort_rows(
+        st, str(_need(step, "by")), bool(step.get("desc")), bool(step.get("strict"))
+    )
+
+
+def _s_shuffle(st, step):
+    return ops.shuffle_rows(st, step.get("seed"))
+
+
+def _s_group(st, step):
+    return ops.group_rows(st, str(_need(step, "by")), step.get("agg"), bool(step.get("strict")))
+
+
+def _s_join(st, step):
+    right = _need(step, "right")
+    if not (step.get("on") or (step.get("left_on") and step.get("right_on"))):
+        raise ValueError("join 步骤需要 on, 或同时给 left_on 与 right_on")
+    st, _dup = ops.join_rows(
+        st,
+        load_data(right),
+        step.get("on"),
+        step.get("left_on"),
+        step.get("right_on"),
+        bool(step.get("inner")),
+        step.get("prefix"),
+    )
+    return st
+
+
+def _s_dedupe(st, step):
     key = step.get("key")
-    similar = step.get("similar")
-
-    if similar is not None:
-        if not key:
-            raise ValueError("相似度去重需要指定 key")
-        return dt.dedupe_similar(key, threshold=similar)
-
-    # 精确去重
-    if key:
-        # 支持逗号分隔的多字段
-        if isinstance(key, str) and "," in key:
-            key = [k.strip() for k in key.split(",")]
-    return dt.dedupe(key)
+    if isinstance(key, list):
+        key = ",".join(key)
+    return ops.dedupe_rows(st, key, step.get("similar"))
 
 
-def _execute_sample(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """执行 sample 步骤"""
-    num = step.get("num", 10)
-    seed = step.get("seed")
-    return dt.sample(num, seed=seed)
+def _s_sample(st, step):
+    return st.sample(int(step.get("num", 10)), seed=step.get("seed"))
 
 
-def _execute_head(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """执行 head 步骤"""
-    num = step.get("num", 10)
-    return dt.head(num)
+def _s_head(st, step):
+    return st.head(int(step.get("num", 10)))
 
 
-def _execute_tail(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """执行 tail 步骤"""
-    num = step.get("num", 10)
-    return dt.tail(num)
+def _s_tail(st, step):
+    return st.tail(int(step.get("num", 10)))
 
 
-def _execute_shuffle(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """执行 shuffle 步骤"""
-    seed = step.get("seed")
-    return dt.shuffle(seed=seed)
+def _s_transform(st, step):
+    if not (step.get("preset") or step.get("config")):
+        raise ValueError("transform 步骤需要指定 preset 或 config")
+    return ops.transform_rows(
+        st,
+        step.get("preset"),
+        step.get("params") or {},
+        step.get("config"),
+        bool(step.get("strict")),
+    )
 
 
-def _execute_split(dt: DataTransformer, step: Dict[str, Any]) -> DataTransformer:
-    """
-    执行 split 步骤。
-
-    注意：split 会产生两个输出，这里只返回第一个（train），
-    第二个（test）会在 run_pipeline 中特殊处理。
-    """
-    ratio = step.get("ratio", 0.8)
-    seed = step.get("seed")
-    train, _ = dt.split(ratio=ratio, seed=seed)
-    return train
+def _csv(v: Any) -> Optional[List[str]]:
+    if v is None:
+        return None
+    if isinstance(v, list):
+        return [str(x) for x in v]
+    return [x.strip() for x in str(v).split(",") if x.strip()]
 
 
-# 步骤执行器映射
+def _field_n(v: Any) -> tuple:
+    """ "text:10" → ("text", 10)"""
+    if v is None:
+        return None, None
+    field, _, n = str(v).partition(":")
+    if not n:
+        raise ValueError(f"应为 字段:数量, 得到 {v!r}")
+    return field.strip(), int(n)
+
+
+def _s_clean(st, step):
+    """参数名 = dt clean 的选项名 (下划线)。"""
+    min_len_f, min_len_v = _field_n(step.get("min_len"))
+    max_len_f, max_len_v = _field_n(step.get("max_len"))
+    min_tok_f, min_tok_v = _field_n(step.get("min_tokens"))
+    max_tok_f, max_tok_v = _field_n(step.get("max_tokens"))
+    drop_empty = step.get("drop_empty")
+    if drop_empty is True:
+        empty_fields: Optional[List[str]] = []
+    else:
+        empty_fields = _csv(drop_empty)
+    rename = step.get("rename")
+    promote = step.get("promote")
+    keep = _csv(step.get("keep"))
+    drop = _csv(step.get("drop"))
+    return ops.clean_rows(
+        st,
+        strip=bool(step.get("strip")),
+        empty_fields=empty_fields,
+        min_len_field=min_len_f,
+        min_len_value=min_len_v,
+        max_len_field=max_len_f,
+        max_len_value=max_len_v,
+        keep_set=set(keep) if keep else None,
+        drop_fields_set=set(drop) if drop else None,
+        rename_map=rename if isinstance(rename, dict) else _kv(rename),
+        promote_list=_promote(promote),
+        add_field_map=step.get("add_field")
+        if isinstance(step.get("add_field"), dict)
+        else _kv(step.get("add_field")),
+        fill_map=step.get("fill") if isinstance(step.get("fill"), dict) else _kv(step.get("fill")),
+        reorder_fields=_csv(step.get("reorder")),
+        min_tokens_field=min_tok_f,
+        min_tokens_value=min_tok_v,
+        max_tokens_field=max_tok_f,
+        max_tokens_value=max_tok_v,
+        token_model=str(step.get("model", "cl100k_base")),
+    )
+
+
+def _kv(v: Any) -> Optional[Dict[str, str]]:
+    """ "a:b,c:d" → {"a": "b", "c": "d"}"""
+    if v is None:
+        return None
+    out = {}
+    for pair in str(v).split(","):
+        k, sep, val = pair.partition(":")
+        if not sep or not k.strip():
+            raise ValueError(f"应为 key:value, 得到 {pair!r}")
+        out[k.strip()] = val.strip()
+    return out
+
+
+def _promote(v: Any) -> Optional[List[tuple]]:
+    if v is None:
+        return None
+    items = v if isinstance(v, list) else str(v).split(",")
+    out = []
+    for item in items:
+        src, sep, dst = str(item).strip().partition(":")
+        if not sep:
+            dst = src.rsplit(".", 1)[-1]
+        out.append((src.strip(), dst.strip()))
+    return out
+
+
 STEP_EXECUTORS = {
-    "filter": _execute_filter,
-    "transform": _execute_transform,
-    "dedupe": _execute_dedupe,
-    "sample": _execute_sample,
-    "head": _execute_head,
-    "tail": _execute_tail,
-    "shuffle": _execute_shuffle,
-    "split": _execute_split,
+    "filter": _s_filter,
+    "map": _s_map,
+    "select": _s_select,
+    "explode": _s_explode,
+    "sort": _s_sort,
+    "shuffle": _s_shuffle,
+    "group": _s_group,
+    "join": _s_join,
+    "dedupe": _s_dedupe,
+    "sample": _s_sample,
+    "head": _s_head,
+    "tail": _s_tail,
+    "clean": _s_clean,
+    "transform": _s_transform,
 }
+TERMINAL_STEPS = {"split"}  # 产出多个文件, 只能在最后
 
 
-# ============ Pipeline 执行器 ============
+# ============ 构建 / 执行 ============
+
+
+def _check_steps(steps: List[Dict[str, Any]]) -> None:
+    for i, step in enumerate(steps, 1):
+        if not isinstance(step, dict) or not step.get("type"):
+            raise ValueError(f"步骤 {i} 未指定 type")
+        t = step["type"]
+        if t in TERMINAL_STEPS:
+            if i != len(steps):
+                raise ValueError(f"步骤 {i}: {t} 只能是最后一步")
+        elif t not in STEP_EXECUTORS:
+            available = ", ".join([*STEP_EXECUTORS, *TERMINAL_STEPS])
+            raise ValueError(f"未知步骤类型: {t}。可用类型: {available}")
+
+
+def build_pipeline(
+    config: Dict[str, Any], input_path: str, verbose: bool = False
+) -> StreamingTransformer:
+    """把配置里全部非终态步骤挂到输入流上 (惰性), 返回数据流。"""
+    steps = [_norm_step(s) for s in (config.get("steps", []) or [])]
+    _check_steps(steps)
+    if verbose:
+        print(f"📂 加载数据: {input_path}")
+    st = open_stream(input_path)
+    for i, step in enumerate(steps, 1):
+        if step["type"] in TERMINAL_STEPS:
+            break
+        if verbose:
+            print(f"🔄 步骤 {i}: {_format_step_description(step)}")
+        st = STEP_EXECUTORS[step["type"]](st, step)
+    return st
+
+
+def _split_paths(output_path: str, names: List[str]) -> List[str]:
+    p = Path(output_path)
+    suffixes = "".join(p.suffixes)
+    stem = p.name[: -len(suffixes)] if suffixes else p.name
+    return [str(p.parent / f"{stem}_{n}{suffixes or '.jsonl'}") for n in names]
 
 
 def run_pipeline(
@@ -151,116 +300,60 @@ def run_pipeline(
     input_file: Optional[str] = None,
     output_file: Optional[str] = None,
     verbose: bool = True,
-) -> DataTransformer:
+) -> Dict[str, Any]:
     """
-    执行 Pipeline 配置文件。
-
-    Args:
-        config_path: YAML 配置文件路径
-        input_file: 输入文件路径（覆盖配置中的 input）
-        output_file: 输出文件路径（覆盖配置中的 output）
-        verbose: 是否打印执行过程
+    执行 Pipeline 配置文件并落盘。
 
     Returns:
-        处理后的 DataTransformer
+        {"output": path, "rows": n}; 以 split 结尾时 {"splits": [{"name","path","rows"}], "rows": n}
 
     Examples:
         >>> run_pipeline("pipeline.yaml")
-        >>> run_pipeline("pipeline.yaml", input_file="new_data.jsonl")
+        >>> run_pipeline("pipeline.yaml", input_file="new_data.jsonl", output_file="out.jsonl")
     """
-    # 加载配置
     config = _load_yaml(config_path)
+    version = config.get("version", PIPELINE_VERSION)
+    if version != PIPELINE_VERSION and verbose:
+        print(f"⚠ 配置版本 {version} 与当前版本 {PIPELINE_VERSION} 不一致")
 
-    # 验证版本
-    version = config.get("version", "1.0")
-    if version != PIPELINE_VERSION:
-        if verbose:
-            print(f"⚠ 配置版本 {version} 与当前版本 {PIPELINE_VERSION} 不一致")
-
-    # 设置全局随机种子
-    seed = config.get("seed")
-    if seed is not None:
-        random.seed(seed)
-        if verbose:
-            print(f"🎲 设置随机种子: {seed}")
-
-    # 确定输入文件
     input_path = input_file or config.get("input")
     if not input_path:
         raise ValueError("未指定输入文件，请在配置中设置 input 或使用 --input 参数")
-
-    # 加载数据
-    if verbose:
-        print(f"📂 加载数据: {input_path}")
-    dt = DataTransformer.load(input_path)
-    if verbose:
-        print(f"   共 {len(dt)} 条数据")
-
-    # 执行步骤
-    steps = config.get("steps", [])
-    for i, step in enumerate(steps, 1):
-        step_type = step.get("type")
-        if not step_type:
-            raise ValueError(f"步骤 {i} 未指定 type")
-
-        if step_type not in STEP_EXECUTORS:
-            available = ", ".join(STEP_EXECUTORS.keys())
-            raise ValueError(f"未知步骤类型: {step_type}。可用类型: {available}")
-
-        if verbose:
-            step_desc = _format_step_description(step)
-            print(f"🔄 步骤 {i}: {step_desc}")
-
-        before_count = len(dt)
-        dt = STEP_EXECUTORS[step_type](dt, step)
-        after_count = len(dt)
-
-        if verbose and before_count != after_count:
-            print(f"   {before_count} → {after_count} 条")
-
-    # 保存结果
     output_path = output_file or config.get("output")
-    if output_path:
-        if verbose:
-            print(f"💾 保存结果: {output_path}")
-        dt.save(output_path)
-        if verbose:
-            print(f"\n✅ 完成! 共 {len(dt)} 条数据")
+    if not output_path:
+        raise ValueError("未指定输出文件，请在配置中设置 output 或使用 --output 参数")
 
-    return dt
+    st = build_pipeline(config, str(input_path), verbose=verbose)
+    steps = config.get("steps", []) or []
+    last = steps[-1] if steps else None
+    if last and last.get("type") == "split":
+        ratios = ops.parse_ratio(last.get("ratio", 0.8))
+        names = ops.split_names(len(ratios))
+        parts = ops.split_rows(st.collect(), ratios, last.get("seed", config.get("seed")))
+        paths = _split_paths(str(output_path), names)
+        splits = []
+        for name, part, path in zip(names, parts, paths, strict=False):
+            StreamingTransformer(iter(part), None, total=len(part)).save(path, show_progress=False)
+            splits.append({"name": name, "path": path, "rows": len(part)})
+            if verbose:
+                print(f"💾 {name}: {len(part)} 条 -> {path}")
+        return {"splits": splits, "rows": sum(len(p) for p in parts)}
+
+    if verbose:
+        print(f"💾 保存结果: {output_path}")
+    n = st.save(str(output_path), show_progress=verbose)
+    if verbose:
+        print(f"✅ 完成! 共 {n} 条数据")
+    return {"output": str(output_path), "rows": n}
 
 
 def _format_step_description(step: Dict[str, Any]) -> str:
-    """格式化步骤描述"""
-    step_type = step.get("type", "")
-
-    if step_type == "filter":
-        return f"filter ({step.get('expr')})"
-    elif step_type == "transform":
-        preset = step.get("preset", "")
-        return f"transform ({preset})"
-    elif step_type == "dedupe":
-        key = step.get("key", "全量")
-        similar = step.get("similar")
-        if similar:
-            return f"dedupe ({key}, 相似度={similar})"
-        return f"dedupe ({key})"
-    elif step_type == "sample":
-        num = step.get("num", 10)
-        return f"sample ({num})"
-    elif step_type in ("head", "tail"):
-        num = step.get("num", 10)
-        return f"{step_type} ({num})"
-    elif step_type == "shuffle":
-        return "shuffle"
-    elif step_type == "split":
-        ratio = step.get("ratio", 0.8)
-        return f"split (ratio={ratio})"
-    else:
-        return step_type
+    """ "filter (expr=x.a > 1)" 这种通用形态: 参数即 CLI 选项, 不必每种步骤各写一遍。"""
+    params = ", ".join(f"{k}={v}" for k, v in step.items() if k != "type")
+    return f"{step.get('type', '')} ({params})" if params else str(step.get("type", ""))
 
 
-# ============ Pipeline 模板生成 ============
+# ============ 模板 / 校验 ============
 
 
 def generate_pipeline_template(
@@ -268,51 +361,23 @@ def generate_pipeline_template(
     output_file: str = "pipeline.yaml",
     preset: Optional[str] = None,
 ) -> str:
-    """
-    生成 Pipeline 配置模板。
-
-    Args:
-        input_file: 输入文件路径
-        output_file: 配置文件输出路径
-
-    Returns:
-        生成的配置文件路径
-    """
-    # 分析输入数据
+    """根据输入数据的字段生成一份可跑的 Pipeline 配置模板。"""
     data = load_data(input_file)
     if not data:
         raise ValueError("输入文件为空")
+    fields = list(data[0].keys())
 
-    sample = data[0]
-    fields = list(sample.keys())
-
-    # 构建配置
-    config = {
+    config: Dict[str, Any] = {
         "version": PIPELINE_VERSION,
         "seed": 42,
         "input": input_file,
         "output": Path(input_file).stem + "_output.jsonl",
         "steps": [],
     }
-
-    # 添加示例步骤
     if preset:
-        config["steps"].append(
-            {
-                "type": "transform",
-                "preset": preset,
-            }
-        )
+        config["steps"].append({"type": "transform", "preset": preset})
     else:
-        # 根据字段推断可能的步骤
-        config["steps"].append(
-            {
-                "type": "filter",
-                "expr": f"len(x.{fields[0]}) > 0",
-            }
-        )
-
-        # 如果有 messages 或 q/a 字段，添加 transform 步骤
+        config["steps"].append({"type": "filter", "expr": f"x.{fields[0]}"})
         if "messages" in fields:
             pass  # 已经是 messages 格式
         elif "q" in fields and "a" in fields:
@@ -324,74 +389,74 @@ def generate_pipeline_template(
                 }
             )
         elif "instruction" in fields and "output" in fields:
-            config["steps"].append(
-                {
-                    "type": "transform",
-                    "preset": "alpaca",
-                }
-            )
+            config["steps"].append({"type": "transform", "preset": "alpaca"})
+        config["steps"].append({"type": "dedupe", "key": fields[0] if fields else None})
 
-        # 添加去重步骤
-        config["steps"].append(
-            {
-                "type": "dedupe",
-                "key": fields[0] if fields else None,
-            }
-        )
-
-    # 保存配置
     _save_yaml(config, output_file)
-
     return output_file
 
 
+_REQUIRED = {
+    "filter": ("expr",),
+    "map": ("code",),
+    "select": ("fields",),
+    "explode": ("field",),
+    "sort": ("by",),
+    "group": ("by",),
+    "join": ("right",),
+}
+_EXPR_KEYS = {"filter": "expr", "sort": "by", "group": "by", "select": None, "map": None}
+
+
 def validate_pipeline(config_path: str) -> List[str]:
-    """
-    验证 Pipeline 配置文件。
-
-    Args:
-        config_path: 配置文件路径
-
-    Returns:
-        错误列表，空列表表示验证通过
-    """
-    errors = []
-
+    """校验配置: 步骤类型、必填参数、表达式语法 (提前到执行前报错)。返回错误列表。"""
+    errors: List[str] = []
     try:
         config = _load_yaml(config_path)
     except Exception as e:
         return [f"无法解析配置文件: {e}"]
 
-    # 检查必需字段
     if "steps" not in config:
         errors.append("缺少 steps 字段")
-
-    # 检查步骤
-    steps = config.get("steps", [])
+    steps = [_norm_step(s) for s in (config.get("steps", []) or [])]
+    all_types = [*STEP_EXECUTORS, *TERMINAL_STEPS]
     for i, step in enumerate(steps, 1):
-        if "type" not in step:
+        if not isinstance(step, dict) or "type" not in step:
             errors.append(f"步骤 {i} 缺少 type 字段")
             continue
-
-        step_type = step["type"]
-        if step_type not in STEP_EXECUTORS:
-            available = ", ".join(STEP_EXECUTORS.keys())
-            errors.append(f"步骤 {i}: 未知类型 '{step_type}'，可用: {available}")
-
-        # 特定步骤的验证
-        if step_type == "transform" and "preset" not in step:
-            errors.append(f"步骤 {i}: transform 需要指定 preset")
-
-        if step_type == "filter":
-            expr = step.get("expr")
-            if not expr:
-                errors.append(f"步骤 {i}: filter 需要指定 expr (Python 表达式, 当前行为 x)")
-            else:
-                from .expr import ExprSyntaxError, check_syntax
-
-                try:
-                    check_syntax(str(expr))
-                except ExprSyntaxError as e:
-                    errors.append(f"步骤 {i}: filter expr {e}")
-
+        t = step["type"]
+        if t not in all_types:
+            errors.append(f"步骤 {i}: 未知类型 '{t}'，可用: {', '.join(all_types)}")
+            continue
+        if t in TERMINAL_STEPS and i != len(steps):
+            errors.append(f"步骤 {i}: {t} 只能是最后一步")
+        for key in _REQUIRED.get(t, ()):
+            if step.get(key) in (None, ""):
+                errors.append(f"步骤 {i}: {t} 需要指定 {key}")
+        if t == "transform" and not (step.get("preset") or step.get("config")):
+            errors.append(f"步骤 {i}: transform 需要指定 preset 或 config")
+        if t == "join" and not (step.get("on") or (step.get("left_on") and step.get("right_on"))):
+            errors.append(f"步骤 {i}: join 需要 on, 或同时给 left_on 与 right_on")
+        # 表达式语法
+        exprs = []
+        if t in ("filter", "sort", "group") and step.get(_EXPR_KEYS[t]):
+            exprs.append((str(step[_EXPR_KEYS[t]]), "eval"))
+        if t == "map" and step.get("code"):
+            exprs.append((str(step["code"]), "exec"))
+        if t == "join":
+            for k in ("on", "left_on", "right_on"):
+                if step.get(k):
+                    exprs.append((str(step[k]), "eval"))
+        for expr, mode in exprs:
+            try:
+                check_syntax(expr, mode)
+            except ExprSyntaxError as e:
+                errors.append(f"步骤 {i}: {t} {e}")
+        if t in ("select",) and step.get("fields"):
+            try:
+                for _name, e in ops.parse_spec(str(step["fields"])):
+                    if e:
+                        check_syntax(e)
+            except (ValueError, ExprSyntaxError) as e:
+                errors.append(f"步骤 {i}: select {e}")
     return errors

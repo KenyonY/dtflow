@@ -487,15 +487,23 @@ def transform(
 @app.command()
 def run(
     config: str = typer.Argument(..., help="Pipeline YAML 配置文件"),
-    input: Optional[str] = typer.Option(None, "--input", "-i", help="输入文件路径"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出文件路径"),
+    input: Optional[str] = typer.Option(
+        None, "--input", "-i", help="输入文件路径 (覆盖配置; - 为 stdin)"
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="输出文件路径 (覆盖配置; 都没有则写 stdout; split 结尾按它派生 _train/_test)",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="预演: 验证配置并打印步骤链 (退出码 10)"),
 ):
-    """执行 Pipeline 配置文件
+    """执行 Pipeline 配置文件 (step 的 type 即 CLI 命令名, 参数即选项名)
 
     示例:
         dt run pipeline.yaml
         dt run pipeline.yaml --input=data.jsonl --output=result.jsonl
+        cat data.jsonl | dt run pipeline.yaml -i - | dt head -
         dt run pipeline.yaml --dry-run
     """
     _run(config, input, output, dry_run=dry_run)

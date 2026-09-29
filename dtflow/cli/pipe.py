@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from ..storage.io import load_data
-from ..streaming import StreamingTransformer, _iter_jsonl, load_stream
-from .common import _check_file_format, _is_streaming_supported, _require_file_exists
+from ..streaming import StreamingTransformer, open_stream
+from .common import _check_file_format, _require_file_exists
 from .output import (
     die_io_error,
     emit_action,
@@ -46,18 +44,14 @@ def input_label(filename: str) -> str:
 
 def open_input(filename: str) -> StreamingTransformer:
     """``-`` → stdin NDJSON 流; 文件 → 存在/格式校验后, 流式格式 load_stream, 其余全量包成流。"""
-    if is_stdin(filename):
-        return StreamingTransformer(_iter_jsonl(sys.stdin.buffer, "<stdin>"), None, total=None)
-    path = Path(filename)
-    _require_file_exists(path)
-    _check_file_format(path)
+    if not is_stdin(filename):
+        path = Path(filename)
+        _require_file_exists(path)
+        _check_file_format(path)
     try:
-        if _is_streaming_supported(path):
-            return load_stream(str(path))
-        data = load_data(str(path))
+        return open_stream(filename)
     except Exception as e:
-        die_io_error(e, operation="读取", path=str(path))
-    return StreamingTransformer(iter(data), str(path), total=len(data))
+        die_io_error(e, operation="读取", path=input_label(filename))
 
 
 def load_rows(filename: str) -> List[Dict]:

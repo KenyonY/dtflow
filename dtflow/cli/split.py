@@ -3,55 +3,13 @@ CLI 数据集切分命令
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from rich.markup import escape
 
-from ..core import DataTransformer
+from ..ops import parse_ratio, split_names, split_rows
 from ..storage.io import save_data
 from .output import die_io_error, die_usage, emit_action, log
-
-
-def _parse_ratio(ratio_str: str) -> List[float]:
-    """
-    解析比例参数。
-
-    - "0.8" -> [0.8, 0.2]（二分）
-    - "0.8,0.1,0.1" -> [0.8, 0.1, 0.1]（三分）
-    """
-    parts = [float(x.strip()) for x in ratio_str.split(",")]
-
-    if len(parts) == 1:
-        if not (0 < parts[0] < 1):
-            raise ValueError(f"比例必须在 0-1 之间: {parts[0]}")
-        parts.append(round(1 - parts[0], 10))
-
-    total = sum(parts)
-    if abs(total - 1.0) > 1e-6:
-        raise ValueError(f"比例之和必须为 1.0，当前为 {total}")
-
-    if any(p <= 0 for p in parts):
-        raise ValueError("每个比例都必须大于 0")
-
-    return parts
-
-
-# 切分名称：二分用 train/test，三分及以上用 train/val/test/part4/part5...
-_SPLIT_NAMES_2 = ["train", "test"]
-_SPLIT_NAMES_3 = ["train", "val", "test"]
-
-
-def _get_split_names(count: int) -> List[str]:
-    """根据切分数量获取名称"""
-    if count == 2:
-        return _SPLIT_NAMES_2
-    elif count == 3:
-        return _SPLIT_NAMES_3
-    else:
-        names = ["train", "val", "test"]
-        for i in range(3, count):
-            names.append(f"part{i + 1}")
-        return names
 
 
 def split(
@@ -86,42 +44,22 @@ def split(
 
     # 解析比例
     try:
-        ratios = _parse_ratio(ratio)
+        ratios = parse_ratio(ratio)
     except ValueError as e:
         die_usage(
             str(e),
             suggestion="示例: --ratio=0.8 (二分) 或 --ratio=0.7,0.15,0.15 (三分)",
         )
-
-    split_names = _get_split_names(len(ratios))
+    names = split_names(len(ratios))
 
     # 加载数据
     log(f"[bold]📊 加载数据:[/bold] {input_label(filename)}")
-    dt = DataTransformer(load_rows(filename))
-
-    total = len(dt)
+    rows = load_rows(filename)
+    total = len(rows)
     log(f"   共 {total} 条数据")
-
-    # 打乱
-    shuffled = dt.shuffle(seed)
     if seed is not None:
         log(f"🎲 随机种子: {seed}")
-
-    # 计算切分点
-    data = shuffled.data
-    split_indices = []
-    acc = 0
-    for r in ratios[:-1]:
-        acc += int(total * r)
-        split_indices.append(acc)
-
-    # 切分数据
-    parts = []
-    prev = 0
-    for idx in split_indices:
-        parts.append(data[prev:idx])
-        prev = idx
-    parts.append(data[prev:])
+    parts = split_rows(rows, ratios, seed)
 
     # 确定输出目录
     if output:
@@ -140,11 +78,11 @@ def split(
 
     log(f"[bold]🔀 切分比例:[/bold] {' / '.join(f'{r:.0%}' for r in ratios)}")
     split_info = []
-    for i, (name, part) in enumerate(zip(split_names, parts, strict=False)):
-        output_path = output_dir / f"{stem}_{name}{ext}"
+    for i, (part_name, part) in enumerate(zip(names, parts, strict=False)):
+        output_path = output_dir / f"{stem}_{part_name}{ext}"
         split_info.append(
             {
-                "name": name,
+                "name": part_name,
                 "rows": len(part),
                 "ratio": ratios[i],
                 "path": str(output_path),
