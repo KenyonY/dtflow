@@ -1,14 +1,10 @@
+# 推 v* 标签时创建 GitHub Release。
+# 正文由 git-cliff 按 cliff.toml 从提交生成 (与 CHANGELOG.md 同源);
+# 不用 generate_release_notes: 它只统计合并的 PR, 本仓库直接 push 提交, 会生成空正文。
 on:
   push:
-#     Sequence of patterns matched against refs/tags
     tags:
-      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
-
-#on:
-#  push:
-#    branches-ignore:
-#      - '**'  # temporally disable this action
-
+      - 'v*'
 
 name: Create Release
 
@@ -16,23 +12,29 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     name: Create Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git-cliff 需要完整历史与上一个 tag
 
-      - name: Extract tag name
-        id: extract_tag
-        run: echo "TAG_NAME=$(echo ${GITHUB_REF#refs/tags/})" >> $GITHUB_ENV
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          GITHUB_REPO: ${{ github.repository }}
 
-      - name: Create Release and Generate Notes
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          name: 💫 Release ${{ env.TAG_NAME }}
+          name: 💫 Release ${{ github.ref_name }}
+          body: ${{ steps.git-cliff.outputs.content }}
           draft: false
           prerelease: false
-          generate_release_notes: true
