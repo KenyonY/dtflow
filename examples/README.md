@@ -16,6 +16,7 @@ Small, fully synthetic datasets in the formats `dt` understands, so every comman
 - 6 rows without a `score` field → `dt filter chat.jsonl "x.score > 0.9"` reports them on stderr, `--strict` fails on them
 - 5 rows whose last assistant turn is empty → `dt clean chat.jsonl --drop-empty='messages[-1].content'` or `dt validate chat.jsonl --preset=openai_chat`
 - 1 tool call whose `arguments` is not valid JSON (`chat-0024`) → shown in red by `dt view`
+- 4 agent traces with **parallel** tool calls (two `tool_calls` in one assistant message) → survive `dt transform --preset=sharegpt | dt transform - --preset=openai_chat` unchanged
 
 ## Try
 

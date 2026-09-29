@@ -465,7 +465,7 @@ def transform(
         None,
         "--preset",
         "-p",
-        help="目标格式: openai_chat|alpaca|sharegpt|dpo_pair|simple_qa; 自动识别输入 (messages/sharegpt/alpaca/dpo/q-a), 工具调用互转, 认不出的行跳过并汇总",
+        help="目标格式: openai_chat|alpaca|sharegpt|dpo_pair|simple_qa; 自动识别输入 (messages/sharegpt/alpaca/dpo/q-a, dpo_pair 除外), 工具调用互转, 认不出的行跳过并汇总",
         case_sensitive=False,
     ),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="配置文件路径"),

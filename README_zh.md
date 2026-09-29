@@ -154,7 +154,7 @@ dt run pipeline.yaml                            # 可复现 pipeline，step 即 
 from dtflow import DataTransformer, load_stream
 
 (DataTransformer.load("data.jsonl")
-    .filter(lambda x: x.score > 0.8 and len(x.messages) >= 2)
+    .filter(lambda x: x.score > 0.8)
     .transform(preset="openai_chat", user_field="q", assistant_field="a")
     .dedupe("messages[0].content")
     .save("train.jsonl"))

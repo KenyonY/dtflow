@@ -375,6 +375,18 @@ AGENT = [
         "350 USD is about 318.50 EUR at today's rate (0.91).",
         None,
     ),
+    # 并行工具调用: tool 为 [(name, args, result), ...], 一条 assistant 带多个 tool_calls, tool 消息按序回复
+    (
+        "北京和上海明天哪个更暖和？",
+        [
+            ("get_weather", {"city": "北京", "date": "tomorrow"}, '{"high":24,"low":15}'),
+            ("get_weather", {"city": "上海", "date": "tomorrow"}, '{"high":27,"low":20}'),
+        ],
+        None,
+        None,
+        "上海更暖和：明天上海 20-27℃，北京 15-24℃。",
+        "两个城市互不依赖，并行查询。",
+    ),
 ]
 
 
@@ -395,17 +407,20 @@ def _pool() -> List[Tuple[str, List[Turn]]]:
 
 def _agent_messages(rng: random.Random, i: int, spec, bad_json: bool = False) -> List[Dict]:
     q, tool, args, result, answer, reasoning = spec
-    call_id = f"call_{rng.randrange(10**8):08x}"
-    arguments = json.dumps(args, ensure_ascii=False)
-    if bad_json:
-        arguments = arguments[:-1]  # 缺右括号 → dt view 里参数标红
-    call: Dict = {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {"id": call_id, "type": "function", "function": {"name": tool, "arguments": arguments}}
-        ],
-    }
+    calls = (
+        tool if isinstance(tool, list) else [(tool, args, result)]
+    )  # 并行调用: 多个 (name, args, result)
+    tool_calls, tool_msgs = [], []
+    for name, a, res in calls:
+        call_id = f"call_{rng.randrange(10**8):08x}"
+        arguments = json.dumps(a, ensure_ascii=False)
+        if bad_json:
+            arguments = arguments[:-1]  # 缺右括号 → dt view 里参数标红
+        tool_calls.append(
+            {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+        )
+        tool_msgs.append({"role": "tool", "tool_call_id": call_id, "content": res})
+    call: Dict = {"role": "assistant", "content": "", "tool_calls": tool_calls}
     if reasoning:
         call["reasoning_content"] = reasoning
     return [
@@ -415,7 +430,7 @@ def _agent_messages(rng: random.Random, i: int, spec, bad_json: bool = False) ->
         },
         {"role": "user", "content": q},
         call,
-        {"role": "tool", "tool_call_id": call_id, "content": result},
+        *tool_msgs,
         {"role": "assistant", "content": answer},
     ]
 
