@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.0] - 2026-09-29
+
+### Bug Fixes
+
+- **output**: 终端模式的结构化错误也打印 context, 多行建议 (表达式+caret) 独占行
+- **qa**: 复验收尾: caret 缩进对齐、TTY 预览不再报误导性总数、字段列表逐项拦截 x.、进度条只在 stderr 为终端时显示
+- **qa**: 修复 QA 验收报出的契约/数据问题
+
+### Documentation
+
+- 表达式语法/管道化/数据原语同步 README、SKILL、docs、CLAUDE.md; 附迁移对照表; 版本 0.9.0
+
+### Features
+
+- **ops**: 数据原语 dt filter/select/map/explode/sort/shuffle/group/join + stats --schema
+- **cli**: 数据命令统一管道化: FILE 支持 -, 无 -o 写 stdout, clean/dedupe 改 -i
+- **io**: Jsonl/json 支持 .gz 透明读写
+- **expr**: 统一 Python 表达式引擎 dtflow/expr.py
+- **core**: DictWrapper 支持 list 元素属性访问与字段写穿; 新增 ListWrapper/unwrap
+
+### Refactor
+
+- **pipeline**: Step 类型 = CLI 命令名, 参数 = 选项名, 复用 dtflow.ops; split 作终态步骤
+- **where**: Sample/view/pipeline 的筛选语法统一为 Python 表达式
+
 ## [0.8.7] - 2026-09-29
 
 ### Bug Fixes
