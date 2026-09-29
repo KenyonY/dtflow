@@ -42,7 +42,7 @@ dt filter data.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant
 dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alpaca / dpo → OpenAI messages
 ```
 
-支持 JSONL/NDJSON（含 `.gz`）、JSON、CSV/TSV、Parquet、Arrow、Excel。所有数据命令 `FILE` 写 `-` 读 stdin，不加 `-o` 写 stdout，所以任意拼接。
+支持 JSONL/NDJSON（含 `.gz`）、JSON、CSV/TSV、Parquet、Arrow、Excel。所有数据命令 `FILE` 写 `-` 读 stdin，不加 `-o` 写 stdout，所以任意拼接。手头没数据？[`examples/`](examples/) 里有几份合成的 chat / ShareGPT / Alpaca / DPO 小文件可以直接试。
 
 ## 为什么是 dtflow
 

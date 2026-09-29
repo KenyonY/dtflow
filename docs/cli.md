@@ -87,8 +87,11 @@ Everything about the viewer: [view.md](view.md).
 
 ## Converting between training formats
 
+Presets detect the input shape (OpenAI `messages`, ShareGPT `conversations`, Alpaca, DPO, `q`/`a`) and convert to the target; tool calls survive the ShareGPT ↔ OpenAI round trip (`function_call`/`observation` ↔ `tool_calls`/`tool`). Rows of an unrecognised shape are skipped and summarised on stderr instead of producing empty content.
+
 ```bash
 dt transform data.jsonl --preset=openai_chat -o out.jsonl   # openai_chat | alpaca | sharegpt | dpo_pair | simple_qa
+dt transform sharegpt.jsonl --preset=openai_chat | dt view -
 dt transform data.jsonl --preset=alpaca | dt head -
 
 dt transform data.jsonl                    # config mode, first run writes .dt/data.py

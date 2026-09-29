@@ -459,7 +459,10 @@ def openai_chat_schema(
     Args:
         min_messages: 最少消息数（默认 1）
         max_messages: 最多消息数（默认不限）
-        roles: 允许的角色列表（默认 ["system", "user", "assistant"]）
+        roles: 允许的角色列表（默认 ["system", "user", "assistant", "tool"]）
+
+    每条消息还要过 _check_message: content 非空, 除非是带 tool_calls 的 assistant 消息;
+    tool 消息必须带 tool_call_id。这是 OpenAI 工具调用格式的真实形态, 不能把它判成无效。
 
     Returns:
         Schema 对象
@@ -469,7 +472,7 @@ def openai_chat_schema(
         >>> result = schema.validate({"messages": [{"role": "user", "content": "hi"}]})
     """
     if roles is None:
-        roles = ["system", "user", "assistant"]
+        roles = ["system", "user", "assistant", "tool"]
 
     fields = {
         "messages": Field(
@@ -478,11 +481,28 @@ def openai_chat_schema(
             min_length=min_messages,
             max_length=max_messages,
         ),
+        "messages[*]": Field(type="dict", required=True, custom=_check_message),
         "messages[*].role": Field(type="str", required=True, choices=roles),
-        "messages[*].content": Field(type="str", required=True, min_length=1),
     }
 
     return Schema(fields)
+
+
+def _check_message(m: Any) -> Union[bool, str]:
+    if not isinstance(m, dict):
+        return "消息必须是对象"
+    content = m.get("content")
+    if m.get("role") == "assistant" and m.get("tool_calls"):
+        return True  # 工具调用消息的 content 允许为空
+    if m.get("role") == "tool" and not m.get("tool_call_id"):
+        return "tool 消息缺少 tool_call_id"
+    if isinstance(content, list):
+        return True if content else "content 为空"
+    if not isinstance(content, str):
+        return "content 必须是字符串"
+    if not content:
+        return "content 为空"
+    return True
 
 
 def alpaca_schema(
@@ -535,6 +555,7 @@ def sharegpt_schema(
     min_conversations: int = 1,
     human_role: str = "human",
     gpt_role: str = "gpt",
+    extra_roles: Optional[List[str]] = None,
 ) -> Schema:
     """
     ShareGPT 多轮对话格式的 Schema
@@ -543,15 +564,18 @@ def sharegpt_schema(
         min_conversations: 最少对话轮数
         human_role: 用户角色名
         gpt_role: 助手角色名
+        extra_roles: 额外允许的 from 取值 (默认 ["system", "function_call", "observation"], 即工具调用形态)
 
     Returns:
         Schema 对象
     """
+    if extra_roles is None:
+        extra_roles = ["system", "function_call", "observation"]
     return Schema(
         {
             "conversations": Field(type="list", required=True, min_length=min_conversations),
             "conversations[*].from": Field(
-                type="str", required=True, choices=[human_role, gpt_role]
+                type="str", required=True, choices=[human_role, gpt_role, *extra_roles]
             ),
             "conversations[*].value": Field(type="str", required=True, min_length=1),
         }

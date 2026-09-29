@@ -70,9 +70,13 @@ Preset schemas: `openai_chat_schema`, `alpaca_schema`, `sharegpt_schema`, `dpo_s
 
 ```python
 dt.to(lambda x: {"question": x.q, "answer": x.a})           # custom, returns a new list
-dt.to(preset="openai_chat", user_field="q", assistant_field="a")
+dt.to(preset="openai_chat")                                 # preset; input shape is detected
+dt.to(preset="openai_chat", user_field="question", assistant_field="answer", system_prompt="...")
 dt.transform(func)                                          # same, returns a DataTransformer
+dt.transform(preset="alpaca")
 ```
+
+Presets detect what they are given: OpenAI `messages`, ShareGPT `conversations`, Alpaca `instruction`/`input`/`output`, DPO `prompt`/`chosen`, or a `q`/`a` pair (field names configurable, explicit names win). ShareGPT `function_call`/`observation` turns become `tool_calls`/`tool` messages and back. A row of unknown shape raises `ValueError`, which `to()` skips and reports by default (`on_error="raise"` to stop).
 
 | Preset | Output |
 |---------|---------|

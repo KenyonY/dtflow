@@ -171,16 +171,20 @@ class DataTransformer:
 
     def to(
         self,
-        func: Callable[[Any], Any],
+        func: Optional[Callable[[Any], Any]] = None,
         on_error: Literal["skip", "raise", "null"] = "skip",
         return_errors: bool = False,
         raw: bool = False,
+        *,
+        preset: Optional[str] = None,
+        **preset_kwargs: Any,
     ) -> Union[List[Any], Tuple[List[Any], List[TransformError]]]:
         """
         使用函数转换数据格式。
 
         Args:
-            func: 转换函数，参数支持属性访问 (item.field)
+            func: 转换函数，参数支持属性访问 (item.field); 也可用 preset= 指定预设
+            preset: 预设名 (openai_chat / alpaca / sharegpt / dpo_pair / simple_qa), 其余关键字参数透传给预设
             on_error: 错误处理策略
                 - "skip": 跳过错误行，打印警告（默认）
                 - "raise": 遇到错误立即抛出异常
@@ -209,6 +213,7 @@ class DataTransformer:
             >>> # 原始模式（性能优化，大数据集推荐）
             >>> dt.to(lambda x: {"q": x["q"]}, raw=True)
         """
+        func = _resolve_func(func, preset, preset_kwargs)
         results = []
         errors = []
 
@@ -241,9 +246,12 @@ class DataTransformer:
 
     def transform(
         self,
-        func: Callable[[Any], Any],
+        func: Optional[Callable[[Any], Any]] = None,
         on_error: Literal["skip", "raise", "null"] = "skip",
         raw: bool = False,
+        *,
+        preset: Optional[str] = None,
+        **preset_kwargs: Any,
     ) -> "DataTransformer":
         """
         转换数据并返回新的 DataTransformer（支持链式调用）。
@@ -259,6 +267,7 @@ class DataTransformer:
             >>> # 原始模式（大数据集推荐）
             >>> dt.transform(lambda x: {"q": x["q"]}, raw=True).save("output.jsonl")
         """
+        func = _resolve_func(func, preset, preset_kwargs)
         input_count = len(self._data)
         result = self.to(func, on_error=on_error, raw=raw)
         output_count = len(result)
@@ -1027,6 +1036,21 @@ class DataTransformer:
             dataset_name=dataset_name,
             **kwargs,
         )
+
+
+def _resolve_func(func, preset, preset_kwargs):
+    """func 与 preset 二选一; preset 走 presets.get_preset"""
+    if preset is not None:
+        if func is not None:
+            raise ValueError("func 与 preset 只能指定一个")
+        from .presets import get_preset
+
+        return get_preset(preset, **preset_kwargs)
+    if func is None:
+        raise ValueError("需要指定 func 或 preset")
+    if preset_kwargs:
+        raise ValueError(f"未知参数: {', '.join(preset_kwargs)} (只有 preset= 时才接受预设参数)")
+    return func
 
 
 def _sanitize_key(name: str) -> str:
