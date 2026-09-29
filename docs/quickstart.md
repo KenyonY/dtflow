@@ -63,11 +63,18 @@ dt head data.jsonl --num=10
 # 转换
 dt transform data.jsonl --preset=openai_chat
 
-# 去重
-dt dedupe data.jsonl --key=text
+# 筛选 / 投影 / 排序 / 分组 (表达式即 Python, 当前行 x; 可管道拼接)
+dt filter data.jsonl "x.score > 0.5 and len(x.messages) >= 2"
+dt select data.jsonl "id,text,n=len(x.messages)"
+dt filter data.jsonl "x.ok" | dt sort - --by x.score --desc | dt head - 5
+dt group data.jsonl --by x.meta.source
+dt stats data.jsonl --schema
+
+# 去重 (无 -o 写 stdout; -i 原地写回)
+dt dedupe data.jsonl --key=text -o deduped.jsonl
 
 # 清洗
-dt clean data.jsonl --drop-empty=text --min-len=text:10
+dt clean data.jsonl --drop-empty=text --min-len=text:10 -i
 
 # 统计
 dt stats data.jsonl

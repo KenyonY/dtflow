@@ -3,7 +3,8 @@ name: dtflow
 description: >
   处理结构化数据文件 (JSONL/NDJSON/JSON/CSV/TSV/Parquet/Arrow/Excel) 时使用此 skill。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
-  典型场景：数据预览/交互式浏览 (dt view，含全量搜索筛选排序/导出子集)/统计/清洗/去重/Schema 验证、格式转换
+  典型场景：数据预览/交互式浏览 (dt view，含全量搜索筛选排序/导出子集)/统计/清洗/去重/Schema 验证、
+  filter/select/map/sort/group/join 等数据原语 (Python 表达式, 可管道拼接)、格式转换
   (openai_chat/alpaca/sharegpt/dpo)、数据集切分、导出到训练框架
   (llama-factory/swift/axolotl)、Token 统计、大文件流式处理。
   不涉及 LLM 调用（LLM 调用用 flexllm）。
@@ -38,6 +39,7 @@ dt <cmd> --help          # 具体命令的参数/示例/退出码
 | **stdout** | 数据 (JSON/NDJSON/CSV/Table) | 被管道消费 |
 | **stderr** | 进度/警告/错误/动作摘要 | 人类阅读或日志 |
 | **退出码** | 任务状态 | **必须** 检查 |
+| **管道** | `FILE` 写 `-` 从 stdin 读 NDJSON；数据命令不加 `-o` 时数据写 stdout | `dt filter a.jsonl "..." \| dt select - "..." \| dt head -` |
 
 **退出码约定：**
 - `0` 成功
@@ -76,15 +78,51 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 
 **从"未知数据"到"训练文件"的路径：**
 
-1. **探结构** — `dt stats data.jsonl` 或 `dt head data.jsonl`，搞清字段类型和嵌套结构
-2. **探内容** — `dt stats --full --field=<key>` 看值分布；必要时用 `dt sample --where=...` 抽样
+1. **探结构** — `dt stats data.jsonl --schema`（嵌套类型/非空率/list 元素/低基数取值）或 `dt head data.jsonl`
+2. **探内容** — `dt group data.jsonl --by x.<key>` 看分布；`dt filter data.jsonl "<表达式>" | dt head -` 抽样看命中
 3. **小样本跑通** — 先在 100 条上验证转换逻辑，避免大文件反复
 4. **dry-run 预演** — `... --dry-run`，确认影响范围
 5. **大规模执行** — 去掉 `--dry-run`，看最终退出码
 
-**遇到字段嵌套问题：** dtflow 的字段路径 DSL 在所有命令中语义一致，见下表。
+**筛选/派生/排序/分组/连接一律写 Python 表达式**（见下节）；只"指定一个字段"的参数用字段路径 DSL。
 
-## 字段路径语法
+## 表达式语法（filter / select / map / sort / group / join / --where / pipeline 共用）
+
+表达式就是 Python，当前行叫 **`x`**（属性访问：`x.messages[-1].role`、`x.meta.source`；缺字段抛 AttributeError）。
+命名空间另有 `re` / `json` / `math`，以及 `get(x, "messages[*].role:join")` 通向字段路径 DSL。
+
+```bash
+dt filter d.jsonl "x.score > 0.8 and 'wiki' in x.meta.source"
+dt filter d.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'"
+dt filter d.jsonl "any('退款' in m.content for m in x.messages)"
+dt select d.jsonl "id,n=len(x.messages),last=x.messages[-1].content"     # 字面字段名 | 新名=表达式
+dt map    d.jsonl "x.text = x.text.strip(); del x.debug"                # 语句, 原地改 x
+dt sort   d.jsonl --by "(x.source, -x.score)"
+dt group  d.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"  # g=组内行列表, key, n
+dt join   d.jsonl meta.jsonl --on x.id --prefix m_
+```
+
+- 求值失败的行（缺字段、`None > 0.5`）默认**判不匹配/跳过并在 stderr 汇总一次**；`--strict` 首错即退出码 1
+- 语法错误退出码 2 并指出位置；`in` 区分大小写，不分大小写写 `.lower()`
+- 旧的 `字段 运算符 值` / `~=` 语法已删除：`category=tech` → `x.category=='tech'`，`messages.#>=2` → `len(x.messages)>=2`，`content~=词` → `'词' in x.content.lower()`
+
+## 数据原语与管道
+
+| 命令 | 作用 | 内存 |
+|------|------|------|
+| `filter FILE EXPR` | 保留表达式为真的行 | 流式 |
+| `select FILE SPEC` | 投影 / 重命名 / 派生（`id,text,n=len(x.m)`，输出键序=SPEC 序，字面字段缺失则省略） | 流式 |
+| `map FILE CODE` | 逐行执行语句原地修改 | 流式 |
+| `explode FILE --field F [--as NAME --index-as I]` | list 展开成多行 | 流式 |
+| `sort FILE --by EXPR [--desc]` | 排序，键求值失败的行排最后 | 全量 |
+| `shuffle FILE [--seed]` | 打乱 | 全量 |
+| `group FILE --by EXPR [--agg SPEC]` | 计数 `{"key","count"}` 降序 / 自定义聚合 | 计数流式 |
+| `join LEFT RIGHT --on EXPR [--inner --prefix P]` | 左连接（左表流式，右表入内存，左表字段优先） | 右表 |
+| `stats FILE --schema` | 嵌套 schema 推断 | 前 1000 行 |
+
+所有数据命令：`FILE` 可为 `-`；无 `-o` 写 stdout（终端直出只预览前 50 行）；`clean`/`dedupe` 用 `-i` 原地写回。`.jsonl.gz` 透明读写。
+
+## 字段路径语法（指定单个字段的参数用）
 
 | 语法 | 含义 | 示例 |
 |------|------|------|
@@ -93,7 +131,7 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 | `a.#` | 数组长度 | `messages.#` |
 | `a[*].b` | 展开所有元素 | `messages[*].role` |
 
-用于：`--key`、`--by`、`--field`、`--drop-empty`、`--where` 等等。
+用于：`--key`、`--by`（sample 分层）、`--field`、`--drop-empty`、`--min-len` 等；**不用于 `--where`**（那是表达式）。
 
 ## 交互式浏览 (dt view)
 
@@ -106,20 +144,20 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 - **实时追尾**：`dt view app.jsonl -f`（`--follow`） 从最新尾窗开始，只提交已换行的完整记录，并自动跟随日志轮转。上移光标后界面暂停并累计新行，`G` 回到最新处；全量搜索/筛选对固定高水位扫描后继续增量应用到新行。可用 `-100 -f` 把尾窗限为 100 行
 - **非等字段列头**：当前窗口的全部记录参与列发现，翻页/跳转时按首次出现顺序增量补列（不为 schema 预先 parse 全文件）；generic 的顶层对象/数组也算列。训练格式只默认展开前 8 个元数据列，其余仍在 `c` 列面板中，详情不因自动收起而缺字段
 - **管道模式** `... | dt view -`：从 stdin 读 NDJSON 全量入内存（流不可 seek），适合看处理结果的一小撮，如 `dt sample data.jsonl 500 | dt view -`（大文件仍用 `dt view file` 走窗口化）
-- **启动即带条件**：`--where=<表达式>`(可重复，多条为**与**关系)、`--search=<词>`、`--sort=[-]列名`；与 TUI 内按 `f`/`/`/`s` 完全同义（同一条扫描管线）。如 `dt view d.jsonl --where="turns>=6" --sort=-chars`
+- **启动即带条件**：`--where=<Python 表达式>`(可重复，多条为**与**关系)、`--search=<词>`、`--sort=[-]列名`；与 TUI 内按 `f`/`/`/`s` 完全同义（同一条扫描管线）。如 `dt view d.jsonl --where="turns>=6 and x.source=='a'" --sort=-chars`
 - **详情字段定位**：切样本时详情自动停在同名字段位置（字段绑定，非绝对像素）；对话**按条拆段**(`msg0`/`msg1`…)，`n`/`N` 因此是逐条消息导航（底部字段滚动条到不了时也可达），亦可鼠标点击选中；状态栏实时显示当前字段
 - **全量搜索/筛选/排序，三者可叠加**：`/` 搜索、`f` where、`F` 列值勾选、`s` 排序 —— 一律**扫描整个文件**(worker 线程，带进度，`Esc` 取消)，得到的全局行号序列即新浏览序列（翻窗口不失效）；状态栏显示「命中 M/N (占比%)」；`r` 清空全部。完整分布统计(直方图/分位数/value_counts)用 `dt stats`/`dt token-stats`
-  - 三类约束各占独立槽位：`/` 一个(新搜索覆盖旧的)、`f` **可反复叠加**(多条之间 and —— 用来表达无括号语法写不出的 `(a or b) and (c or d)`)、`F` 按列独立记「保留值集」故可反复调整/加回
-  - where 语法：`列名 运算符 值`，列名取**表头所见**（派生列 `chars`/`turns`/`roles` 按该列的值比较；元数据列/深层路径 `source`、`messages.#>=2` 当字段路径）。运算符 `> >= < <= == != =` 和 `~=`(包含, 不区分大小写; 要区分用 `==`)。单条内可 **`and`/`or` 组合**（and 优先级高于 or，不支持括号）
-  - **按内容包含**：`first_user~=退款`(派生列匹配全文，非表格里 160 字预览)、`calls~=get_weather`(调用过该函数的样本; `calls!=` 筛全部带工具调用的)、`source~=alpaca`、`messages[0].content~=报错`、`messages[*].content:join~=词`(搜整段对话，`:join` 不可省——不加时 `[*]` 只取第一个元素)
+  - 三类约束各占独立槽位：`/` 一个(新搜索覆盖旧的)、`f` **可反复叠加**(多条之间 and)、`F` 按列独立记「保留值集」故可反复调整/加回
+  - where 就是 **Python 表达式**（当前行 `x`）：表头上的**派生列名** `turns`/`chars`/`roles`/`first_user`/`calls` 可直接当变量用（原始类型：`turns` 是 int，`first_user` 是全文），其余字段走 `x.`：`turns>=6 and chars<2000`、`x.source=='alpaca'`、`len(x.messages)>=2`；`and`/`or`/`not`/括号随意
+  - **按内容包含**：`'退款' in first_user`(全文，非 160 字预览)、`'get_weather' in calls`(调用过该函数的样本; `calls` 非空即带工具调用)、`'报错' in x.messages[0].content`、`any('词' in m.content for m in x.messages)`(搜整段对话)。`in` 区分大小写，不分写 `.lower()`
   - `/` 搜的是**整条记录的每个值**（含 assistant 回复、后续轮次），不是表格列——表格列只是派生摘要，`first_user` 只是第一条用户消息。`re:` 前缀走正则，一律不分大小写。命中处在表格与详情里画**黄底**，`*` 只在含命中的字段间跳
   - `s` 排序是**全量**的：扫全文件产生排序后的序列，跨窗口有效（不是只排当前窗口）
-- **列值勾选筛选** `F` 或**点列头**（Excel AutoFilter 式）：全量列出该列唯一值+频次 → 勾选保留哪些（默认全不选）→ 子集。面板顶部搜索框按子串过滤候选值，有搜索词时「应用」= 只保留勾选∩匹配，匹配项全没勾 = 全部匹配项（「某列包含某子串」= 打字 → Enter 两步完成）；跨搜索词累积勾选：搜A全选→搜B全选→清空搜索词→应用 = A∪B。高基数列不受限（面板只渲染频次最高的 1000 项，搜索仍在全量值上过滤）；「列包含某子串」也可用 `f` 的 `列~=子串`（匹配全文而非 160 字预览）
+- **列值勾选筛选** `F` 或**点列头**（Excel AutoFilter 式）：全量列出该列唯一值+频次 → 勾选保留哪些（默认全不选）→ 子集。面板顶部搜索框按子串过滤候选值，有搜索词时「应用」= 只保留勾选∩匹配，匹配项全没勾 = 全部匹配项（「某列包含某子串」= 打字 → Enter 两步完成）；跨搜索词累积勾选：搜A全选→搜B全选→清空搜索词→应用 = A∪B。高基数列不受限（面板只渲染频次最高的 1000 项，搜索仍在全量值上过滤）；「列包含某子串」也可用 `f` 的 `'子串' in first_user`（匹配全文而非 160 字预览）
 - **拖拽列宽**：表头每列右侧 (含末列) 画有 `│` 分隔线，鼠标压上去变 `┃` 高亮 + 状态栏提示，按住左右拖即改该列宽度（Excel 式，拖动中实时重绘）；**双击分隔线**该列恢复自适应、让出的宽度回流给其它列。宽度记在**列名**上，翻窗口/改筛选/换可见列后仍保留；拖宽超出屏幕则横向滚动（`←/→`、`h/l`）。只点分隔线不拖不会误触发点列头的值筛选面板
 - **详情区鼠标拖选 + `Ctrl+c`**：在详情区里按住左键拖出高亮即选中任意文本（所见即所选，自动换行/中文宽字符处不错位），按 `Ctrl+c` 复制并清除选区；连击逐级放大：**双击取词**（id/字段值，`-`/`_` 算词内，中文按标点空格断）、三击整行、四击整个字段块、五击整屏详情，点一下或 `Esc` 清除。复制走 **OSC52 + 本地 wl-copy/xclip/xsel 双通道**（tmux/screen 自动 passthrough，SSH 下也到本机），通知里会说明用的哪条。表格区不参与（那里的拖拽是改列宽/选行），整条样本 JSON 用 `y`
 - **拖两区分界调大小**：表格与详情之间那两行边框（横排时是两列）即分界，鼠标压上去边框变亮 + 状态栏提示，按住拖到哪分界就到哪（按格连续），双击恢复默认 65:35；键盘 `+/-` 仍是 5% 一档，`z` 切左右/上下布局（默认左右）
 - **导出落地** `w`：把当前子集（或 `v` 选区）写成文件，按扩展名定格式（`.jsonl` 流式写，几十万行不占内存；其他格式走 `save_data` 分派）。**自动写血缘 sidecar**，`dt history <out>` 可查来源文件 + 当时全部条件。剪贴板(`y`/`v`)走 OSC52 有长度上限，几千条必须用 `w`
-- **可复现** `C`：把当前视图翻译回一条 `dt view ... --where=... --search=... --sort=...` 复制到剪贴板，粘回终端即还原（多列值筛选→多条 `--where`；含特殊字符的值无法安全嵌入时会明说，以血缘为准）
+- **可复现** `C`：把当前视图翻译回一条 `dt view ... --where=... --search=... --sort=...` 复制到剪贴板，粘回终端即还原（列值勾选→`str(x.get('col')) in (...)` 这类表达式；表格里被截断的值无法还原时会明说，以血缘为准）
 - **列快照** `S`：对当前浏览序列(子集或全量)的某列给一行 `n·min·max·mean·非空率`(即时决策用，非完整分布)
 - **坏行(非法 JSON)按路径区别对待**，三者都能定位到行：`dt view` 把坏行显示成占位行(`_parse_error`/`_raw_line` 两列，行号不错位，可用 `/` 搜出来)，绝不拦门；`head`/`tail`/`sample` 跳过但 stderr 报第几行；`clean`/`transform`/流式等**会写出新文件**的路径直接抛错(附行号+行内容)，不静默丢数据
 - 关键键：`j/k` 选行 · `]`/`[` 翻窗口 · `:` 跳行 · `n/N` 详情逐条消息 · `*` 下一命中 · `s` 全量排序 · `S` 列快照 · `/` 全量搜索 · `f` 全量where筛选(可叠加) · `F` 列值勾选 · `c` 选列 · `w` 导出 · `C` 复制命令 · `y`/`v` 复制样本 · 详情区拖选文本 + `Ctrl+c` 复制 · 拖两区分界调大小 · `Enter` 放大 · `r` 清全部约束 · `?` 帮助 · `q` 退出
@@ -170,20 +208,29 @@ input: raw_data.jsonl
 output: processed.jsonl
 
 steps:
-  - type: filter
-    condition: "score > 0.5"
-  - type: transform
-    preset: openai_chat
+  - type: filter          # step 的 type = CLI 命令名, 参数 = CLI 选项名
+    expr: "x.score > 0.5"
+  - type: select
+    fields: "id,text,n=len(x.messages)"
+  - type: clean
+    strip: true
+    drop_empty: text
   - type: dedupe
     key: text
+  - type: transform
+    preset: openai_chat
+    params: {user_field: q, assistant_field: a}
+  - type: split           # 只能是最后一步, 按 output 派生 processed_train/_test
+    ratio: 0.9
 ```
 
-运行：`dt run pipeline.yaml`（支持 `--dry-run` 打印步骤链）。
+可用 step：filter / select / map / explode / sort / shuffle / group / join / dedupe / sample / head / tail / clean / transform / split。
+运行：`dt run pipeline.yaml`（`--dry-run` 校验含表达式语法并打印步骤链；`-i -` 接 stdin，无 output 写 stdout）。
 
 ## 常见坑
 
-1. **大文件 OOM** — `dt` 默认内存模式，>1GB 文件用 Python `load_stream(...)`。
-2. **字段路径不通** — CLI 支持 `a.b[0].c`，但 `--where` 只支持简单表达式，复杂逻辑转 Python。
+1. **大文件** — filter/select/map/explode/clean/dedupe/transform 与管道都是流式的；sort/shuffle/group --agg/join 右表/`--where` 采样/split 需全量，先 `dt filter` 缩小再做。
+2. **表达式里字段名与 DictWrapper 方法重名** — `x.get`/`x.to_dict` 是方法，数据里叫 `get` 的字段用 `x['get']`。
 3. **TTY vs 非 TTY 输出差异** — 被 agent 管道捕获时自动变 ndjson；测试命令时用 `dt --format=json <cmd>` 强制一致。
 4. **`--preset` 误写** — 不同命令预设名不同：`transform/validate` 都用 `openai_chat`；`alpaca` vs `dpo` vs `sharegpt` 拼写要准。
 5. **dry-run 退出码** — 10 不是 0；脚本里用 `[[ $? == 0 || $? == 10 ]]` 区分真正失败。

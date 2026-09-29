@@ -26,7 +26,10 @@ docs/
 | **Token 统计** | `tokenizers.py` | tiktoken/transformers 后端，messages 统计 |
 | **格式转换** | `converters.py` | LLaMA-Factory, ms-swift, Axolotl, HuggingFace, OpenAI Batch |
 | **流式处理** | `streaming.py` | 大文件惰性处理，O(1) 内存，支持 JSONL/CSV/Parquet/Arrow |
-| **Pipeline** | `pipeline.py` | YAML 配置的可复现数据处理流程 |
+| **表达式引擎** | `expr.py` | 所有 --where / select / map / sort / group / join 共用的 Python 表达式求值（当前行 `x`） |
+| **数据原语** | `ops.py` | filter/select/map/explode/sort/shuffle/group/join/clean/transform/split 的库层实现，CLI 与 pipeline 共用 |
+| **管道层** | `cli/pipe.py` | FILE=`-` 读 stdin、无 `-o` 写 stdout、原地写回、TTY 预览截断 |
+| **Pipeline** | `pipeline.py` | YAML 配置的可复现数据处理流程（step = CLI 命令名，参数 = 选项名） |
 | **数据血缘** | `lineage.py` | 操作追踪与历史记录 |
 | **字段路径** | `utils/field_path.py` | 嵌套字段访问语法（`a.b`、`a[0].b`、`a.#`、`a[*].b`） |
 | **CLI 统计** | `cli/stats.py` | stats 命令，支持 --field 字段过滤、--expand list 展开统计 |
@@ -70,13 +73,26 @@ input: raw.jsonl
 output: processed.jsonl
 steps:
   - type: filter
-    condition: "score > 0.5"
+    expr: "x.score > 0.5"
+  - type: select
+    fields: "id,text,n=len(x.messages)"
   - type: transform
     preset: openai_chat
 ```
 
 ```bash
 dt run pipeline.yaml
+```
+
+### 管道拼接（CLI）
+
+```bash
+dt filter d.jsonl "x.score>0.5 and len(x.messages)>=2" \
+  | dt select - "id,n=len(x.messages)" \
+  | dt sort - --by x.n --desc \
+  | dt head - 5
+dt stats d.jsonl --schema            # 先看嵌套 schema 再写表达式
+dt group d.jsonl --by x.meta.source  # 分布
 ```
 
 ### 数据血缘

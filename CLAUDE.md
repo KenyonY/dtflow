@@ -19,7 +19,9 @@ dtflow 是一个简洁的机器学习训练数据格式转换工具，支持 SFT
 ```
 dtflow/                    # 核心库
 ├── __main__.py           # CLI 入口 (typer，定义命令参数和帮助信息)
-├── core.py               # DataTransformer 核心类 + DictWrapper
+├── core.py               # DataTransformer 核心类 + DictWrapper/ListWrapper/unwrap
+├── expr.py               # 统一 Python 表达式引擎 (compile_where/compile_value/compile_map, 当前行 x)
+├── ops.py                # 数据原语库层 (filter/select/map/explode/sort/shuffle/group/join/clean/transform/split), CLI 与 pipeline 共用
 ├── presets.py            # 预设转换函数 (openai_chat, alpaca, sharegpt, dpo_pair, simple_qa)
 ├── schema.py             # Schema 验证 (Field, Schema, openai_chat_schema 等)
 ├── tokenizers.py         # Token 统计和过滤 (tiktoken/transformers 后端)
@@ -27,10 +29,12 @@ dtflow/                    # 核心库
 ├── framework.py          # 训练框架导出 (export_for, check_compatibility)
 ├── streaming.py          # 大文件流式处理 (StreamingTransformer, load_stream, load_sharded)
 ├── lineage.py            # 数据血缘追踪
-├── pipeline.py           # Pipeline YAML 执行器
+├── pipeline.py           # Pipeline YAML 执行器 (step = CLI 命令名, 参数 = 选项名, 直接调 ops)
 ├── storage/io.py         # 文件 I/O (JSONL, JSON, CSV, Parquet, Arrow) - 使用 Polars
 ├── cli/                  # CLI 命令实现（模块化）
 │   ├── commands.py       # 命令汇总导出
+│   ├── pipe.py           # 管道层: FILE=- 读 stdin, 无 -o 写 stdout, -i 原地写回, TTY 预览截断
+│   ├── ops.py            # filter/select/map/explode/sort/shuffle/group/join 命令 (参数解析, 逻辑在 dtflow/ops.py)
 │   ├── sample.py         # sample/head/tail 命令
 │   ├── transform.py      # transform 命令
 │   ├── clean.py          # clean 命令
@@ -80,10 +84,16 @@ hatch run lint:all     # 运行所有检查
 ### CLI 命令 (dt)
 
 ```bash
+# 数据原语 (表达式即 Python, 当前行 x; FILE 可为 -, 无 -o 写 stdout, 可管道拼接)
+dt filter data.jsonl "len(x.messages)>=2 and x.messages[-1].role=='assistant'"
+dt select data.jsonl "id,n=len(x.messages)" | dt sort - --by x.n --desc | dt head - 5
+dt group data.jsonl --by x.meta.source
+dt stats data.jsonl --schema                     # 嵌套 schema
+
 # 数据采样
 dt sample data.jsonl --num=10
 dt sample data.jsonl 1000 --by=meta.source       # 按嵌套字段分层采样
-dt sample data.jsonl --where="messages.#>=2"     # 筛选后采样
+dt sample data.jsonl --where="len(x.messages)>=2"  # 筛选后采样
 
 # 数据转换
 dt transform data.jsonl --preset=openai_chat
@@ -92,12 +102,12 @@ dt transform data.jsonl                          # 生成配置文件模式
 # 数据验证
 dt validate data.jsonl --preset=openai_chat
 
-# 数据清洗
-dt clean data.jsonl --drop-empty=meta.source     # 删除嵌套字段为空的记录
-dt clean data.jsonl --min-len=messages.#:2       # 至少 2 条消息
+# 数据清洗 (无 -o 写 stdout, -i 原地写回)
+dt clean data.jsonl --drop-empty=meta.source -i  # 删除嵌套字段为空的记录
+dt clean data.jsonl --min-len=messages.#:2 -o out.jsonl   # 至少 2 条消息
 
 # 数据去重
-dt dedupe data.jsonl --key=messages[0].content   # 按第一条消息内容去重
+dt dedupe data.jsonl --key=messages[0].content -i   # 按第一条消息内容去重
 
 # 其他命令
 dt concat a.jsonl b.jsonl -o merged.jsonl
@@ -108,7 +118,8 @@ dt run pipeline.yaml
 dt history processed.jsonl
 ```
 
-**字段路径语法**: `a.b`(嵌套)、`a[0].b`(索引)、`a[-1].b`(负索引)、`a.#`(长度)、`a[*].b`(展开)
+**字段路径语法**（指定单个字段的参数用）: `a.b`(嵌套)、`a[0].b`(索引)、`a[-1].b`(负索引)、`a.#`(长度)、`a[*].b`(展开)
+**表达式语法**（filter/select/map/sort/group/join/--where/pipeline 共用）: Python 表达式, 当前行 `x`, 见 `dtflow/expr.py`
 
 ## 关键约定
 

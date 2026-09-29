@@ -25,9 +25,9 @@
 pip install dtflow
 
 # 可选依赖
-pip install tiktoken          # Token 统计（OpenAI 模型）
-pip install transformers      # Token 统计（HuggingFace 模型）
-pip install datasets          # HuggingFace Dataset 转换
+pip install "dtflow[tokenizers-hf]"   # HuggingFace 分词器的 Token 统计
+pip install "dtflow[converters]"      # HuggingFace Dataset 转换
+pip install "dtflow[similarity]"      # 相似度去重 (MinHash)
 ```
 
 ## 交互式数据浏览：dt view
@@ -62,7 +62,7 @@ dt sample data.jsonl 500 | dt view -        # 管道：看采样/处理后的结
 
 | 按键 | 作用 |
 |------|------|
-| `/` `f` `F` `s` | 全量搜索 · 表达式筛选（`turns>=6 and source~=alpaca`）· 列值勾选 · 排序，可叠加，`r` 一键清空 |
+| `/` `f` `F` `s` | 全量搜索 · 表达式筛选（`turns>=6 and x.source=='alpaca'`，Python 表达式）· 列值勾选 · 排序，可叠加，`r` 一键清空 |
 | `Enter` `n/N` `*` | 放大当前样本 · 逐字段跳 · 只在搜索命中间跳 |
 | `w` `C` | 把筛出的子集导出成文件（自动写血缘）· 复制一条能复现当前视图的 `dt view` 命令 |
 | `y` / 鼠标拖选 + `Ctrl+c` | 复制整条样本 JSON / 复制详情里任意一段文字（SSH/tmux 下也进本机剪贴板） |
@@ -399,15 +399,37 @@ dt.shuffle(seed=42)
 
 ## CLI 命令
 
+所有数据命令遵守同一套约定：**`FILE` 写 `-` 从 stdin 读 NDJSON；不加 `-o` 数据写 stdout**（进度/摘要只走 stderr），
+所以命令可以像 Unix 工具一样用管道拼接；筛选/派生/排序/分组的条件一律是 **Python 表达式，当前行叫 `x`**。
+
 ```bash
+# 数据原语（可任意拼接; 表达式即 Python, 当前行为 x）
+dt filter data.jsonl "x.score > 0.5 and 'wiki' in x.meta.source"
+dt filter data.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'"
+dt select data.jsonl "id,text,n=len(x.messages),src=x.meta.source"   # 投影 / 重命名 / 派生
+dt map    data.jsonl "x.text = x.text.strip(); del x.debug"          # 原地修改
+dt explode data.jsonl --field messages --index-as turn                # list 展开成多行
+dt sort   data.jsonl --by "len(x.messages)" --desc
+dt shuffle data.jsonl --seed 42 -o shuffled.jsonl
+dt group  data.jsonl --by x.meta.source                               # {"key","count"} 按 count 降序
+dt group  data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g),ids=[r.id for r in g][:3]"
+dt join   data.jsonl meta.jsonl --on x.id --prefix m_                 # 左连接, 右表入内存
+dt stats  data.jsonl --schema                                         # 嵌套 schema: 先看全貌再写表达式
+
+# 管道拼接
+dt filter d.jsonl "x.score>0.5" | dt select - "id,n=len(x.messages)" | dt sort - --by x.n --desc | dt head - 5
+dt sample d.jsonl 0 -w "x.ok" | dt clean - --strip | dt dedupe - --key=text -o clean.jsonl
+dt group d.jsonl --by x.label | dt sort - --by x.count --desc
+cat big.jsonl.gz | dt filter - "x.lang=='zh'" | dt transform - --preset=openai_chat | dt view -
+
 # 数据采样
 dt sample data.jsonl --num=10
-dt sample data.csv --num=100 --sample_type=head
+dt sample data.csv --num=100 --type=head
 dt sample data.jsonl 1000 --by=category           # 分层采样
 dt sample data.jsonl 1000 --by=meta.source        # 按嵌套字段分层采样
 dt sample data.jsonl 1000 --by=messages.#         # 按消息数量分层采样
-dt sample data.jsonl --where="category=tech"      # 筛选后采样
-dt sample data.jsonl --where="messages.#>=2"      # 多条件筛选
+dt sample data.jsonl --where="x.category=='tech'"        # 筛选后采样 (-w 可多次, 多条 AND)
+dt sample data.jsonl -w "len(x.messages)>=2" -w "x.score>0.8"
 
 # 交互式浏览（表格 + 详情联动 TUI，需交互式终端）
 dt view data.jsonl                                # 打开浏览器，按 ? 看快捷键
@@ -430,18 +452,19 @@ dt slice data.jsonl 100:                           # 第 100 行到末尾
 dt slice data.jsonl 10:20 -o sliced.jsonl          # 保存到文件
 dt slice data.jsonl 10:20 -f question,answer       # 只显示指定字段
 
-# 数据转换 - 预设模式
-dt transform data.jsonl --preset=openai_chat
-dt transform data.jsonl --preset=alpaca
+# 数据转换 - 预设模式 (无 -o 写 stdout)
+dt transform data.jsonl --preset=openai_chat -o out.jsonl
+dt transform data.jsonl --preset=alpaca | dt head -
 
 # 数据转换 - 配置文件模式
 dt transform data.jsonl                    # 首次运行生成配置文件
 # 编辑 .dt/data.py 后再次运行
-dt transform data.jsonl --num=100          # 执行转换
+dt transform data.jsonl --num=100          # 执行转换 (落到配置里的 output)
 
-# Pipeline 执行（可复现的数据处理流程）
+# Pipeline 执行（可复现的数据处理流程; step 即 CLI 命令名）
 dt run pipeline.yaml
 dt run pipeline.yaml --input=new_data.jsonl --output=result.jsonl
+cat data.jsonl | dt run pipeline.yaml -i - | dt head -
 
 # Token 统计
 dt token-stats data.jsonl --field=messages --model=gpt-4
@@ -454,24 +477,24 @@ dt diff v1/train.jsonl v2/train.jsonl
 dt diff a.jsonl b.jsonl --key=id
 dt diff a.jsonl b.jsonl --key=meta.uuid    # 按嵌套字段匹配
 
-# 数据清洗
-dt clean data.jsonl --drop-empty                    # 删除任意空值记录
-dt clean data.jsonl --drop-empty=text,answer        # 删除指定字段为空的记录
-dt clean data.jsonl --drop-empty=meta.source        # 删除嵌套字段为空的记录
+# 数据清洗 (无 -o 写 stdout; -i 原地写回)
+dt clean data.jsonl --drop-empty -o out.jsonl       # 删除任意空值记录
+dt clean data.jsonl --drop-empty=text,answer -i     # 删除指定字段为空的记录, 原地写回
+dt clean data.jsonl --drop-empty=meta.source        # 删除嵌套字段为空的记录 → stdout
 dt clean data.jsonl --min-len=text:10               # text 字段最少 10 字符
 dt clean data.jsonl --min-len=messages.#:2          # 至少 2 条消息
 dt clean data.jsonl --max-len=messages[-1].content:500  # 最后一条消息最多 500 字符
-dt clean data.jsonl --keep=question,answer          # 只保留这些字段
+dt clean data.jsonl --keep=question,answer          # 只保留这些字段 (更灵活的投影用 dt select)
 dt clean data.jsonl --drop=metadata                 # 删除指定字段
 dt clean data.jsonl --strip                         # 去除字符串首尾空白
 dt clean data.jsonl --min-tokens=content:10          # 最少 10 tokens
 dt clean data.jsonl --max-tokens=content:1000        # 最多 1000 tokens
 dt clean data.jsonl --min-tokens=text:50 -m gpt-4    # 指定分词器
 
-# 数据去重
-dt dedupe data.jsonl                            # 全量精确去重
-dt dedupe data.jsonl --key=text                 # 按字段精确去重
-dt dedupe data.jsonl --key=meta.id              # 按嵌套字段去重
+# 数据去重 (精确去重流式, 支持 stdin)
+dt dedupe data.jsonl -i                         # 全量精确去重, 原地写回
+dt dedupe data.jsonl --key=text -o out.jsonl    # 按字段精确去重
+dt dedupe data.jsonl --key=meta.id              # 按嵌套字段去重 → stdout
 dt dedupe data.jsonl --key=messages[0].content  # 按第一条消息内容去重
 dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
 
@@ -479,6 +502,7 @@ dt dedupe data.jsonl --key=text --similar=0.8   # 相似度去重
 dt split data.jsonl --ratio=0.8 --seed=42           # 二分: train/test
 dt split data.jsonl --ratio=0.7,0.15,0.15           # 三分: train/val/test
 dt split data.jsonl --ratio=0.8 -o /tmp/output      # 指定输出目录
+dt filter data.jsonl "x.ok" | dt split - -o out/ --name clean   # stdin 需给目录与前缀
 
 # 训练框架导出
 dt export data.jsonl --framework=llama-factory       # 导出到 LLaMA-Factory
@@ -486,11 +510,13 @@ dt export data.jsonl -f swift -o ./swift_out         # 导出到 ms-swift
 dt export data.jsonl -f axolotl                      # 导出到 Axolotl
 dt export data.jsonl -f llama-factory --check        # 仅检查兼容性
 
-# 文件拼接
+# 文件拼接 (无 -o 写 stdout; 至多一个 - 读 stdin)
 dt concat a.jsonl b.jsonl -o merged.jsonl
+dt concat a.jsonl.gz b.parquet | dt head -
 
 # 数据统计
 dt stats data.jsonl                                       # 快速模式
+dt stats data.jsonl --schema                              # 嵌套 schema (类型/非空率/list 元素/低基数取值)
 dt stats data.jsonl --full                                # 完整模式（含值分布）
 dt stats data.jsonl --full --field=category               # 指定字段统计
 dt stats data.jsonl --full --expand=tags                  # 展开 list 字段统计元素分布
@@ -504,10 +530,12 @@ dt skill-status --target codex                # 查看 Codex 安装状态
 # 数据验证
 dt validate data.jsonl --preset=openai_chat           # 使用预设 schema 验证
 dt validate data.jsonl --preset=alpaca --verbose      # 详细输出
-dt validate data.jsonl --preset=sharegpt --filter-invalid -o valid.jsonl  # 过滤出有效数据
+dt validate data.jsonl --preset=sharegpt --filter -o valid.jsonl  # 过滤出有效数据 (无 -o 则 stdout)
 dt validate data.jsonl --preset=dpo --max-errors=100  # 限制错误输出数量
 dt validate data.jsonl --preset=openai_chat --workers=4  # 多进程加速
 ```
+
+`.jsonl.gz` / `.json.gz` 透明读写：所有命令直接接受，输出文件带 `.gz` 后缀即压缩写出。
 
 ### 交互式数据浏览 (dt view)
 
@@ -542,15 +570,15 @@ dt validate data.jsonl --preset=openai_chat --workers=4  # 多进程加速
 
 `/` 搜的是**整条记录的每个值**（不只是表格列——表格列只是派生摘要，`first_user` 只是第一条用户消息，靠列搜会把 assistant 回复整个漏掉），命中处在表格与详情里画黄底，`*` 逐个跳过去。
 
-**闭环到落地**：筛出来的子集用 `w` 导出成文件（`.jsonl` 流式写，几十万行不占内存；其他扩展名走 `save_data` 分派），导出时自动写血缘 sidecar，`dt history <out>` 能查到来源文件与当时的全部条件。`C` 把当前视图翻译回一条 `dt view ... --where=... --search=... --sort=...` 命令——粘回终端即还原（多列值筛选翻译成多条 `--where`，含特殊字符的值无法安全嵌入时会明说，完整条件以血缘为准）。
+**闭环到落地**：筛出来的子集用 `w` 导出成文件（`.jsonl` 流式写，几十万行不占内存；其他扩展名走 `save_data` 分派），导出时自动写血缘 sidecar，`dt history <out>` 能查到来源文件与当时的全部条件。`C` 把当前视图翻译回一条 `dt view ... --where=... --search=... --sort=...` 命令——粘回终端即还原（列值勾选翻译成 `str(x.get('col')) in (...)` 这类可回吃的表达式；表格里被截断过的值无法还原时会明说，完整条件以血缘为准）。
 
 查看数据时的即时筛选归 view；完整分布统计（直方图/分位数/value_counts/token）归 `dt stats` / `dt token-stats`。
 
 **坏行（非法 JSON）不会拦住浏览**：`dt view` 把它显示成一条占位行（`_parse_error` / `_raw_line` 两列），行号不错位，还能用 `/` 直接把坏行搜出来定位——语法坏掉的行恰恰是你打开浏览器要找的东西。其他命令按「会不会写出新文件」区别对待：`head`/`tail`/`sample` 跳过但在 stderr 报出第几行，`clean`/`transform` 等直接抛错（附行号与行内容），不静默丢数据。
 
-> **`f` 筛选语法**：`列名 运算符 值`，列名直接用**表头看到的名字**（派生列 `chars`/`turns`/`roles`、元数据列 `source` 等；深层字段仍可写 `messages.#>=2`）。运算符 `> >= < <= == != =` 和 **`~=`（包含子串，不区分大小写）**。多列用 **`and`/`or` 组合**（`and` 优先级高于 `or`），如 `turns>=6 and chars<2000`。派生列名自动按该列的值比较，其余当真实字段路径。
+> **`f` 筛选语法就是 Python 表达式**，当前行叫 `x`；表头上的**派生列名**（`chars`/`turns`/`roles`/`first_user`/`calls`…）可直接当变量用（值是原始类型：`turns` 是 int，`first_user` 是**全文**而非表格里那 160 字预览），其余字段走 `x.`：`turns>=6 and chars<2000`、`x.source=='alpaca'`、`len(x.messages)>=2`、`x.messages[-1].role=='assistant'`。`and`/`or`/`not`/括号随意。
 >
-> **按内容包含筛选**：`first_user~=退款`（派生列，匹配**全文**而非表格里那 160 字预览）、`calls~=get_weather`（调用过该函数的 agent 样本；`calls!=` 筛出所有带工具调用的）、`source~=alpaca`、`messages[0].content~=报错`（深层路径）、`messages[*].content:join~=关键词`（搜整段对话，`:join` 不可省——不加时 `[*]` 只取第一个元素）。`~=`/`/`/值面板搜索框三个入口都不区分大小写；要区分用 `==`。
+> **按内容包含**：`'退款' in first_user`、`'get_weather' in calls`（调用过该函数的 agent 样本；`calls` 非空即带工具调用）、`'报错' in x.messages[0].content`、`any('关键词' in m.content for m in x.messages)`（搜整段对话）。`in` 区分大小写，不分大小写写 `'词' in first_user.lower()`；`/` 搜索与值面板搜索框则一律不分大小写。
 
 格式自动检测：`openai_chat` / `sharegpt` / `dpo` / `alpaca` / `generic`（CSV 等表格数据全部列展示）。`--format` 可强制指定。
 
@@ -574,7 +602,7 @@ CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的�
 
 | 命令 | 参数 | 示例 |
 |------|------|------|
-| `sample` | `--by=`, `--where=` | `--by=meta.source`、`--where=messages.#>=2` |
+| `sample` | `--by=` | `--by=meta.source`、`--by=messages.#` |
 | `dedupe` | `--key=` | `--key=meta.id`、`--key=messages[0].content` |
 | `clean` | `--drop-empty=` | `--drop-empty=meta.source` |
 | `clean` | `--min-len=` | `--min-len=messages.#:2` |
@@ -584,17 +612,39 @@ CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的�
 | `token-stats` | `--field=` | `--field=messages[-1].content` |
 | `diff` | `--key=` | `--key=meta.uuid` |
 
-`--where` 支持的操作符：
+字段路径用于 `--key` / `--by`（sample 分层）/ `--field` / `--drop-empty` / `--min-len` 等**指定一个字段**的参数；
+**筛选与派生走表达式**（见下节），表达式里要用路径 DSL 可写 `get(x, "messages[*].role:join")`。
 
-| 操作符 | 含义 | 示例 |
-|--------|------|------|
-| `=` | 等于 | `--where="category=tech"` |
-| `!=` | 不等于 | `--where="source!=wiki"` |
-| `~=` | 包含（不区分大小写） | `--where="content~=机器学习"` |
-| `>` | 大于 | `--where="score>0.8"` |
-| `>=` | 大于等于 | `--where="messages.#>=2"` |
-| `<` | 小于 | `--where="length<1000"` |
-| `<=` | 小于等于 | `--where="turns<=10"` |
+### 表达式语法
+
+`filter` / `select` / `map` / `sort --by` / `group --by` / `join --on` / `sample --where` / `view --where` / pipeline 里的条件，
+全部是 **Python 表达式**，当前行是 `x`（支持属性访问，`x.messages[-1].role`、`x.meta.source` 都能写；缺字段抛 AttributeError）。
+命名空间里还有 `re` / `json` / `math` / `get`（旧字段路径 DSL）。
+
+```bash
+dt filter d.jsonl "x.score > 0.8 and 'wiki' in x.meta.source"
+dt filter d.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'"
+dt filter d.jsonl "any('退款' in m.content for m in x.messages)"
+dt filter d.jsonl "re.search(r'\d{4}', x.text) and x.lang in ('zh', 'en')"
+dt select d.jsonl "id,n=len(x.messages),roles=[m.role for m in x.messages]"
+dt map    d.jsonl "x.text = x.text.strip(); x.messages.append({'role': 'assistant', 'content': x.a})"
+```
+
+求值失败的行（缺字段、`None > 0.5`）默认**判为不匹配/跳过，结束时在 stderr 汇总一次**；`--strict` 则首个错误即退出码 1。
+语法错误退出码 2 并指出位置。不做沙箱：这是你本机 shell 里的工具，和 `dt transform` 执行 `.dt/*.py` 一样。
+
+从旧语法迁移（0.9 起旧的 `字段 运算符 值` 写法已删除）：
+
+| 旧 | 新 |
+|----|----|
+| `category=tech` | `x.category=='tech'` |
+| `content~=机器学习`（包含，不分大小写） | `'机器学习' in x.content.lower()` |
+| `score>0.8` / `messages.#>=2` | `x.score>0.8` / `len(x.messages)>=2` |
+| `messages[0].role=user` | `x.messages[0].role=='user'` |
+| `messages[*].content:join~=词` | `any('词' in m.content for m in x.messages)` |
+| view 里 `turns>=6 and chars<2000` | 不变；`source==alpaca` → `x.source=='alpaca'`；`first_user~=退款` → `'退款' in first_user` |
+| pipeline `condition: "len(text) > 10"` / `field: text` | `expr: "len(x.text) > 10"` / `expr: "x.text"` |
+| `dt clean f.jsonl --strip`（默认覆盖原文件） | `dt clean f.jsonl --strip -i`；不加 `-i`/`-o` 输出到 stdout |
 
 示例数据：
 ```json
@@ -610,7 +660,7 @@ CLI 命令中的字段参数支持嵌套路径语法，可访问深层嵌套的�
 
 ### Pipeline 配置
 
-使用 YAML 配置文件定义可复现的数据处理流程：
+用 YAML 把一串命令固化下来，可复现执行。**step 的 `type` 就是 CLI 命令名，参数就是 CLI 选项名**（下划线形式），一套语法两处用：
 
 ```yaml
 # pipeline.yaml
@@ -621,39 +671,45 @@ output: processed.jsonl
 
 steps:
   - type: filter
-    condition: "score > 0.5"
-
-  - type: filter
-    condition: "len(text) > 10"
-
-  - type: transform
-    preset: openai_chat
-    params:
-      user_field: q
-      assistant_field: a
-
+    expr: "x.score > 0.5 and len(x.text) > 10"
+  - type: select
+    fields: "id,text,n=len(x.messages)"
+  - type: clean
+    strip: true
+    drop_empty: text
+    min_len: "text:10"
   - type: dedupe
     key: text
+  - type: transform
+    preset: openai_chat
+    params: {user_field: q, assistant_field: a}
+  - type: split            # 只能是最后一步: 按 output 派生 processed_train.jsonl / processed_test.jsonl
+    ratio: 0.9
+    seed: 42
 ```
 
-支持的步骤类型：
-
-| 步骤 | 参数 | 说明 |
+| 步骤 | 参数（= CLI 选项） | 说明 |
 |------|------|------|
-| `filter` | `condition` | 条件过滤：`score > 0.5`, `len(text) > 10`, `field is not empty` |
-| `transform` | `preset`, `params` | 格式转换，使用预设模板 |
-| `dedupe` | `key`, `similar` | 去重，支持精确和相似度去重 |
-| `sample` | `num`, `seed` | 随机采样 |
-| `head` | `num` | 取前 N 条 |
-| `tail` | `num` | 取后 N 条 |
-| `shuffle` | `seed` | 打乱顺序 |
-| `split` | `ratio`, `seed` | 数据集分割 |
+| `filter` | `expr`, `strict` | Python 表达式筛选 |
+| `select` | `fields`, `strict` | 投影 / 重命名 / 派生 |
+| `map` | `code`, `strict` | 原地修改 |
+| `explode` | `field`, `as`, `index_as` | list 展开成多行 |
+| `sort` | `by`, `desc` | 排序（全量） |
+| `shuffle` | `seed` | 打乱（全量） |
+| `group` | `by`, `agg` | 分组计数 / 聚合 |
+| `join` | `right`, `on` 或 `left_on`+`right_on`, `inner`, `prefix` | 键连接 |
+| `dedupe` | `key`, `similar` | 精确 / 相似度去重 |
+| `sample` / `head` / `tail` | `num`, `seed` | 采样 / 取前后 N 条 |
+| `clean` | `strip`, `drop_empty`, `min_len`, `max_len`, `keep`, `drop`, `rename`, `promote`, `add_field`, `fill`, `reorder`, `min_tokens`, `max_tokens`, `model` | 与 `dt clean` 一致 |
+| `transform` | `preset` + `params`，或 `config` | 预设 / `.dt/*.py` 配置 |
+| `split` | `ratio`, `seed` | 终态步骤，输出多个文件 |
 
-执行 Pipeline：
+执行载体是流式的：能惰性的步骤不落内存。`dt run pipeline.yaml --dry-run` 校验配置（含表达式语法）并打印步骤链。
 
 ```bash
 dt run pipeline.yaml
-dt run pipeline.yaml --input=new_data.jsonl  # 覆盖输入文件
+dt run pipeline.yaml --input=new_data.jsonl --output=result.jsonl
+cat data.jsonl | dt run pipeline.yaml -i - | dt head -     # 无 output 时数据走 stdout
 ```
 
 ### 数据血缘追踪
