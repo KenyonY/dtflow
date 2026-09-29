@@ -106,4 +106,4 @@ dt dedupe data.jsonl --key=messages[0].content  # 数组索引
 
 ---
 
-完整文档见 [README.md](../README.md)
+完整文档见 [README_zh.md](../README_zh.md)（English: [README.md](../README.md)）

@@ -5,17 +5,25 @@ build-backend = "hatchling.build"
 [project]
 name = "dtflow"
 dynamic = ["version"]
-description = "A flexible data transformation tool for ML training formats (SFT, RLHF, Pretrain)"
+description = "Terminal browser for LLM training data (dt view) plus a CLI toolbox to filter, clean, convert and export SFT/RLHF/DPO datasets"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "kunyuan", email = "beidongjiedeguang@gmail.com"},
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "kunyuan", email = "beidongjiedeguang@gmail.com"},
 ]
 keywords = [
+    "llm",
+    "fine-tuning",
+    "training-data",
+    "dataset",
+    "jsonl",
+    "tui",
+    "data-viewer",
+    "dpo",
     "machine-learning",
     "data-processing",
     "sft",

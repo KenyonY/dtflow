@@ -14,7 +14,7 @@ docs/
 ## 快速链接
 
 - [快速入门](./quickstart.md) - 30 秒上手 dtflow
-- [README](../README.md) - 项目主文档和使用说明
+- [README (English)](../README.md) · [README (中文)](../README_zh.md) - 项目主文档和使用说明
 - [dt view 展示素材](../scripts/view_showcase.py) - 重新生成截图/GIF：`python scripts/view_showcase.py`（headless 驱动真实 TUI，需 playwright + ffmpeg）
 
 ## 核心模块
