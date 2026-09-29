@@ -538,7 +538,20 @@ def die(
         console = _make_stderr_console()
         console.print(f"[red bold]✗ {error}[/red bold]: {escape(str(message))}")
         if suggestion:
-            console.print(f"[yellow]提示:[/yellow] {escape(str(suggestion))}")
+            text = str(suggestion)
+            if "\n" in text:
+                # 多行建议 (表达式 + caret) 独占行, 首行不能带 "提示:" 前缀, 否则 ^ 就对不上列
+                console.print("[yellow]提示:[/yellow]")
+                console.print(escape(text), highlight=False, soft_wrap=True)
+            else:
+                console.print(f"[yellow]提示:[/yellow] {escape(text)}")
+        if context:
+            # JSON 模式里 agent 靠 context 拿细节 (如 pipeline 的逐条 errors), 终端里人也得看见
+            for key, value in context.items():
+                items = value if isinstance(value, list) else [value]
+                console.print(f"[dim]{escape(str(key))}:[/dim]")
+                for item in items:
+                    console.print(escape(str(item)), highlight=False, soft_wrap=True)
         if retryable:
             console.print("[dim](此错误可重试)[/dim]")
 
