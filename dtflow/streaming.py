@@ -289,9 +289,10 @@ class StreamingTransformer:
         Returns:
             新的 StreamingTransformer（惰性，不立即执行）
         """
-        from .core import DictWrapper
+        from .core import DictWrapper, unwrap
 
         wrapper_func = (lambda x: x) if raw else DictWrapper
+        finish = (lambda r: r) if raw else unwrap
 
         # on_error="skip" 时可能跳行，total 不准确；"raise" 时保留
         new_total = self._total if on_error == "raise" else None
@@ -301,7 +302,7 @@ class StreamingTransformer:
         def transformed_iterator():
             for item in self._iterator:
                 try:
-                    yield func(wrapper_func(item))
+                    yield finish(func(wrapper_func(item)))
                 except Exception as e:
                     if on_error == "raise":
                         raise

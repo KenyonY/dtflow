@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import orjson
 
-from ..core import DataTransformer, DictWrapper
+from ..core import DataTransformer, DictWrapper, unwrap
 from ..presets import get_preset, list_presets
 from ..storage.io import load_data, save_data
 from ..streaming import load_stream
@@ -282,17 +282,6 @@ def _generate_default_transform(field_names: List[str]) -> str:
     return "\n".join(lines) if lines else "        # 在这里定义输出字段"
 
 
-def _unwrap(obj: Any) -> Any:
-    """递归将 DictWrapper 转换为普通 dict"""
-    if hasattr(obj, "to_dict"):
-        return _unwrap(obj.to_dict())
-    if isinstance(obj, dict):
-        return {k: _unwrap(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_unwrap(v) for v in obj]
-    return obj
-
-
 def _execute_transform(
     input_path: Path,
     config_path: Path,
@@ -323,7 +312,7 @@ def _execute_transform(
 
     def wrapped_transform(item):
         result = transform_func(DictWrapper(item))
-        return _unwrap(result)
+        return unwrap(result)
 
     # 对于 JSONL 文件使用流式处理（dry-run 时强制走内存模式统计）
     if _is_streaming_supported(input_path) and not dry_run:
@@ -415,7 +404,7 @@ def _execute_preset_transform(
 
     def wrapped_transform(item):
         result = transform_func(DictWrapper(item))
-        return _unwrap(result)
+        return unwrap(result)
 
     # 对于 JSONL 文件使用流式处理（dry-run 时走内存模式）
     if _is_streaming_supported(input_path) and not dry_run:

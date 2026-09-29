@@ -212,12 +212,13 @@ class DataTransformer:
         results = []
         errors = []
 
-        # raw 模式：直接传递 dict，跳过 DictWrapper 包装
+        # raw 模式：直接传递 dict，跳过 DictWrapper 包装; 非 raw 时输出要还原包装器
         wrapper_func = (lambda x: x) if raw else DictWrapper
+        finish = (lambda r: r) if raw else unwrap
 
         for i, item in enumerate(self._data):
             try:
-                result = func(wrapper_func(item))
+                result = finish(func(wrapper_func(item)))
                 results.append(result)
             except Exception as e:
                 err = TransformError(index=i, item=item, error=e)
@@ -952,7 +953,7 @@ class DataTransformer:
         except Exception as e:
             raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
 
-        filtered = [item for item, keep in zip(self._data, mask) if keep]
+        filtered = [item for item, keep in zip(self._data, mask, strict=False) if keep]
         return DataTransformer(filtered)
 
     # ============ 训练框架集成 ============
@@ -1039,11 +1040,102 @@ def _sanitize_key(name: str) -> str:
     return sanitized or "field"
 
 
+def _wrap(value: Any) -> Any:
+    """dict → DictWrapper, list → ListWrapper, 其余原样。按引用包装, 不复制。"""
+    if isinstance(value, dict):
+        return DictWrapper(value)
+    if isinstance(value, list):
+        return ListWrapper(value)
+    return value
+
+
+def unwrap(obj: Any) -> Any:
+    """递归把 DictWrapper/ListWrapper 还原成普通 dict/list (输出/序列化前调用)。"""
+    if isinstance(obj, DictWrapper):
+        obj = object.__getattribute__(obj, "_data")
+    elif isinstance(obj, ListWrapper):
+        obj = obj._data
+    if isinstance(obj, dict):
+        return {k: unwrap(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [unwrap(v) for v in obj]
+    return obj
+
+
+class ListWrapper:
+    """
+    list 的按引用视图: 元素访问时包装 (dict → DictWrapper), 写操作直接落到原 list。
+
+    让 ``x.messages[-1].role`` / ``for m in x.messages: m.content`` /
+    ``x.messages.append({...})`` 都能用。
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: List[Any]):
+        self._data = data
+
+    def __getitem__(self, index: Any) -> Any:
+        value = self._data[index]
+        if isinstance(index, slice):
+            return ListWrapper(value)
+        return _wrap(value)
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        self._data[index] = unwrap(value)
+
+    def __delitem__(self, index: Any) -> None:
+        del self._data[index]
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self):
+        for v in self._data:
+            yield _wrap(v)
+
+    def __contains__(self, item: Any) -> bool:
+        return unwrap(item) in self._data
+
+    def __eq__(self, other: Any) -> bool:
+        return self._data == unwrap(other)
+
+    def __add__(self, other: Any) -> List[Any]:
+        return self._data + list(unwrap(other))
+
+    def __radd__(self, other: Any) -> List[Any]:
+        return list(unwrap(other)) + self._data
+
+    def __repr__(self) -> str:
+        return repr(self._data)
+
+    def append(self, value: Any) -> None:
+        self._data.append(unwrap(value))
+
+    def extend(self, values: Any) -> None:
+        self._data.extend(unwrap(v) for v in values)
+
+    def insert(self, index: int, value: Any) -> None:
+        self._data.insert(index, unwrap(value))
+
+    def pop(self, index: int = -1) -> Any:
+        return _wrap(self._data.pop(index))
+
+    def to_list(self) -> List[Any]:
+        """返回原始 list"""
+        return self._data
+
+
 class DictWrapper:
     """
-    字典包装器，支持属性访问。
+    字典包装器，支持属性访问, 读写都直接落到原 dict。
 
     支持通过规范化后的字段名访问原始键（如 item.原始_风险大类 访问 "原始-风险大类"）。
+    规则: **属性访问返回包装值** (嵌套 dict/list 按引用包装, 所以 ``x.messages[-1].role``
+    和 ``x.text = x.text.strip()`` 都能用); **dict 式访问 (``x["k"]``/``get``/``items``)
+    返回原始值**, 与普通 dict 完全一致, 库代码里的 ``isinstance(v, list)`` 不受影响。
+    不提供 keys/values/items 方法: 它们会遮蔽同名数据字段 (``x.items`` 很常见);
+    要遍历用 ``for k in x`` / ``x.to_dict()``。输出前用 ``unwrap()`` 还原。
 
     Examples:
         >>> w = DictWrapper({"a": {"b": 1}})
@@ -1063,48 +1155,67 @@ class DictWrapper:
                 alias_map[sanitized] = key
         object.__setattr__(self, "_alias_map", alias_map)
 
+    def _resolve(self, name: str) -> str:
+        """属性名 → 原始键 (alias 映射), 不存在则原样返回"""
+        data = object.__getattribute__(self, "_data")
+        if name in data:
+            return name
+        return object.__getattribute__(self, "_alias_map").get(name, name)
+
     def __getattr__(self, name: str) -> Any:
         data = object.__getattribute__(self, "_data")
-        alias_map = object.__getattribute__(self, "_alias_map")
-
-        # 先尝试直接匹配
-        if name in data:
-            value = data[name]
-            if isinstance(value, dict):
-                return DictWrapper(value)
-            return value
-
-        # 再尝试通过别名映射
-        if name in alias_map:
-            value = data[alias_map[name]]
-            if isinstance(value, dict):
-                return DictWrapper(value)
-            return value
-
+        key = self._resolve(name)
+        if key in data:
+            return _wrap(data[key])
         raise AttributeError(f"字段不存在: {name}")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        data = object.__getattribute__(self, "_data")
+        data[self._resolve(name)] = unwrap(value)
+
+    def __delattr__(self, name: str) -> None:
+        data = object.__getattribute__(self, "_data")
+        key = self._resolve(name)
+        if key not in data:
+            raise AttributeError(f"字段不存在: {name}")
+        del data[key]
 
     def __getitem__(self, key: str) -> Any:
         data = object.__getattribute__(self, "_data")
-        value = data[key]
-        if isinstance(value, dict):
-            return DictWrapper(value)
-        return value
+        return data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        data = object.__getattribute__(self, "_data")
+        data[key] = unwrap(value)
+
+    def __delitem__(self, key: str) -> None:
+        data = object.__getattribute__(self, "_data")
+        del data[key]
 
     def __contains__(self, key: str) -> bool:
         data = object.__getattribute__(self, "_data")
         return key in data
+
+    def __iter__(self):
+        data = object.__getattribute__(self, "_data")
+        return iter(data)
+
+    def __len__(self) -> int:
+        data = object.__getattribute__(self, "_data")
+        return len(data)
+
+    def __eq__(self, other: Any) -> bool:
+        data = object.__getattribute__(self, "_data")
+        return data == unwrap(other)
 
     def __repr__(self) -> str:
         data = object.__getattribute__(self, "_data")
         return repr(data)
 
     def get(self, key: str, default: Any = None) -> Any:
-        """安全获取字段值"""
+        """安全获取字段值 (原始值, 同 dict.get)"""
         data = object.__getattribute__(self, "_data")
-        value = data.get(key, default)
-        if isinstance(value, dict):
-            return DictWrapper(value)
-        return value
+        return data.get(key, default)
 
     def to_dict(self) -> Dict[str, Any]:
         """返回原始字典"""

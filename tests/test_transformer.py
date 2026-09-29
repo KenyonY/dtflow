@@ -10,9 +10,11 @@ import pytest
 from dtflow import (
     DataTransformer,
     DictWrapper,
+    ListWrapper,
     TransformErrors,
     get_preset,
     list_presets,
+    unwrap,
 )
 
 
@@ -224,6 +226,52 @@ class TestDictWrapper:
         w = DictWrapper({"name": "test"})
         with pytest.raises(AttributeError):
             _ = w.missing_field
+
+    def test_list_elements_wrapped(self):
+        w = DictWrapper({"messages": [{"role": "user"}, {"role": "assistant"}]})
+        assert isinstance(w.messages, ListWrapper)
+        assert w.messages[-1].role == "assistant"
+        assert [m.role for m in w.messages] == ["user", "assistant"]
+        assert len(w.messages) == 2
+        assert w.messages[:1][0].role == "user"
+        assert w.messages == [{"role": "user"}, {"role": "assistant"}]
+
+    def test_write_through(self):
+        data = {"text": " a ", "原始-风险": 1, "messages": []}
+        w = DictWrapper(data)
+        w.text = w.text.strip()
+        w.原始_风险 = 2
+        w["new"] = {"k": 1}
+        w.messages.append({"role": "user"})
+        del w.原始_风险
+        assert data == {"text": "a", "messages": [{"role": "user"}], "new": {"k": 1}}
+        with pytest.raises(AttributeError):
+            del w.nope
+
+    def test_mapping_protocol(self):
+        w = DictWrapper({"a": 1, "b": {"c": 2}})
+        assert list(w) == ["a", "b"]
+        assert len(w) == 2
+        assert dict(w.to_dict()) == {"a": 1, "b": {"c": 2}}
+        # 字段名与常见方法名同名时字段优先 (不提供 keys/values/items 方法)
+        assert DictWrapper({"items": [1]}).items == [1]
+        # dict 式访问返回原始值, 属性访问返回包装值
+        assert type(w["b"]) is dict and type(w.get("b")) is dict
+        assert w.b.c == 2
+        assert not DictWrapper({})
+
+    def test_unwrap(self):
+        data = {"a": [{"b": 1}], "c": {"d": [1, 2]}}
+        w = DictWrapper(data)
+        out = unwrap({"x": w.a, "y": w.c, "z": w, "s": "str"})
+        assert out == {"x": [{"b": 1}], "y": {"d": [1, 2]}, "z": data, "s": "str"}
+        assert type(out["x"]) is list and type(out["y"]) is dict
+
+    def test_to_unwraps_nested_output(self):
+        dt = DataTransformer([{"messages": [{"role": "user"}], "meta": {"s": 1}}])
+        out = dt.to(lambda x: {"m": x.messages, "meta": x.meta})
+        assert out == [{"m": [{"role": "user"}], "meta": {"s": 1}}]
+        assert type(out[0]["m"]) is list
 
 
 class TestErrorHandling:
@@ -657,7 +705,7 @@ class TestUnwrap:
 
     def test_unwrap_simple(self):
         """测试简单 DictWrapper 转换"""
-        from dtflow.cli.transform import _unwrap
+        from dtflow.core import unwrap as _unwrap
 
         wrapper = DictWrapper({"a": 1, "b": "text"})
         result = _unwrap(wrapper)
@@ -667,7 +715,7 @@ class TestUnwrap:
 
     def test_unwrap_nested(self):
         """测试嵌套 DictWrapper 转换"""
-        from dtflow.cli.transform import _unwrap
+        from dtflow.core import unwrap as _unwrap
 
         data = {"outer": {"inner": {"value": 123}}}
         wrapper = DictWrapper(data)
@@ -682,7 +730,7 @@ class TestUnwrap:
 
     def test_unwrap_in_list(self):
         """测试列表中的 DictWrapper 转换"""
-        from dtflow.cli.transform import _unwrap
+        from dtflow.core import unwrap as _unwrap
 
         wrapper = DictWrapper({"x": 1})
         result = _unwrap([wrapper, {"y": 2}, wrapper])
@@ -692,7 +740,7 @@ class TestUnwrap:
 
     def test_unwrap_plain_dict(self):
         """测试普通 dict 不受影响"""
-        from dtflow.cli.transform import _unwrap
+        from dtflow.core import unwrap as _unwrap
 
         data = {"a": 1, "nested": {"b": 2}}
         result = _unwrap(data)
