@@ -493,7 +493,9 @@ def validate_pipeline(config_path: str) -> List[str]:
             try:
                 check_syntax(expr, mode)
             except ExprSyntaxError as e:
-                errors.append(f"步骤 {i}: {t} {e}\n  {e.caret()}")
+                import textwrap
+
+                errors.append(f"步骤 {i}: {t} {e}\n{textwrap.indent(e.caret(), '  ')}")
         if t == "group" and step.get("agg"):
             try:
                 for _name, e in ops.parse_spec(str(step["agg"])):

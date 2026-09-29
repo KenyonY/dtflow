@@ -719,7 +719,7 @@ class StreamingTransformer:
             import sys
 
             print(
-                f"⚠️  跳过 {self._error_count} 条求值失败的记录 (首个: {self._first_error})",
+                f"⚠️  {self._error_count} 条记录求值失败 (首个: {self._first_error})",
                 file=sys.stderr,
             )
 

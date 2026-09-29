@@ -202,7 +202,7 @@ class TestCli:
 
     def test_non_strict_summarizes(self, data_file, capsys, not_tty):
         filter_cmd(str(data_file), "x.score > 0.2")
-        assert "跳过 1 条" in capsys.readouterr().err
+        assert "1 条记录求值失败" in capsys.readouterr().err
 
     def test_map_explode_shuffle_group(self, data_file, capsys, not_tty):
         map_cmd(str(data_file), "x.text = x.text.upper()")
@@ -316,3 +316,35 @@ class TestQaRegressions:
         with pytest.raises(typer.Exit) as ei:
             join_cmd(str(data_file), str(right), on="x.id", left_on="x.id")
         assert ei.value.exit_code == 2
+
+
+def test_field_path_guard_checks_every_item(data_file, not_tty):
+    from dtflow.cli.clean import clean, dedupe
+
+    with pytest.raises(typer.Exit) as ei:
+        dedupe(str(data_file), key="s,x.id")
+    assert ei.value.exit_code == 2
+    with pytest.raises(typer.Exit) as ei:
+        clean(str(data_file), keep="x.id")
+    assert ei.value.exit_code == 2
+
+
+def test_pipeline_caret_aligned(tmp_path):
+    from dtflow.pipeline import validate_pipeline
+
+    cfg = tmp_path / "p.yaml"
+    cfg.write_text("steps:\n  - type: filter\n    expr: 'x.a > > 1'\n")
+    (err,) = validate_pipeline(str(cfg))
+    expr_line, caret_line = err.splitlines()[1:]
+    assert expr_line.index("x.a") == caret_line.index("^") - len("x.a > ")
+
+
+def test_tty_preview_has_no_misleading_total(monkeypatch, capsys):
+    from dtflow.streaming import StreamingTransformer
+
+    monkeypatch.setattr(pipe, "is_stdout_tty", lambda: True)
+    monkeypatch.setattr(pipe, "TTY_PREVIEW_LIMIT", 3)
+    st = StreamingTransformer(({"i": i} for i in range(10)), None, total=None)
+    pipe.emit_rows(st, action="select")
+    err = capsys.readouterr().err
+    assert "输出 3 条" not in err and "预览只显示前 3 条" in err

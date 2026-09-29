@@ -23,6 +23,7 @@ from .output import (
     emit_data,
     emit_ndjson,
     get_state,
+    is_stderr_tty,
     is_stdout_tty,
     log,
     resolve_format,
@@ -63,7 +64,7 @@ def load_rows(filename: str) -> List[Dict]:
         die_io_error(e, operation="读取", path=input_label(filename))
 
 
-def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None) -> int:
+def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None, action: str = "") -> int:
     """把数据流写到 stdout, 返回行数。
 
     默认 NDJSON 逐行流式; 显式 --format=json/csv 需要整体, 先 collect。
@@ -97,6 +98,8 @@ def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None) -> int:
             f"[yellow]… 终端预览只显示前 {limit} 条 (未消费完, 总数未知); 取全量请 -o FILE 落盘、"
             f"| 接下游, 或 --format=ndjson[/yellow]"
         )
+    elif action:
+        log(f"[dim]{action}: 输出 {count} 条[/dim]")
     return count
 
 
@@ -120,13 +123,14 @@ def save_rows(st: StreamingTransformer, output: str) -> int:
     if _detect_format(out) == "flaxkv":
         # flaxkv 是目录型 DB, 没法用临时文件替换; 临时 stem 会留下一个打开的 DB 把锁占住
         try:
-            return st.save(output)
+            return st.save(output, show_progress=is_stderr_tty())
         except OSError as e:
             die_io_error(e, operation="保存", path=output)
     fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
     os.close(fd)
     try:
-        n = st.save(tmp)
+        # 进度条只在 stderr 是终端时画: 重定向到文件时那行 "⠋ 处理中" 会混进结构化错误前面
+        n = st.save(tmp, show_progress=is_stderr_tty())
         shutil.move(tmp, output)
         return n
     except OSError as e:
@@ -156,9 +160,7 @@ def write_output(
         output = None
     try:
         if output is None:
-            n = emit_rows(st)
-            log(f"[dim]{action}: 输出 {n} 条[/dim]")
-            return n
+            return emit_rows(st, action=action)
         check_output_path(output)
         n = save_rows(st, output)
     except typer.Exit:

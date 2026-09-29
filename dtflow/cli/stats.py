@@ -50,8 +50,10 @@ def stats(
     from .common import field_path_arg
     from .pipe import input_label, is_stdin, load_rows, open_input
 
-    for f in [*(fields or []), *(expand_fields or [])]:
-        field_path_arg(f, "--field/--expand")
+    for f in fields or []:
+        field_path_arg(f, "--field")
+    for f in expand_fields or []:
+        field_path_arg(f, "--expand")
     filepath = Path(input_label(filename))
     if not is_stdin(filename):
         open_input(filename)  # 只做存在/格式校验 (惰性)

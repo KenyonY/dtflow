@@ -160,7 +160,7 @@ class TestOutputModes:
         )
         assert pipe.emit_rows(st) == 2
         err = capsys.readouterr().err
-        assert "跳过 1 条" in err and "KeyError" in err
+        assert "1 条记录求值失败" in err and "KeyError" in err
 
 
 def _run_shell(cmd: str):

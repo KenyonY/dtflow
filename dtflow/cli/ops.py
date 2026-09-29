@@ -111,6 +111,9 @@ def sort_cmd(
         dt sort data.jsonl --by "len(x.messages)"
         dt sort data.jsonl --by "(x.source, -x.score)"
     """
+    from ..expr import compile_value
+
+    _guard("sort", lambda: compile_value(by))  # 先校验表达式, 再去读数据
     st = open_input(filename)
     if st._total:
         log(f"📊 全量加载 {st._total} 行用于排序")

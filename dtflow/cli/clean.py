@@ -183,6 +183,9 @@ def clean(
         ("--min-tokens", min_tokens),
         ("--max-tokens", max_tokens),
         ("--promote", promote),
+        ("--keep", keep),
+        ("--drop", drop),
+        ("--reorder", reorder),
     ):
         field_path_arg(val, opt)
 

@@ -496,11 +496,20 @@ def apply_where(rows: List[Dict], exprs: Sequence[str], strict: bool = False) ->
 def field_path_arg(value: Optional[str], option: str) -> Optional[str]:
     """字段路径参数 (--key/--by/--field/…) 误写成表达式 (x.meta.s) 会静默解析成 None,
     dedupe 把全表去成 1 行都不吭声 —— 在入口就拦下来。"""
-    if value and (value.startswith("x.") or value.startswith("x[")):
-        from .output import die_usage
+    if not value:
+        return value
+    # 逗号分隔的字段列表 (--key a,b / --keep a,b) 逐项检查, 不只看整串开头
+    for item in str(value).split(","):
+        item = item.strip()
+        if item.startswith("x.") or item.startswith("x["):
+            from .output import die_usage
 
-        die_usage(
-            f"{option} 是字段路径, 不是表达式: 去掉 x. 前缀",
-            suggestion=f"{option}={value[2:] if value.startswith('x.') else value[1:]}",
-        )
+            fixed = ",".join(
+                p.strip()[2:] if p.strip().startswith("x.") else p.strip().lstrip("x")
+                for p in str(value).split(",")
+            )
+            die_usage(
+                f"{option} 是字段路径, 不是表达式: 去掉 x. 前缀 ({item})",
+                suggestion=f"{option}={fixed}",
+            )
     return value
