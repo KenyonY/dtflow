@@ -492,11 +492,11 @@ def _compute_field_stats(
 
         # 基础统计
         if is_expanded:
-            # 展开模式：显示元素总数和平均数，而非非空率
+            # 展开模式：非空率对展开元素无意义, 输出元素总数 (数值, 显示文案在渲染时生成)
             stat = {
                 "field": field_spec,
                 "non_null": non_null_count,
-                "null_rate": t(f"elements: {len(values)}", f"总元素: {len(values)}"),
+                "elements": len(values),
                 "type": field_type,
                 "is_expanded": is_expanded,
             }
@@ -613,7 +613,10 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
     table.add_column(t("Stats", "统计"), style="dim")
 
     for stat in field_stats:
-        if "null_rate" in stat:
+        if "elements" in stat:
+            n_el = stat["elements"]
+            non_null_rate = t(f"elements: {n_el}", f"总元素: {n_el}")
+        elif "null_rate" in stat:
             non_null_rate = stat["null_rate"]
         else:
             non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"

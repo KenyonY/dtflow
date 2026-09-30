@@ -121,3 +121,31 @@ def test_lang_command_switches_and_persists(tmp_path):
 @pytest.mark.parametrize("lang,expected", [("en", "Language: English"), ("zh", "界面语言: 中文")])
 def test_help_mentions_language_switch(tmp_path, lang, expected):
     assert expected in _run(["-m", "dtflow", "--help"], {"DT_LANG": lang}, tmp_path).stdout
+
+
+def test_invalid_env_falls_back_to_config(tmp_path):
+    dt = ["-m", "dtflow"]
+    _run([*dt, "lang", "zh"], {}, tmp_path)
+    # DT_LANG=zh_CN 不是合法值, 不该遮住配置文件里的 zh
+    assert _run([*dt, "lang"], {"DT_LANG": "zh_CN"}, tmp_path).stdout.strip() == "zh"
+
+
+def test_non_object_config_is_ignored(tmp_path):
+    config = tmp_path / ".config/dtflow/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("[]")
+    r = _run(["-m", "dtflow", "lang"], {}, tmp_path)
+    assert r.returncode == 0 and r.stdout.strip() == "en"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root 无视目录权限")
+def test_lang_save_failure_is_structured(tmp_path):
+    config_dir = tmp_path / ".config/dtflow"
+    config_dir.mkdir(parents=True)
+    config_dir.chmod(0o500)
+    try:
+        r = _run(["-m", "dtflow", "lang", "zh"], {}, tmp_path)
+    finally:
+        config_dir.chmod(0o700)
+    assert r.returncode == 4  # PermissionError → 权限拒绝, 而不是裸 traceback
+    assert json.loads(r.stderr)["error"] == "permission_denied"

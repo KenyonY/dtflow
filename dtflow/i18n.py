@@ -17,14 +17,18 @@ CONFIG_PATH = Path.home() / ".config" / "dtflow" / "config.json"
 
 def _read_config() -> dict:
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return config if isinstance(config, dict) else {}
 
 
 def _resolve_lang() -> str:
-    lang = os.environ.get("DT_LANG") or _read_config().get("lang")
-    return lang if lang in LANGS else "en"
+    # 逐级取第一个合法值: DT_LANG=zh_CN 这类无效值不该遮住配置文件
+    for lang in (os.environ.get("DT_LANG"), _read_config().get("lang")):
+        if lang in LANGS:
+            return lang
+    return "en"
 
 
 LANG = _resolve_lang()

@@ -1815,8 +1815,8 @@ def lang_cmd(
         None, help=t("Language to set: en | zh", "要设置的语言: en | zh"), metavar="LANG"
     ),
 ):
-    from .cli.output import die_usage, log
-    from .i18n import save_lang
+    from .cli.output import die_io_error, die_usage, log
+    from .i18n import CONFIG_PATH, save_lang
 
     if value is None:
         typer.echo(LANG)
@@ -1826,11 +1826,14 @@ def lang_cmd(
             t(f"Unsupported language: {value}", f"不支持的语言: {value}"),
             suggestion=t("Choices: en | zh", "可选值: en | zh"),
         )
-    save_lang(value)
+    try:
+        save_lang(value)
+    except OSError as e:
+        die_io_error(e, operation=t("Save", "保存"), path=str(CONFIG_PATH))
     # 用新语言回显, 用户立即看到效果
     log("Language set to English" if value == "en" else "界面语言已设置为中文", style="green")
     env = os.environ.get("DT_LANG")
-    if env and env != value:
+    if env in LANGS and env != value:
         log(
             t(
                 f"Note: DT_LANG={env} is set in this shell and takes precedence",

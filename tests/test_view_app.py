@@ -1472,7 +1472,7 @@ async def test_export_visual_selection(tmp_path):
         app._visual_anchor = 2
         app.query_one("#table").move_cursor(row=5)
         await pilot.pause()
-        assert app._export_scope() == ("选区", 4)
+        assert app._export_scope() == ("selection", 4)
         app._apply_export(str(out))
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -2004,7 +2004,7 @@ async def test_static_tail_export_does_not_claim_tail_size_is_full_history(tmp_p
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app._export_scope() == ("全部（将按需补全索引，行数待定）", -1)
+        assert app._export_scope() == ("all", -1)
 
 
 def _head_app(tmp_path, **kwargs):
@@ -2080,7 +2080,7 @@ async def test_g_then_previous_tail_window_and_export_keep_full_semantics(tmp_pa
         await pilot.pause()
         assert app._global_nos == [7, 8, 9]
         assert "总行数待定" not in str(app.query_one("#status").render())
-        assert app._export_scope() == ("全部", 10)
+        assert app._export_scope() == ("all", 10)
 
         await pilot.press("[")
         await app.workers.wait_for_complete()

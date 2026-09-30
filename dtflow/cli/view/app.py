@@ -785,6 +785,17 @@ class ValueFilterScreen(ModalScreen):
         self.dismiss(None)
 
 
+# 导出范围 (稳定键, 写进血缘) → 界面文案
+_SCOPE_LABELS = {
+    "selection": t("selection", "选区"),
+    "filtered": t("filtered subset", "筛选子集"),
+    "all": t("all", "全部"),
+    "all_unknown": t(
+        "all (index built on demand, row count TBD)", "全部（将按需补全索引，行数待定）"
+    ),
+}
+
+
 class ViewApp(App):
     CSS = """
     Screen { layers: base; }
@@ -2290,25 +2301,27 @@ class ViewApp(App):
     # 所以"筛出来的子集"必须能写成文件, 否则 view 里的筛选结果出不去。
     # ------------------------------------------------------------------ #
     def _export_scope(self) -> Tuple[str, int]:
-        """(范围说明, 行数): 多选态导出选区, 否则导出整个当前浏览序列。"""
+        """(范围: selection|filtered|all, 行数; -1=行数待定): 多选态导出选区, 否则导出当前浏览序列。
+
+        范围是稳定键 (写进血缘记录), 界面文案由 _SCOPE_LABELS 在显示时给出。
+        """
         if self._visual_anchor is not None:
             lo, hi = sorted((self._visual_anchor, self.query_one("#table", DataTable).cursor_row))
-            return t("selection", "选区"), hi - lo + 1
+            return "selection", hi - lo + 1
         if not self.source.total_known:
-            return (
-                t("all (index built on demand, row count TBD)", "全部（将按需补全索引，行数待定）"),
-                -1,
-            )
-        return (
-            t("filtered subset", "筛选子集") if self._filter_label else t("all", "全部")
-        ), self._seq_total()
+            return "all", -1
+        return ("filtered" if self._filter_label else "all"), self._seq_total()
 
     def action_export(self) -> None:
         scope, n = self._export_scope()
         if n == 0:
             self.notify(t("No rows to export", "没有可导出的行"))
             return
-        count = "" if n < 0 else t(f" ({n} rows)", f" {n} 行")
+        if n < 0:
+            scope, count = "all_unknown", ""
+        else:
+            count = t(f" ({n} rows)", f" {n} 行")
+        scope = _SCOPE_LABELS[scope]
         self._open_prompt(
             "export",
             t(

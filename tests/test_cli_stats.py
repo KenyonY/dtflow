@@ -298,6 +298,9 @@ class TestStatsExpansion:
         assert stats_result[0]["type"] == "str"
         # 5 elements total: AI, ML, physics, AI, DL
         assert stats_result[0]["non_null"] == 5
+        # 展开模式输出元素总数 (数值, 与界面语言无关), 不输出无意义的非空率
+        assert stats_result[0]["elements"] == 5
+        assert "null_rate" not in stats_result[0]
         # 4 unique values: AI, ML, physics, DL
         assert stats_result[0]["unique"] == 4
 
