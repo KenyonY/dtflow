@@ -40,6 +40,7 @@ Functions of the current row that summarize a training sample. They are the same
 | `first_user(x)` | `str` | full text of the first user message |
 | `chars(x)` | `int` | characters of all messages, including reasoning and tool-call arguments |
 | `calls(x)` | `str` | called function names, comma-joined, in first-seen order; empty when there are none |
+| `imgs(x)` | `int` | images the conversation references: inline image parts, or sample-level `images`/`image` matched to `<image>` placeholders |
 | `fulltext(x)` | `str` | every scalar value of the record joined as text (no keys); works on a sub-structure too: `fulltext(x.messages)` |
 | `search(x, pattern)` | `bool` | case-insensitive substring over the whole record, `re:` prefix for a regex; identical to `/` in `dt view` |
 

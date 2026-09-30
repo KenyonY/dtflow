@@ -93,7 +93,7 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 ## 表达式语法（filter / select / map / sort / group / join / --where / pipeline 共用）
 
 表达式就是 Python，当前行叫 **`x`**（属性访问：`x.messages[-1].role`、`x.meta.source`；缺字段抛 AttributeError）。
-命名空间另有 `re` / `json` / `math`、`get(x, "messages[*].role:join")` 通向字段路径 DSL，以及**行函数**（与 `dt view` 派生列同一实现）：`turns(x)` 消息条数、`roles(x)` 角色签名如 `u→a→t→a`、`first_user(x)` 首条 user 全文、`chars(x)` 全部消息字符数（含思维链与工具参数）、`calls(x)` 调用过的函数名（逗号分隔，无则空串）、`fulltext(x)` 整条记录所有值拼成的文本、`search(x, 词)` 整条记录不分大小写子串（`re:` 前缀正则，同 view 的 `/`）。裸写 `turns>=6` 是语法错误（提示改 `turns(x)`）。
+命名空间另有 `re` / `json` / `math`、`get(x, "messages[*].role:join")` 通向字段路径 DSL，以及**行函数**（与 `dt view` 派生列同一实现）：`turns(x)` 消息条数、`roles(x)` 角色签名如 `u→a→t→a`、`first_user(x)` 首条 user 全文、`chars(x)` 全部消息字符数（含思维链与工具参数）、`calls(x)` 调用过的函数名（逗号分隔，无则空串）、`imgs(x)` 引用的图片数（内联图片片段或按 `<image>` 对上的 `images`/`image`）、`fulltext(x)` 整条记录所有值拼成的文本、`search(x, 词)` 整条记录不分大小写子串（`re:` 前缀正则，同 view 的 `/`）。裸写 `turns>=6` 是语法错误（提示改 `turns(x)`）。
 
 ```bash
 dt filter d.jsonl "x.score > 0.8 and 'wiki' in x.meta.source"
@@ -185,6 +185,7 @@ dt join   train.jsonl test.jsonl --on "first_user(x)" --anti           # 去掉�
 - **拖两区分界调大小**：表格与详情之间那两行边框（横排时是两列）即分界，鼠标压上去边框变亮 + 状态栏提示，按住拖到哪分界就到哪（按格连续），双击恢复默认 65:35；键盘 `+/-` 仍是 5% 一档，`z` 切左右/上下布局（默认左右）
 - **view 内跑管道** `|`：输入一段 shell 管道（如 `dt filter - "turns(x)>=6" | dt sort - --by "chars(x)" --desc | dt head - 200`，也可接 jq/grep），**整个文件**以 NDJSON 喂给它的 stdin，stdout 的 NDJSON 替换当前浏览数据（格式重检、列重建、约束清空）；每次都从原文件重跑并替换上一次，`r` 回到原文件，`Esc` 取消（kill 子进程），非零退出显示 dt 的结构化错误且数据不变。`C` 复制 `dt view FILE --pipe '…'`，`P` 复制对源文件重跑的管道 + 当前筛选/排序，`w` 的血缘记 `pipe`/`pipe_command`/`pipe_rows`；启动时 `--pipe CMD` 同义（与 `--follow` 互斥）。这是 `P` 的反方向：CLI 结果直接回到 view
 - **导出落地** `w`：把当前子集（或 `v` 选区）写成文件，按扩展名定格式（`.jsonl` 流式写，几十万行不占内存；其他格式走 `save_data` 分派）。**自动写血缘 sidecar**，`dt history <out>` 可查来源文件 + 当时全部条件。剪贴板(`y`/`v`)走 OSC52 有长度上限，几千条必须用 `w`
+- **看图 (VLM)**：详情每条消息下列 `🖼 路径` 行，`<image>` 占位数与 `images` 数不等时顶部标红；`i`/点 `imgs` 单元格/点 `🖼` 行开大图弹窗（`←/→` 翻，标题带分辨率/格式/大小，坏图写原因）。支持本地路径（相对路径按数据文件目录，`--image-root` 改）、http(s)（缓存 `~/.cache/dtflow/images`）、data URI；终端探测 kitty 图形协议/sixel，否则半块字符，tmux 需 `allow-passthrough on`
 - **重命名列**：**双击列头**（单击仍是值筛选，延后 0.15s 开面板）→ 提示框预填当前名 → 回车。表头/详情/选列面板立即用新名，`w` 导出也用新名；筛选/排序/`C` 命令仍用磁盘上的原名（文件未变）。`q` 退出时询问：**写回**（流式重写 + 原子替换，`FILE.lineage.json` 记 `view_rename` 与等价 `dt clean FILE --rename old:new -i`）/ **丢弃** / 取消。stdin 与 follow 模式不能写回，用 `w` 导出。派生列和 `#` 不能改名
 - **可复现** `C`：把当前视图翻译回一条 `dt view ... --where=... --search=... --sort=...` 复制到剪贴板，粘回终端即还原（列值勾选→`str(x.get('col')) in (...)` 这类表达式；表格里被截断的值无法还原时会明说，以血缘为准）
 - **列快照** `S`：对当前浏览序列(子集或全量)的某列给一行 `n·min·max·mean·非空率`(即时决策用，非完整分布)
