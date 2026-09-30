@@ -935,6 +935,11 @@ class ViewApp(App):
     #detail { height: 3fr; border: round $secondary; padding: 0 1; }
     #main.horizontal #detail { width: 1fr; height: 1fr; }
     #detail.zoomed { height: 1fr; }
+    /* Border titles carry identity (file · format, position, sample, field): readable, not border-tinted */
+    #table, #detail {
+        border-title-color: $text; border-title-style: bold;
+        border-subtitle-color: $text-muted;
+    }
     /* Scrollbars recede: the default black track and blue thumb outshine the data */
     #table, #detail {
         scrollbar-background: $surface; scrollbar-background-hover: $surface;
@@ -951,7 +956,9 @@ class ViewApp(App):
     #table.hidden { display: none; }
     #prompt { dock: bottom; display: none; }
     #prompt.active { display: block; }
-    #status { dock: bottom; height: 1; background: $panel; color: $text-muted; padding: 0 1; }
+    #statusbar { dock: bottom; height: 1; background: $panel; color: $text-muted; padding: 0 1; }
+    #status { width: 1fr; height: 1; }
+    #hint { width: auto; height: 1; }
     /* Fixed width: width:auto collapses on VerticalScroll (scroll containers don't size to content).
        98 = longest help line + padding + border; max-* 100% scrolls instead of clipping on small terminals */
     #help-box { padding: 1 2; border: round $primary; background: $surface;
@@ -1284,7 +1291,10 @@ class ViewApp(App):
             yield FastDataTable(id="table", cursor_type="row", zebra_stripes=True, fixed_columns=1)
             yield VerticalScroll(id="detail")  # 每字段一个 Static, 动态挂载 (真实布局定位)
         yield Input(id="prompt")
-        yield Static(id="status")
+        # 状态栏两段: 左边会变的状态 (窄屏被截的是它的右端), 右边常驻按键提示
+        with Horizontal(id="statusbar"):
+            yield Static(id="status")
+            yield Static(id="hint")
 
     def on_mount(self) -> None:
         table = self.query_one("#table", DataTable)
@@ -1754,7 +1764,9 @@ class ViewApp(App):
             self._refresh_detail(0)
         else:  # 空视图 (0 命中): 清详情, 免残留上个样本
             try:
-                self.query_one("#detail", VerticalScroll).remove_children()
+                detail = self.query_one("#detail", VerticalScroll)
+                detail.remove_children()
+                detail.border_title = None
             except NoMatches:
                 pass
             self._fields = []
@@ -1821,6 +1833,7 @@ class ViewApp(App):
         if not detail.is_attached:
             return  # 帧后回调落在退出过程中: DOM 还在但已卸载, mount 会抛 MountError
         idx = self.view_indices[cursor_row]
+        detail.border_title = self._detail_title(idx)
         prev_field = self._current_field()  # 切样本前当前字段, 新样本对齐同名字段
         # 整个切样本+定位期间抑制 scroll 反查, 避免 mount/布局微调把当前字段冲成顶部字段
         self._nav_lock = True
@@ -1847,6 +1860,17 @@ class ViewApp(App):
         # 布局完成后 (widget.size 才确定): 算真实锚点 → 定位到绑定字段 → 刷新状态栏
         self._detail_gen += 1
         self.call_after_refresh(self._after_detail_render, prev_field, self._detail_gen)
+
+    def _detail_title(self, idx: int) -> Text:
+        """详情边框标题: 行号 (与表格 # 列同一口径), 对话再加轮数与字数。"""
+        (no,) = self._cells(idx, ["#"])
+        derived = render.derived_values(self.all_rows[idx], self.fmt)
+        if "turns" not in derived:
+            return Text(f"#{no}")
+        turns, chars = derived["turns"], derived["chars"]
+        return Text(
+            t(f"#{no} · {turns} turns · {chars:,} chars", f"#{no} · {turns} 轮 · {chars:,} 字")
+        )
 
     def _first_batch_chars(self) -> int:
         """首批字符预算: 约两屏 (按终端尺寸粗估, 足够盖住详情视口)。"""
@@ -2001,17 +2025,21 @@ class ViewApp(App):
             status = self.query_one("#status", Static)
         except NoMatches:
             return
+        self._sync_titles()
         total = self.source.total
         win = len(self.all_rows)
         seq_total = self._seq_total()
-        parts = [f"[b]{escape(self.filename)}[/b]", t(f"format:{self.fmt}", f"格式:{self.fmt}")]
-        if self._scan_msg:  # 扫描进行中: 只显文件名 + 进度, 醒目
-            parts.append(f"[reverse] {escape(self._scan_msg)} [/reverse]")
-            status.update(Text.from_markup("  ·  ".join(parts)))
+        # 文件名/格式/光标位置/当前字段在两区边框上 (_sync_titles), 状态栏只放会变的状态
+        parts: List[str] = []
+        if self._scan_msg:  # 扫描进行中: 只显进度, 醒目
+            status.update(Text.from_markup(f"[reverse] {escape(self._scan_msg)} [/reverse]"))
+            self.query_one("#hint", Static).update(Text())
             return
-        # 排在最前 (文件名之后): 状态栏从左往右排, 右端先被窄屏截掉 —— 常驻提示挂在末尾,
-        # 越是小终端越看不见。压在可拖的线上时让位给那条更贴当下的提示。
-        if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
+        # 压在可拖的线上时, 那条更贴当下的提示排最前, 右侧常驻提示让位
+        contextual = self._edge_hint or self._split_hint
+        if (
+            self._edge_hint
+        ):  # 光是高亮那条线还不够, 直说一句它能拖  # 光是高亮那条线还不够, 直说一句它能拖
             hint = t(
                 "[reverse] drag to resize column · double-click to auto-fit [/reverse]",
                 "[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]",
@@ -2024,11 +2052,9 @@ class ViewApp(App):
             )
         else:
             hint = t("[dim]z layout · ? help[/dim]", "[dim]z 布局 · ? 帮助[/dim]")
-        parts.insert(1, hint)
         if self._renames:
             n = len(self._renames)
-            parts.insert(
-                2,
+            parts.append(
                 t(
                     f"[yellow]renamed ×{n} · q to save[/yellow]",
                     f"[yellow]已改名 ×{n} · q 时保存[/yellow]",
@@ -2109,20 +2135,32 @@ class ViewApp(App):
                 )
             )
             parts.append(t("[dim]]/[ page windows·: jump[/dim]", "[dim]]/[ 翻窗口·: 跳行[/dim]"))
-        elif not self._filter_label and self.source.total_known:
-            parts.append(t(f"{total} rows", f"{total} 行"))
         if self._sort_label:
             parts.append(t(f"sort:{escape(self._sort_label)}", f"排序:{escape(self._sort_label)}"))
-        # 详情当前字段 (滚动同步顶部字段, n/N 精确接管)
-        cur_field = self._current_field()
-        if cur_field:
-            parts.append(
-                t(
-                    f"[cyan]field:{escape(cur_field)}[/cyan]",
-                    f"[cyan]字段:{escape(cur_field)}[/cyan]",
-                )
-            )
+        if contextual:
+            parts.insert(0, hint)
         status.update(Text.from_markup("  ·  ".join(parts)))
+        self.query_one("#hint", Static).update(Text() if contextual else Text.from_markup(hint))
+
+    def _sync_titles(self) -> None:
+        """两区边框标题: 表格 左上 文件·格式 / 右下 光标位置; 详情 右下 当前字段。
+
+        这些是"身份"信息, 挂在所属区域的边框上, 状态栏就只剩会变的状态。
+        """
+        try:
+            table = self.query_one("#table", DataTable)
+            detail = self.query_one("#detail", VerticalScroll)
+        except NoMatches:
+            return
+        table.border_title = Text(f"{self.filename} · {self.fmt}")
+        if self.view_indices:
+            pos = self.win_offset + table.cursor_row + 1
+            total = f"{self._seq_total():,}" if self.source.total_known else "?"
+            table.border_subtitle = Text(f"{pos:,} / {total}")
+        else:
+            table.border_subtitle = None
+        field = self._current_field()  # 滚动同步顶部字段, n/N 精确接管
+        detail.border_subtitle = Text(field) if field else None
 
     def _unlock_follow_move(self) -> None:
         self._follow_moving = False
@@ -2261,6 +2299,7 @@ class ViewApp(App):
         # 让光标卡在后面慢慢追。这里只记代次, 帧后回调发现已被更新的高亮取代就不画。
         self._highlight_gen += 1
         self.call_after_refresh(self._refresh_detail_latest, self._highlight_gen)
+        self._sync_titles()  # 光标位置即时跟上, 不等详情
         if (
             self._follow
             and self._follow_pinned

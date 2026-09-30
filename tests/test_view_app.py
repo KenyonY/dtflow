@@ -567,19 +567,14 @@ async def test_detail_field_stable_at_bottom_across_samples():
 
 @pytest.mark.asyncio
 async def test_status_shows_current_field_on_scroll():
-    import re
-
-    from textual.widgets import Static
-
     rows = [{f"f{i:02d}": f"v-{i}" for i in range(20)}]
     app = _make_app(rows, fmt="generic")
     async with app.run_test(size=(80, 12)) as pilot:
         detail = app.query_one("#detail")
         await pilot.pause()
 
-        def status_field():
-            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).render()))
-            return m.group(1) if m else None
+        def status_field():  # 当前字段挂在详情边框右下角
+            return detail.border_subtitle
 
         assert status_field() == "f00"  # 首屏顶部字段
         detail.scroll_to(y=app._cur_anchors["f12"], animate=False)
@@ -589,10 +584,6 @@ async def test_status_shows_current_field_on_scroll():
 
 @pytest.mark.asyncio
 async def test_field_nav_reaches_scroll_unreachable_bottom_fields():
-    import re
-
-    from textual.widgets import Static
-
     # 高 viewport + 内容略超 → max_scroll 小, 底部字段挤在末屏, 滚动到不了顶部
     rows = [{f"f{i:02d}": f"v-{i}" for i in range(20)}]
     app = _make_app(rows, fmt="generic")
@@ -601,8 +592,7 @@ async def test_field_nav_reaches_scroll_unreachable_bottom_fields():
         await pilot.pause()
 
         def sf():
-            m = re.search(r"字段:(\S+)", str(app.query_one("#status", Static).render()))
-            return m.group(1) if m else None
+            return detail.border_subtitle
 
         # 靠滚动到底也无法让 f19 成为顶部字段
         detail.scroll_end(animate=False)
@@ -3194,20 +3184,41 @@ async def test_drag_select_tracks_mouse_across_steps():
 
 
 @pytest.mark.asyncio
-async def test_status_hints_layout_key_up_front():
-    # z / ? 提示排在文件名之后而不是行尾: 状态栏右端先被窄屏截掉, 挂末尾等于小终端看不见
+async def test_status_state_left_hints_right():
+    # 状态栏: 左边会变的状态, 右边常驻 z / ? 提示 (窄屏被截的是状态的右端, 提示始终在)
     app = _chat_app(5)
-    async with app.run_test(size=(60, 20)) as pilot:
+    async with app.run_test(size=(100, 20)) as pilot:
         await pilot.pause()
-        line = app.query_one("#status").render_line(0).text
-        assert "z 布局" in line and "? 帮助" in line
-        assert line.index("z 布局") < line.index("格式")
+        status, hint = app.query_one("#status"), app.query_one("#hint")
+        assert hint.render_line(0).text.strip() == "z 布局 · ? 帮助"
+        assert hint.region.right == status.region.right + hint.region.width  # 贴在右端
+        assert app.filename not in status.render_line(0).text  # 文件名在表格边框标题上
+
+        await pilot.resize_terminal(30, 20)
+        await pilot.pause()
+        assert hint.render_line(0).text.strip() == "z 布局 · ? 帮助"
 
         app._set_split_hint(True)  # 压在两区分界上: 让位给更贴当下的那条提示
         await pilot.pause()
-        line = app.query_one("#status").render_line(0).text
-        assert "拖动调两区大小" in line and "z 换上下/左右" in line
-        assert "z 布局" not in line
+        assert "拖动调两区大小" in status.render_line(0).text
+        assert hint.render_line(0).text.strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_border_titles_carry_file_position_and_sample():
+    # 文件·格式 / 光标位置 / 样本摘要 / 当前字段 挂在两区边框上, 随光标即时更新
+    app = _chat_app(5)
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        table, detail = app.query_one("#table"), app.query_one("#detail")
+        assert table.border_title == f"{app.filename} · openai_chat"
+        assert table.border_subtitle == "1 / 5"
+        assert detail.border_title.startswith("#1 · ")
+        assert detail.border_subtitle == "msg0"
+        await pilot.press("j", "j")
+        await pilot.pause()
+        assert table.border_subtitle == "3 / 5"
+        assert detail.border_title.startswith("#3 · ")
 
 
 # ---------------------------------------------------------------------- #
