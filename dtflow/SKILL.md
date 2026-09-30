@@ -43,7 +43,7 @@ dt <cmd> --help          # 具体命令的参数/示例/退出码
 
 **退出码约定：**
 - `0` 成功
-- `1` 一般错误（读写失败、运行时错误）
+- `1` 一般错误（读写失败、运行时错误；`validate` 纯校验发现无效记录也是 1）
 - `2` 参数错误（未知预设、非法取值、必填缺失）
 - `3` 资源不存在（文件找不到）
 - `4` 权限拒绝
@@ -57,7 +57,7 @@ dt <cmd> --help          # 具体命令的参数/示例/退出码
 ## 输出格式
 
 - **非 TTY**（管道/重定向） → 默认 `ndjson`（记录类） 或 `json`（报告类）—— agent 场景取此
-- **TTY** → 预览命令（head/sample/tail/slice）默认逐条 pretty JSON；加 `--pretty` 或 `--format=table` 走格式感知渲染
+- **TTY** → 数据命令（filter/select/map/sort/group/join/clean/dedupe…）默认画**表格**（列与 `dt view` 同源：对话数据出 turns/roles/first_user/chars/calls），只看前 50 行，`--format=table` 全量；预览命令（head/sample/tail/slice）默认逐条 pretty JSON；加 `--pretty` 或 `--format=table` 走格式感知渲染
 - 任意时候可用 `dt --format=json <cmd>` 强制指定
 
 ## 副作用命令都有 --dry-run

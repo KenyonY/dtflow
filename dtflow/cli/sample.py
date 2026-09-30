@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Literal, Optional
 from rich.markup import escape
 
 from ..i18n import t
-from ..storage.io import sample_file, save_data
+from ..storage.io import sample_file
+from ..streaming import StreamingTransformer
 from ..utils.field_path import get_field_with_spec
 from .common import (
     _get_file_row_count,
@@ -27,6 +28,7 @@ from .output import (
     log,
     resolve_format,
 )
+from .pipe import write_output
 
 
 def _sample_from_list(
@@ -66,6 +68,7 @@ def sample(
     where: Optional[List[str]] = None,
     dist: Optional[str] = None,
     format: Optional[str] = None,
+    _action: str = "sample",
 ) -> None:
     """
     从数据文件中采样指定数量的数据。
@@ -232,12 +235,6 @@ def sample(
         except Exception as e:
             die("sample_error", str(e))
 
-    # 输出结果
-    if output:
-        save_data(sampled, output)
-        log(t(f"Saved {len(sampled)} rows to {output}", f"已保存 {len(sampled)} 条数据到 {output}"))
-        return
-
     field_list = _parse_field_list(fields) if fields else None
     if field_list:
         sampled = [
@@ -248,6 +245,19 @@ def sample(
             )
             for item in sampled
         ]
+
+    # 落盘与其它数据命令同一条路: 临时文件原子替换 + action 摘要 + 结构化 IO 错误
+    if output:
+        st_out = StreamingTransformer(iter(sampled), None, total=len(sampled))
+        stats = {"num": num, "type": type, "seed": seed, "by": by, "where": where}
+        write_output(
+            st_out,
+            output,
+            action=_action,
+            inputs=[filename],
+            stats={k: v for k, v in stats.items() if v not in (None, [], False)},
+        )
+        return
 
     # 输出格式决策:
     # - 显式 --format 最高优先
@@ -493,7 +503,16 @@ def head(
         dt head data.jsonl --fields=question,answer
         dt head data.jsonl 1 --raw  # 完整 JSON 输出
     """
-    sample(filename, num=num, type="head", output=output, fields=fields, raw=raw, format=format)
+    sample(
+        filename,
+        num=num,
+        type="head",
+        output=output,
+        fields=fields,
+        raw=raw,
+        format=format,
+        _action="head",
+    )
 
 
 def slice_data(
@@ -587,12 +606,6 @@ def slice_data(
         )
     )
 
-    # 输出结果
-    if output:
-        save_data(sliced, output)
-        log(t(f"Saved {len(sliced)} rows to {output}", f"已保存 {len(sliced)} 条数据到 {output}"))
-        return
-
     field_list = _parse_field_list(fields) if fields else None
     if field_list:
         sliced = [
@@ -603,6 +616,17 @@ def slice_data(
             )
             for item in sliced
         ]
+
+    if output:
+        st_out = StreamingTransformer(iter(sliced), None, total=len(sliced))
+        write_output(
+            st_out,
+            output,
+            action="slice",
+            inputs=[filename],
+            stats={"range": range_str, "input_rows": total},
+        )
+        return
 
     fmt = resolve_format(format, default_for_tty="table")
     if fmt != "table":
@@ -657,4 +681,13 @@ def tail(
         dt tail data.jsonl --fields=question,answer
         dt tail data.jsonl 1 --raw  # 完整 JSON 输出
     """
-    sample(filename, num=num, type="tail", output=output, fields=fields, raw=raw, format=format)
+    sample(
+        filename,
+        num=num,
+        type="tail",
+        output=output,
+        fields=fields,
+        raw=raw,
+        format=format,
+        _action="tail",
+    )

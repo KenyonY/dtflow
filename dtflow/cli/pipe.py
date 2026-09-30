@@ -9,6 +9,7 @@ stdout 只放数据, 进度/摘要/警告一律 stderr (见 output.py 的总约�
 
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import tempfile
@@ -27,7 +28,6 @@ from .output import (
     is_stderr_tty,
     is_stdout_tty,
     log,
-    resolve_format,
 )
 
 STDIN = "-"
@@ -71,15 +71,26 @@ def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None, action: st
     默认 NDJSON 逐行流式; 显式 --format=json/csv 需要整体, 先 collect。
     stdout 是 TTY 且未显式指定格式时只出前 TTY_PREVIEW_LIMIT 行并提示。
     """
-    fmt = resolve_format(fmt, default_for_tty="table")
+    explicit = bool(fmt or get_state().fmt)
+    # 本模块的 is_stdout_tty 是可替换的 (测试模拟终端), 不经 resolve_format 里那份
+    fmt = fmt or get_state().fmt or ("table" if is_stdout_tty() else "ndjson")
     if fmt in ("json", "csv"):
         rows = st.collect()
         emit_data(rows, format=fmt)
         st.report_errors()
         return len(rows)
 
-    explicit = bool(get_state().fmt)
     limit = None if (explicit or not is_stdout_tty()) else TTY_PREVIEW_LIMIT
+    if fmt == "table":
+        # 表格是"看"的形态: 终端里默认给它, 且只看前 limit 行; 显式 --format=table 则全量
+        rows = list(itertools.islice(st, limit + 1 if limit is not None else None))
+        truncated = limit is not None and len(rows) > limit
+        rows = rows[:limit] if truncated else rows
+        emit_table(rows)
+        st.report_errors()
+        _report_count(len(rows), truncated, limit, action)
+        return len(rows)
+
     count = 0
     truncated = False
 
@@ -94,6 +105,11 @@ def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None, action: st
 
     emit_ndjson(counted())
     st.report_errors()
+    _report_count(count, truncated, limit, action)
+    return count
+
+
+def _report_count(count: int, truncated: bool, limit: Optional[int], action: str) -> None:
     if truncated:
         log(
             t(
@@ -108,7 +124,104 @@ def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None, action: st
         log(
             t(f"[dim]{action}: {count} rows written[/dim]", f"[dim]{action}: 输出 {count} 条[/dim]")
         )
-    return count
+
+
+def emit_table(rows: List[Dict], *, start_no: int = 0) -> None:
+    """把若干行画成 rich 表格写到 stdout —— 列目录与单元格和 dt view 同源 (render.build_columns /
+    row_cells): 对话数据出 turns/roles/first_user/chars/calls 派生列, 其余数据出全部顶层字段。
+
+    这是 view 的表格下放到非交互场景: dt filter … 在终端里直接看见和 view 一样的表。
+    列宽自己算 (rich 的自动压缩会把窄列挤没): 数值列取自然宽, 文本列封顶后按比例压缩,
+    还装不下就从右侧藏列并在 stderr 说明 —— 静态输出没有横向滚动, 藏比挤成一个字符诚实。
+    """
+    import sys
+
+    from rich import box
+    from rich.cells import cell_len
+    from rich.console import Console
+    from rich.table import Table
+    from rich.text import Text
+
+    from .output import use_color
+    from .view.render import (
+        NUMERIC_DERIVED,
+        build_columns,
+        default_visible_columns,
+        detect_format,
+        row_cells,
+    )
+
+    if not rows:
+        log(t("[dim](no rows)[/dim]", "[dim](无数据)[/dim]"))
+        return
+    fmt = detect_format(rows)
+    cols = default_visible_columns(build_columns(rows, fmt), fmt)
+    cells = [row_cells(i, row, fmt, cols, row_no=start_no + i) for i, row in enumerate(rows)]
+    tty = is_stdout_tty()
+    styled = tty and use_color()
+    console = Console(
+        file=sys.stdout,
+        force_terminal=styled,
+        no_color=not styled,
+        width=shutil.get_terminal_size((120, 24)).columns
+        if tty
+        else int(os.environ.get("COLUMNS", "120")),
+        highlight=False,
+    )
+
+    # 列宽: 数值/行号列按内容; 文本列封顶 (长文本 60, 其余 40) 再按比例压到能放下
+    fixed = {"#", *NUMERIC_DERIVED}
+    long_text = {"first_user", "prompt", "instruction"}
+    widths = {}
+    for j, c in enumerate(cols):
+        natural = max(cell_len(c), *(cell_len(r[j]) for r in cells))
+        cap = None if c in fixed else (60 if c in long_text else 40)
+        widths[c] = natural if cap is None else min(natural, cap)
+    pad = 2  # 每列左右各 1 格 padding
+
+    def total(names):
+        return sum(widths[c] + pad for c in names)
+
+    shown = list(cols)
+    avail = console.width
+    if total(shown) > avail:
+        flex = [c for c in shown if c not in fixed]
+        need = total(shown) - avail
+        room = sum(widths[c] - 6 for c in flex)  # 文本列最窄压到 6
+        if flex and room > 0:
+            ratio = min(1.0, need / room)
+            for c in flex:
+                widths[c] -= int((widths[c] - 6) * ratio)
+        while len(shown) > 1 and total(shown) > avail:
+            shown.pop()
+    hidden = len(cols) - len(shown)
+
+    table = Table(
+        box=box.SIMPLE_HEAD, header_style="bold cyan", pad_edge=False, show_edge=False, expand=False
+    )
+    for c in shown:
+        table.add_column(
+            c,
+            width=widths[c],
+            justify="right" if c in fixed else "left",
+            no_wrap=True,
+            overflow="ellipsis",
+        )
+    for r in cells:
+        table.add_row(*(Text(r[j]) for j in range(len(shown))))
+    try:
+        console.print(table)
+    except BrokenPipeError:
+        return
+    if hidden:
+        log(
+            t(
+                f"[dim]… {hidden} more column(s) hidden (narrow terminal): {', '.join(cols[len(shown) :])};"
+                f" widen the terminal, or use dt view / --format=ndjson[/dim]",
+                f"[dim]… 终端太窄, 隐藏了 {hidden} 列: {', '.join(cols[len(shown) :])};"
+                f" 拉宽终端, 或用 dt view / --format=ndjson[/dim]",
+            )
+        )
 
 
 def check_output_path(output: str) -> None:
@@ -133,7 +246,10 @@ def save_rows(st: StreamingTransformer, output: str) -> int:
     from ..storage.io import _detect_format
 
     out = Path(output)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        die_io_error(e, operation=t("Save", "保存"), path=output)
     if _detect_format(out) == "flaxkv":
         # flaxkv 是目录型 DB, 没法用临时文件替换; 临时 stem 会留下一个打开的 DB 把锁占住
         try:

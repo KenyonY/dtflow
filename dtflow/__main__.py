@@ -1669,7 +1669,7 @@ def eval(
         "    dt validate data.jsonl --preset=alpaca -o valid.jsonl\n"
         "    dt validate data.jsonl --preset=openai_chat --filter   # filter out invalid rows\n"
         "    dt --format=json validate data.jsonl --preset=openai_chat  # JSON report\n\n"
-        "Exit codes: 0 all valid or command succeeded, 2 bad arguments (unknown preset), 3 file not found",
+        "Exit codes: 0 all valid (or valid rows written with --filter/-o), 1 invalid rows found, 2 bad arguments (unknown preset), 3 file not found",
         "使用预设 Schema 验证数据格式\n\n"
         "可用预设: openai_chat, alpaca, dpo, sharegpt\n\n"
         "示例:\n"
@@ -1677,7 +1677,7 @@ def eval(
         "    dt validate data.jsonl --preset=alpaca -o valid.jsonl\n"
         "    dt validate data.jsonl --preset=openai_chat --filter   # 过滤无效\n"
         "    dt --format=json validate data.jsonl --preset=openai_chat  # JSON 报告\n\n"
-        "退出码: 0 全部有效或命令成功, 2 参数错误 (未知预设), 3 文件不存在",
+        "退出码: 0 全部有效 (或 --filter/-o 已写出有效数据), 1 存在无效记录, 2 参数错误 (未知预设), 3 文件不存在",
     )
 )
 def validate(

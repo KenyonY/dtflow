@@ -5,6 +5,7 @@ CLI Schema 验证命令
 from pathlib import Path
 from typing import Optional
 
+import typer
 from rich.markup import escape
 
 from ..i18n import t
@@ -211,6 +212,11 @@ def validate(
     if verbose:
         log(t("[bold]Schema definition:[/bold]", "[bold]Schema 定义:[/bold]"))
         log(str(schema))
+
+    # 纯校验是一次检查: 有无效记录就以 1 退出, 脚本/agent 不必再解析报告。
+    # --filter / -o 要的是有效数据, 已如约产出, 仍为 0。
+    if not writes_data and invalid_count > 0:
+        raise typer.Exit(code=1)
 
 
 def _render_validate_report(report: dict, max_errors: int) -> None:

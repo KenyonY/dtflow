@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import orjson
 import pytest
@@ -87,6 +88,40 @@ class TestStdinStdout:
             concat("-", "-")
         assert ei.value.exit_code == 2
 
+    def test_sample_output_emits_action_json(self, tmp_path, capsys, not_tty):
+        f = tmp_path / "d.jsonl"
+        f.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))
+        out = tmp_path / "s.jsonl"
+        head(str(f), num=2, output=str(out))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["action"] == "head" and payload["stats"]["output_rows"] == 2
+        assert payload["stats"]["type"] == "head" and "seed" not in payload["stats"]
+        assert out.read_text().count("\n") == 2
+        # -o 同样尊重 --fields
+        sample(str(f), num=3, type="head", output=str(out), fields="id")
+        capsys.readouterr()
+        assert all(set(r) == {"id"} for r in load_data(str(out)))
+
+    def test_sample_output_io_error_is_structured(self, tmp_path, capsys, not_tty):
+        f = tmp_path / "d.jsonl"
+        f.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))
+        with pytest.raises(typer.Exit) as ei:
+            head(str(f), num=2, output="/proc/nope/x.jsonl")
+        assert ei.value.exit_code == 3
+        assert json.loads(capsys.readouterr().err)["error"] == "file_not_found"
+        assert not list(tmp_path.glob(".tmp_*"))
+
+    def test_split_gz_input_keeps_compound_extension(self, tmp_path, capsys, not_tty):
+        import gzip
+
+        f = tmp_path / "d.jsonl.gz"
+        with gzip.open(f, "wb") as fh:
+            fh.write(b"".join(orjson.dumps(r) + b"\n" for r in ROWS * 4))
+        split(str(f), ratio="0.5", output=str(tmp_path / "o"), seed=1)
+        paths = [s["path"] for s in json.loads(capsys.readouterr().out)["stats"]["splits"]]
+        assert [Path(p).name for p in paths] == ["d_train.jsonl.gz", "d_test.jsonl.gz"]
+        assert sum(len(load_data(p)) for p in paths) == 12
+
     def test_split_stdin_requires_dir_and_name(self, monkeypatch, tmp_path, not_tty):
         _feed_stdin(monkeypatch, ROWS)
         with pytest.raises(typer.Exit) as ei:
@@ -126,7 +161,8 @@ class TestOutputModes:
         assert f.read_bytes() == raw, "无 -o/-i 不得改动原文件"
         assert len(_stdout_rows(capsys)) == 3
 
-    def test_tty_preview_truncates(self, monkeypatch, capsys):
+    def test_tty_preview_truncates_as_table(self, monkeypatch, capsys):
+        # 终端里默认是表格 (view 的表下放到非交互场景), 只看前 N 行
         from dtflow.streaming import StreamingTransformer
 
         monkeypatch.setattr(pipe, "is_stdout_tty", lambda: True)
@@ -134,8 +170,53 @@ class TestOutputModes:
         st = StreamingTransformer(({"i": i} for i in range(100)), None, total=None)
         n = pipe.emit_rows(st)
         captured = capsys.readouterr()
-        assert n == 5 and len(captured.out.splitlines()) == 5
+        lines = [ln for ln in captured.out.splitlines() if ln.strip()]
+        assert n == 5 and lines[0].split() == ["#", "i"]
+        assert [ln.split() for ln in lines[-5:]] == [[str(k + 1), str(k)] for k in range(5)]
         assert "前 5 条" in captured.err
+
+    def test_tty_explicit_table_not_truncated(self, monkeypatch, capsys):
+        from dtflow.cli.output import CLIState, get_state, set_state
+        from dtflow.streaming import StreamingTransformer
+
+        monkeypatch.setattr(pipe, "is_stdout_tty", lambda: True)
+        monkeypatch.setattr(pipe, "TTY_PREVIEW_LIMIT", 5)
+        old = get_state()
+        set_state(CLIState(fmt="table"))
+        try:
+            st = StreamingTransformer(({"i": i} for i in range(20)), None, total=None)
+            assert pipe.emit_rows(st, action="filter") == 20
+        finally:
+            set_state(old)
+        captured = capsys.readouterr()
+        assert "20" in captured.out.split() and "前 5 条" not in captured.err
+
+    def test_non_tty_default_stays_ndjson(self, capsys, not_tty):
+        from dtflow.streaming import StreamingTransformer
+
+        st = StreamingTransformer(({"i": i} for i in range(3)), None, total=None)
+        assert pipe.emit_rows(st) == 3
+        assert _stdout_rows(capsys) == [{"i": 0}, {"i": 1}, {"i": 2}]
+
+    def test_emit_table_generic_and_chat(self, capsys, not_tty):
+        pipe.emit_table([{"a": 1, "b": "x"}, {"a": 2, "c": None}])
+        header = capsys.readouterr().out.splitlines()[0].split()
+        assert header == ["#", "a", "b", "c"]  # 全部顶层字段, 首现顺序
+        chat = [
+            {
+                "messages": [
+                    {"role": "user", "content": "hi " * 100},
+                    {"role": "assistant", "content": "yo"},
+                ],
+                "src": "s",
+            }
+        ]
+        pipe.emit_table(chat, start_no=41)
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+        assert lines[0].split()[:6] == ["#", "turns", "roles", "first_user", "chars", "calls"]
+        assert lines[-1].split()[:2] == ["42", "2"]  # 行号从 start_no 起, 与 view 一致
+        pipe.emit_table([])
+        assert "无数据" in capsys.readouterr().err
 
     def test_explicit_format_disables_tty_truncation(self, monkeypatch, capsys):
         from dtflow.cli.output import CLIState, get_state, set_state
@@ -198,6 +279,26 @@ class TestQaRegressions:
         monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw)))
         head("-", num=2)
         assert [r["id"] for r in _stdout_rows(capsys)] == [1, 2]
+
+    def test_validate_pure_mode_exit_1_on_invalid(self, tmp_path, capsys, not_tty):
+        from dtflow.cli.validate import validate
+
+        f = tmp_path / "d.jsonl"
+        f.write_bytes(
+            b'{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}\n{"x":1}\n'
+        )
+        with pytest.raises(typer.Exit) as ei:
+            validate(str(f), preset="openai_chat")
+        assert ei.value.exit_code == 1
+        assert json.loads(capsys.readouterr().out)["invalid"] == 1  # 报告照常输出
+        # --filter 要的是有效数据, 已如约产出 → 0
+        validate(str(f), preset="openai_chat", filter_invalid=True)
+        assert len(_stdout_rows(capsys)) == 1
+        # 全部有效 → 0
+        f.write_bytes(
+            b'{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}\n'
+        )
+        validate(str(f), preset="openai_chat")
 
     def test_validate_filter_to_file_single_stdout_json(self, tmp_path, capsys, not_tty):
         from dtflow.cli.validate import validate

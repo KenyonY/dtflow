@@ -9,8 +9,10 @@ from rich.markup import escape
 
 from ..i18n import t
 from ..ops import parse_ratio, split_names, split_rows
-from ..storage.io import save_data
+from ..storage.io import data_suffix, is_gz
+from ..streaming import StreamingTransformer
 from .output import die_io_error, die_usage, emit_action, log
+from .pipe import check_output_path, save_rows
 
 
 def split(
@@ -97,8 +99,12 @@ def split(
         output_dir = filepath.parent
 
     # 收集 split 信息
-    stem = name or filepath.stem
-    ext = ".jsonl" if is_stdin(filename) else filepath.suffix
+    if is_stdin(filename):
+        stem, ext = name, ".jsonl"
+    else:
+        # x.jsonl.gz → x_train.jsonl.gz (suffix 只会给 .gz, 得到 x.jsonl_train.gz 这种名字)
+        ext = data_suffix(filepath) + (".gz" if is_gz(filepath) else "")
+        stem = name or filepath.name[: -len(ext)]
 
     ratio_text = " / ".join(f"{r:.0%}" for r in ratios)
     log(t(f"[bold]🔀 Split ratio:[/bold] {ratio_text}", f"[bold]🔀 切分比例:[/bold] {ratio_text}"))
@@ -131,12 +137,11 @@ def split(
         )
         return
 
-    # 保存各部分
+    # 保存各部分: 与其它数据命令同一条落盘路径 (临时文件原子替换, IO 错误结构化)
+    for info in split_info:
+        check_output_path(info["path"])
     for info, part in zip(split_info, parts, strict=False):
-        try:
-            save_data(part, info["path"])
-        except Exception as e:
-            die_io_error(e, operation=t("Save", "保存"), path=str(info["path"]))
+        save_rows(StreamingTransformer(iter(part), None, total=len(part)), info["path"])
         log(
             t(
                 f"   {escape(info['name'])}: {info['rows']} rows "

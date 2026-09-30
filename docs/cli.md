@@ -5,8 +5,8 @@
 ## Conventions every data command follows
 
 - **`FILE` may be `-`**: read NDJSON from stdin. `.gz` input is detected by magic bytes.
-- **No `-o` → data goes to stdout** as NDJSON (`--format json|csv` for whole documents). Progress, warnings and summaries go to stderr, so stdout is always machine-readable. When stdout is a terminal and no format is forced, only the first 50 rows are shown as a preview.
-- **`-o FILE`** writes the file (atomically, via a temp file in the same directory) and prints an action summary: a panel on stderr in a terminal, a JSON object on stdout otherwise.
+- **No `-o` → data goes to stdout** as NDJSON (`--format json|csv` for whole documents). Progress, warnings and summaries go to stderr, so stdout is always machine-readable. When stdout is a terminal and no format is forced, the first 50 rows are shown as a **table** with the same columns `dt view` would show (`turns/roles/first_user/chars/calls` for chat data, every top-level field otherwise); `--format table` renders everything, `--format ndjson` restores raw lines.
+- **`-o FILE`** writes the file (atomically, via a temp file in the same directory) and prints an action summary: a panel on stderr in a terminal, a JSON object on stdout otherwise. This holds for `sample`/`head`/`tail`/`slice`/`split` too.
 - **`-o -`** is the same as no `-o`.
 - **`-i` / `--in-place`** (clean, dedupe) writes back to the input file. Nothing overwrites your input unless you ask.
 - **`--dry-run`** on every side-effecting command runs the whole computation, writes nothing, prints the summary and exits with code 10.
@@ -143,7 +143,7 @@ dt token-stats data.jsonl --field=messages --model=gpt-4  # per-role token distr
 dt token-stats data.jsonl --field=messages[-1].content
 dt token-stats data.jsonl --field=text --detailed --workers=4
 
-dt validate data.jsonl --preset=openai_chat               # openai_chat | alpaca | dpo | sharegpt
+dt validate data.jsonl --preset=openai_chat               # openai_chat | alpaca | dpo | sharegpt; exit 1 if any row is invalid
 dt validate data.jsonl --preset=sharegpt --filter -o valid.jsonl   # keep valid rows (stdout without -o)
 dt validate data.jsonl --preset=dpo --max-errors=100 --workers=4
 
