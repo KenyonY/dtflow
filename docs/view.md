@@ -36,6 +36,7 @@ dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memor
 | `S` | Column snapshot: `n·min·max·mean·non-null rate` of one column over the current sequence (full distributions: `dt stats`) |
 | `c` | Choose columns (a tick panel that applies to both table columns and detail fields) |
 | Drag a header `│` | **Resize columns** (Excel style): the `│` to the right of every header (last column included) is a handle, it turns into `┃` under the mouse with a status-bar hint, drag to resize; double-click restores auto width. Widths are remembered per column name across windows, filters and column sets |
+| Double-click a header | **Rename the column**: a prompt pre-filled with the current name; the header, the detail pane and the column picker update at once, the file is untouched until you quit (see below). Derived columns and `#` can't be renamed |
 | `y` `v` | Copy the current sample as JSON · `v` multi-select then `y` copies several |
 | Drag in detail + `Ctrl+c` | **Select any text with the mouse**: hold the left button and drag (what you see is what you select, wrapped lines stay aligned), `Ctrl+c` copies and clears. Multi-click widens the selection: double-click a word (hyphens and underscores count as word characters), triple-click a line, four clicks a field block, five clicks the whole detail pane; a single click or `Esc` clears. Copying uses OSC52 plus local `wl-copy`/`xclip`/`xsel`, so it reaches your local clipboard over SSH and inside tmux. Dragging in the table means something else (resize / select rows); use `y` for whole samples |
 | Drag the split | **Resize the two panes with the mouse**: the border between table and detail is the handle, it brightens under the mouse with a status-bar hint, drag it anywhere (cell by cell); double-click restores the default 65:35. `+/-` still move it in 5 % steps |
@@ -67,6 +68,18 @@ any('keyword' in m.content for m in x.messages)   # whole conversation
 `/` searches **every value of every record**, not just the table columns: the table is a derived summary, `first_user` is only the first user message, and searching by column would miss assistant replies entirely. Hits are painted yellow in both panes, and `*` walks through them.
 
 **Scans run in parallel**: once the JSONL/NDJSON index is ready, the file is split into byte ranges and handed to a process pool (constraints are serialized to a spec and each worker rebuilds the same predicate). Measured on 300k rows / 440 MB, a `/` search drops from 1.9 s to 0.2 s. `DTFLOW_VIEW_WORKERS=1` forces serial; non-JSONL inputs (CSV / Parquet / stdin) are already in memory and scan serially. Two cases skip the scan entirely: when a new constraint only **tightens** the old one (another `f`, a narrower value set) only the current subset is re-read (when the subset is under 1/10 of the file); and confirming an `F` selection reuses the value → row-number map recorded while scanning the candidates.
+
+## Renaming columns
+
+Double-click a column header, type the new name, Enter. The rename is applied to what you see (header, detail pane, `c` column picker) and to what `w` exports; filters, sorts and the `C` command keep using the on-disk names because the file has not changed. The status bar shows `renamed ×N · q to save`.
+
+Pressing `q` with pending renames asks:
+
+- **Write back** rewrites the file with the new field names (streamed through a temp file in the same directory and swapped in atomically, `.gz` included) and records a `view_rename` operation with the equivalent `dt clean FILE --rename old:new -i` command in `FILE.lineage.json`, then exits.
+- **Discard** exits without touching the file.
+- **Cancel** (Esc) returns to the browser.
+
+Write-back is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.15 s to tell it apart from a double-click.
 
 ## Closing the loop
 

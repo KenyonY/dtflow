@@ -5,6 +5,7 @@ dt view 的 Textual TUI: 表格 + 详情 master-detail 联动浏览器。
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 
 import orjson
@@ -86,6 +87,13 @@ class FastDataTable(DataTable):
     # 表头上常驻的列分隔线: 不画出来用户根本看不到"有条线可以拖"; 鼠标压上去换成粗体高亮,
     # 这是终端里唯一能表达"此处可拖"的手段 (改不了鼠标指针形状)。
     DIVIDER, DIVIDER_HOT = "│", "┃"
+
+    class HeaderDoubleClicked(Message):
+        """双击列头文字 (不是分隔线) → 重命名该列。"""
+
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
 
     class EdgeHover(Message):
         """鼠标进入/离开分隔线判定区, 供状态栏出提示。"""
@@ -241,6 +249,21 @@ class FastDataTable(DataTable):
         self._set_hover_edge(None)
 
     def _on_click(self, event: events.Click) -> None:
+        # 双击列头文字 → 重命名。拦下第二击, 原生 _on_click 就不会再发一次 HeaderSelected
+        # (第一击已经发过, app 侧用 0.15s 定时器延后开值面板, 收到本消息就取消它)。
+        meta = event.style.meta
+        if (
+            event.chain >= 2
+            and not self._drag_guard
+            and self.show_header
+            and meta.get("row") == -1
+            and "column" in meta
+            and self._edge_at(event) is None
+        ):
+            self.post_message(self.HeaderDoubleClicked(meta["column"]))
+            event.stop()
+            event.prevent_default()
+            return
         # guard 只在刚拖/刚按过分隔线时为真, 所以双击分隔线必定命中这里
         if not self._drag_guard:
             return
@@ -303,6 +326,8 @@ _HELP = t(
                  removed values back
   Esc          cancel a running scan
   Enter        zoom into the current sample (Esc to return)
+  dbl-click hdr  rename the column: shows at once, the file is untouched until you quit,
+                 then q asks write back (dt clean --rename, lineage recorded) / discard
   drag hdr │   resize columns (Excel-style): the │ right of each header is the divider;
                  hover turns it ┃, drag left/right to resize, double-click to auto-fit;
                  widths stick to the column name across windows and filters
@@ -356,6 +381,8 @@ _HELP = t(
                  点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
+  双击列头     重命名该列: 界面立即改, 文件退出前不动; q 时询问 写回 (等价 dt clean
+                 --rename, 记血缘) / 丢弃
   拖表头的 │   改列宽 (Excel 式): 表头每列右侧那道 │ 即分隔线, 鼠标压上去变 ┃
                  按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
   z            切换 左右 / 上下 布局 (默认左右)
@@ -561,10 +588,13 @@ class ColumnPicker(ModalScreen):
         Binding("n", "none", t("None", "全不选")),
     ]
 
-    def __init__(self, columns: List[str], checked: Set[str]):
+    def __init__(
+        self, columns: List[str], checked: Set[str], labels: Optional[Dict[str, str]] = None
+    ):
         super().__init__()
         self._columns = columns
         self._checked = checked
+        self._labels = labels or {}  # 原始列名 → 显示名 (重命名后); 值仍用原始名
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
@@ -588,7 +618,7 @@ class ColumnPicker(ModalScreen):
     def on_mount(self) -> None:
         sl = self.query_one(SelectionList)
         for col in self._columns:
-            sl.add_option(Selection(Text(col), col, col in self._checked))
+            sl.add_option(Selection(Text(self._labels.get(col, col)), col, col in self._checked))
         _fit_panel(self, sl, _PICKER_CHROME, hard_max=20)
         sl.focus()
 
@@ -604,6 +634,56 @@ class ColumnPicker(ModalScreen):
             self.notify(t("Select at least one column", "至少选一列"))
             return
         self.dismiss(selected)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class SaveScreen(ModalScreen):
+    """退出时的待保存询问: 写回原文件 / 丢弃 / 取消。返回 "write" | "discard" | None。"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", t("Cancel", "取消"), priority=True),
+        Binding("w", "write", t("Write back", "写回"), priority=True),
+        Binding("d", "discard", t("Discard", "丢弃"), priority=True),
+    ]
+
+    def __init__(self, summary: str, command: Optional[str], can_write: bool, why_not: str = ""):
+        super().__init__()
+        self._summary, self._command, self._can_write, self._why_not = (
+            summary,
+            command,
+            can_write,
+            why_not,
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="save-box"):
+            yield Static(t("[b]Unsaved column renames[/b]", "[b]未保存的列重命名[/b]"))
+            yield Static(escape(self._summary))
+            if self._command:
+                yield Static(f"[dim]= {escape(self._command)}[/dim]")
+            if not self._can_write:
+                yield Static(f"[yellow]{escape(self._why_not)}[/yellow]")
+            with Horizontal(classes="panel-btns"):
+                if self._can_write:
+                    yield Button(t("Write back (w)", "写回 (w)"), id="sv-write", variant="primary")
+                yield Button(t("Discard (d)", "丢弃 (d)"), id="sv-discard")
+                yield Button(t("Cancel (Esc)", "取消 (Esc)"), id="sv-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        {
+            "sv-write": self.action_write,
+            "sv-discard": self.action_discard,
+            "sv-cancel": self.action_cancel,
+        }[event.button.id]()
+
+    def action_write(self) -> None:
+        if self._can_write:
+            self.dismiss("write")
+
+    def action_discard(self) -> None:
+        self.dismiss("discard")
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -833,6 +913,10 @@ class ViewApp(App):
     #picker-title { text-align: center; width: 1fr; margin-bottom: 1; }
     #picker-box #cols { width: 1fr; height: auto; max-height: 20; background: $surface; }
     #picker-hint { text-align: center; width: 1fr; margin-top: 1; }
+    SaveScreen { align: center middle; }
+    #save-box { width: 72; max-width: 100%; height: auto; max-height: 100%;
+                border: round $warning; background: $surface; padding: 1 2; }
+    #save-box Static { width: 1fr; }
     ValueFilterScreen { align: center middle; }
     #vf-box { width: 56; max-width: 100%; height: auto; max-height: 100%;
               border: round $primary;
@@ -989,6 +1073,10 @@ class ViewApp(App):
         # 用户拖出来的列宽 {列名: 内容宽}: 只认名字, 所以换窗口/改可见列/改格式后依然保留
         self._manual_widths: Dict[str, int] = {}
         self._edge_hint = False  # 鼠标压在列分隔线上: 状态栏说明这条线能干什么
+        # 列重命名 {原始列名: 新名}: 只改显示, 文件到退出时按用户选择才写回 (见 action_quit)
+        self._renames: Dict[str, str] = {}
+        self._rename_target: Optional[str] = None  # 重命名提示框对应的原始列名
+        self._header_timer = None  # 单击列头延后 0.15s 开值面板, 双击到来则取消
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示真实全局行号 (两种浏览模式统一)。"""
@@ -1209,13 +1297,141 @@ class ViewApp(App):
 
     def _header_plain(self, name: str) -> str:
         """列头纯文本 (含值筛选标记), 用于列宽估算。"""
-        return f"{name} ▾" if name in self._col_value_filters else name
+        shown = self._shown(name)
+        return f"{shown} ▾" if name in self._col_value_filters else shown
 
     def _header_label(self, name: str) -> Text:
         """列头显示: 被值筛选的列加黄色漏斗 ▾ 标记, 一眼可辨。"""
+        shown = self._shown(name)
         if name in self._col_value_filters:
-            return Text(f"{name} ▾", style="bold yellow")
-        return Text(name)
+            return Text(f"{shown} ▾", style="bold yellow")
+        return Text(shown)
+
+    # ------------------------------------------------------------------ #
+    # 列重命名: 界面即时, 文件退出时写回
+    # ------------------------------------------------------------------ #
+    def _shown(self, col: str) -> str:
+        """列的显示名 (重命名后)。约束/血缘/导出用原始名, 只有人看的地方用它。"""
+        return self._renames.get(col, col)
+
+    def _original(self, shown: str) -> str:
+        """显示名 → 原始列名 (提示框里用户敲的是看到的名字)。"""
+        for col, new in self._renames.items():
+            if new == shown:
+                return col
+        return shown
+
+    def _apply_renames(self, row: Dict) -> Dict:
+        if not self._renames:
+            return row
+        from ...ops import _rename_item
+
+        return _rename_item(row, self._renames)
+
+    def _rename_column(self, col: str, new: str) -> None:
+        """把原始列 col 显示为 new。校验在此刻报错, 不留到保存。"""
+        new = new.strip()
+        derived = render.derived_columns(self.fmt)
+        if col == "#" or col in derived or col not in self.columns:
+            self.notify(
+                escape(
+                    t(f"{col} is not a data field, can't rename", f"{col} 不是数据字段, 不能重命名")
+                ),
+                severity="error",
+            )
+            return
+        if not new or new == self._shown(col):
+            return
+        taken = {self._shown(c) for c in self.columns if c != col}
+        if new in taken or new in derived or new == "#":
+            self.notify(
+                escape(t(f"{new} already exists, pick another name", f"{new} 已存在, 换个名字")),
+                severity="error",
+            )
+            return
+        if new == col:
+            self._renames.pop(col, None)
+        else:
+            self._renames[col] = new
+        self._rebuild_columns()
+        self._refresh_detail(self.query_one("#table", DataTable).cursor_row)
+        self._update_status()
+        self.notify(escape(t(f"{col} → {new} (q to write back)", f"{col} → {new} (q 时写回)")))
+
+    def _rename_summary(self) -> str:
+        return ", ".join(f"{k} → {v}" for k, v in self._renames.items())
+
+    def _rename_command(self) -> Optional[str]:
+        """等价的 CLI 命令, 给血缘和保存对话框; stdin 模式没有文件, 返回 None。"""
+        if not self.filepath or not self._renames:
+            return None
+        import shlex
+
+        pairs = ",".join(f"{k}:{v}" for k, v in self._renames.items())
+        return f"dt clean {shlex.quote(self.filepath)} --rename {shlex.quote(pairs)} -i"
+
+    def _write_back(self) -> bool:
+        """把重命名应用到原文件: 流式重写到同目录临时文件再原子替换, 并记血缘。成功返回 True。"""
+        import os
+        import tempfile
+
+        from ...lineage import LineageTracker
+        from ...ops import clean_rows
+        from ...streaming import open_stream
+
+        path = self.filepath
+        out = Path(path)
+        fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
+        os.close(fd)
+        try:
+            st = clean_rows(open_stream(path), rename_map=dict(self._renames))
+            n = st.save(tmp, show_progress=False)
+            os.replace(tmp, path)
+        except Exception as e:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            self.notify(escape(t(f"Write back failed: {e}", f"写回失败: {e}")), severity="error")
+            return False
+        try:
+            LineageTracker(path).record(
+                "view_rename",
+                params={
+                    "renames": dict(self._renames),
+                    "command": self._rename_command(),
+                    "source_snapshot": self.source.snapshot_info(),
+                },
+                input_count=n,
+                output_count=n,
+            ).save(path, n)
+        except Exception:
+            pass  # 文件已写好; 血缘只是附带记录, 不因它失败而回滚
+        self._renames.clear()
+        return True
+
+    def action_quit(self) -> None:
+        """q: 没有待保存的重命名直接退出; 有则问 写回 / 丢弃 / 取消。"""
+        if not self._renames:
+            self.exit()
+            return
+        can_write = self.filepath is not None and not self._follow
+        why_not = (
+            ""
+            if can_write
+            else t(
+                "stdin / follow mode can't write back; use w to export with the new names",
+                "stdin / follow 模式不能写回原文件; 用 w 导出即得到新列名",
+            )
+        )
+
+        def done(choice: Optional[str]) -> None:
+            if choice == "discard":
+                self.exit()
+            elif choice == "write" and self._write_back():
+                self.exit()
+
+        self.push_screen(
+            SaveScreen(self._rename_summary(), self._rename_command(), can_write, why_not), done
+        )
 
     def _add_columns(self, table: DataTable) -> None:
         """显式给每列宽度, 避免 DataTable 对全表自动测量 (大文件会两阶段闪烁 + 卡顿)。"""
@@ -1497,9 +1713,9 @@ class ViewApp(App):
         # split_turns: 对话拆成 msg0/msg1…, n/N 因此变成逐条消息导航 (长对话里整段"对话"
         # 作为一个字段等于没有粒度); highlight 让搜索命中在正文里直接可见。
         sections = render.render_detail_sections(
-            self.all_rows[idx],
+            self._apply_renames(self.all_rows[idx]),
             self.fmt,
-            hidden=self._hidden,
+            hidden={self._shown(c) for c in self._hidden},
             split_turns=True,
             highlight=self._search_re,
         )
@@ -1624,6 +1840,15 @@ class ViewApp(App):
         else:
             hint = t("[dim]z layout · ? help[/dim]", "[dim]z 布局 · ? 帮助[/dim]")
         parts.insert(1, hint)
+        if self._renames:
+            n = len(self._renames)
+            parts.insert(
+                2,
+                t(
+                    f"[yellow]renamed ×{n} · q to save[/yellow]",
+                    f"[yellow]已改名 ×{n} · q 时保存[/yellow]",
+                ),
+            )
         if self._follow:
             if self._follow_missing:
                 parts.append(
@@ -1859,10 +2084,44 @@ class ViewApp(App):
             self._update_status()
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        """点列头 → 打开该列的值勾选筛选 (Excel AutoFilter)。"""
+        """点列头 → 打开该列的值勾选筛选 (Excel AutoFilter)。
+
+        延后 0.15s: 同一位置的双击是重命名, 第二击到来时取消定时器。小文件的值扫描是瞬间的,
+        不延后的话面板已经弹出, 第二击落在面板上, 双击永远到不了表格。
+        """
         vis = self._visible_columns()
-        if 0 <= event.column_index < len(vis):
-            self._start_value_scan(vis[event.column_index])
+        if not 0 <= event.column_index < len(vis):
+            return
+        col = vis[event.column_index]
+        if self._header_timer is not None:
+            self._header_timer.stop()
+        self._header_timer = self.set_timer(0.15, lambda: self._header_click_fire(col))
+
+    def _header_click_fire(self, col: str) -> None:
+        self._header_timer = None
+        self._start_value_scan(col)
+
+    def on_fast_data_table_header_double_clicked(
+        self, msg: FastDataTable.HeaderDoubleClicked
+    ) -> None:
+        """双击列头文字 → 重命名提示框 (预填当前显示名)。"""
+        if self._header_timer is not None:
+            self._header_timer.stop()
+            self._header_timer = None
+        vis = self._visible_columns()
+        if not 0 <= msg.index < len(vis):
+            return
+        col = vis[msg.index]
+        if col == "#" or col in render.derived_columns(self.fmt):
+            self.notify(
+                escape(
+                    t(f"{col} is not a data field, can't rename", f"{col} 不是数据字段, 不能重命名")
+                )
+            )
+            return
+        self._rename_target = col
+        shown = self._shown(col)
+        self._open_prompt("rename", t(f"Rename {shown} to:", f"把 {shown} 重命名为:"), value=shown)
 
     # ------------------------------------------------------------------ #
     # 动作
@@ -2467,7 +2726,7 @@ class ViewApp(App):
                 for row in rows_iter(cancel):
                     if cancel.is_set():
                         break
-                    f.write(orjson.dumps(row))
+                    f.write(orjson.dumps(self._apply_renames(row)))
                     f.write(b"\n")
                     n += 1
                     if n % 5000 == 0:
@@ -2487,7 +2746,7 @@ class ViewApp(App):
         for row in rows_iter(cancel):
             if cancel.is_set():
                 return None
-            data.append(row)
+            data.append(self._apply_renames(row))
             n += 1
             if n % 5000 == 0:
                 self.call_from_thread(
@@ -2525,6 +2784,8 @@ class ViewApp(App):
         }
         if skipped:
             params["command_incomplete"] = skipped
+        if self._renames:
+            params["renames"] = dict(self._renames)
         tracker = LineageTracker(self.filepath)
         tracker.record(
             "view_export", params=params, input_count=self.source.total, output_count=written
@@ -2735,6 +2996,12 @@ class ViewApp(App):
         self.query_one("#detail", VerticalScroll).add_class("zoomed").focus()
 
     def action_unzoom(self) -> None:
+        prompt = self.query_one("#prompt", Input)
+        if prompt.has_class("active"):  # Esc 先关掉正在输入的提示框
+            prompt.remove_class("active")
+            self._prompt_mode = None
+            self.query_one("#table", DataTable).focus()
+            return
         if self._scan_cancel is not None:  # Esc 优先取消进行中的全量扫描
             self._scan_cancel.set()
             return
@@ -2762,7 +3029,8 @@ class ViewApp(App):
             self._rebuild_columns()
 
         checked = set(self._visible_columns()) if self._columns_customized else {"#"}
-        self.push_screen(ColumnPicker(self.columns, checked), apply)
+        labels = {c: self._shown(c) for c in self.columns}
+        self.push_screen(ColumnPicker(self.columns, checked, labels), apply)
 
     def _row_number_width_changed(self) -> bool:
         """窗口行号位数增加时扩列，避免沿用首屏宽度截断绝对行号。"""
@@ -2846,13 +3114,15 @@ class ViewApp(App):
             ),
         )
 
-    def _open_prompt(self, mode: str, placeholder: str) -> None:
+    def _open_prompt(self, mode: str, placeholder: str, value: str = "") -> None:
         self._prompt_mode = mode
         prompt = self.query_one("#prompt", Input)
         prompt.placeholder = placeholder
-        prompt.value = ""
+        prompt.value = value
         prompt.add_class("active")
         prompt.focus()
+        if value:
+            prompt.action_end()  # 预填时光标放末尾, 直接接着改
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         mode, text = self._prompt_mode, event.value.strip()
@@ -2874,11 +3144,13 @@ class ViewApp(App):
         elif mode == "snapshot":
             self._apply_snapshot(text)
         elif mode == "value_filter":
-            self._start_value_scan(text)
+            self._start_value_scan(self._original(text))
         elif mode == "jump":
             self._apply_jump(text)
         elif mode == "export":
             self._apply_export(text)
+        elif mode == "rename" and self._rename_target:
+            self._rename_column(self._rename_target, text)
 
     def _apply_search(self, text: str) -> None:
         if self._busy():

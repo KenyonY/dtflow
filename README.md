@@ -87,6 +87,7 @@ dt sample data.jsonl 500 | dt view -        # pipe: inspect sampled / processed 
 | `Enter` `n/N` `*` | Zoom into the sample · jump field by field · jump only between search hits |
 | `w` `C` `P` | Export the filtered subset to a file (lineage written automatically) · copy a `dt view` command that reproduces the current view · copy the same conditions as `dt filter … \| dt sort …` to process them |
 | `y` / drag + `Ctrl+c` | Copy the whole sample as JSON / copy any text you drag-select in the detail pane (works over SSH and inside tmux) |
+| double-click a header | Rename the column; shows at once, `q` then asks to write the file back (with lineage) or discard |
 
 Full key list, filter syntax, large-file and follow-mode details: [docs/view.md](docs/view.md).
 

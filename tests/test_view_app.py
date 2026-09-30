@@ -95,6 +95,7 @@ async def test_value_filter_opens_on_header_click():
         ci = vis.index("source")
         x = sum(widths[j] + 2 * t.cell_padding for j in range(ci)) + t.cell_padding
         await pilot.click("#table", offset=(x + 1, 1))  # +1/+1 越过表格边框, y=1 表头行
+        await pilot.pause(0.3)  # 单击延后 0.15s 开面板 (给双击重命名让路)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert isinstance(app.screen, ValueFilterScreen)
@@ -3310,3 +3311,203 @@ async def test_last_column_divider_drawn_and_draggable(width):
         await pilot.pause()
         assert t.ordered_columns[last].width == w0 - 2
         assert app._manual_widths[app._visible_columns()[last]] == w0 - 2
+
+
+# --------------------------------------------------------------------------- #
+# 列重命名: 双击列头 → 界面即时改, 文件退出时写回
+# --------------------------------------------------------------------------- #
+def _header_x(app, col: str) -> int:
+    t = app.query_one("#table")
+    vis = app._visible_columns()
+    widths = app._column_widths(vis)
+    ci = vis.index(col)
+    return sum(widths[j] + 2 * t.cell_padding for j in range(ci)) + t.cell_padding + 1
+
+
+@pytest.mark.asyncio
+async def test_rename_column_updates_header_detail_and_picker():
+    from dtflow.cli.view.app import ColumnPicker
+
+    app = _chat_app(5)
+    async with app.run_test(size=(120, 30)) as pilot:
+        t = app.query_one("#table")
+        vis = app._visible_columns()
+        app._rename_column("source", "src")
+        await pilot.pause()
+        assert app._renames == {"source": "src"}
+        assert str(t.ordered_columns[vis.index("source")].label) == "src"
+        await pilot.pause()
+        # 详情里的元数据用新名 (对话格式的元数据段是键值文本)
+        meta = "\n".join(app._field_texts)
+        assert "src" in meta and "source" not in meta
+        # 选列面板显示新名, 值仍是原始名
+        app.action_columns()
+        await pilot.pause()
+        assert isinstance(app.screen, ColumnPicker)
+        sl = app.screen.query_one("SelectionList")
+        labels = [str(sl.get_option_at_index(i).prompt) for i in range(sl.option_count)]
+        assert "src" in labels and "source" not in labels
+        app.screen.action_cancel()
+        await pilot.pause()
+        # 链式改名与改回原名
+        app._rename_column("source", "origin")
+        assert app._renames == {"source": "origin"}
+        app._rename_column("source", "source")
+        assert app._renames == {}
+
+
+@pytest.mark.asyncio
+async def test_rename_rejects_invalid():
+    app = _chat_app(5)
+    async with app.run_test(size=(120, 30)):
+        for col, new in [
+            ("turns", "x"),
+            ("#", "x"),
+            ("nope", "x"),
+            ("source", "id" if "id" in app.columns else "turns"),
+            ("source", "turns"),
+            ("source", "#"),
+            ("source", ""),
+        ]:
+            app._rename_column(col, new)
+            assert app._renames == {}, (col, new)
+
+
+@pytest.mark.asyncio
+async def test_header_double_click_opens_rename_prompt_single_click_delays_value_filter():
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        x = _header_x(app, "source")
+        await pilot.click("#table", offset=(x, 1), times=2)
+        await pilot.pause()
+        prompt = app.query_one("#prompt")
+        assert prompt.has_class("active") and app._prompt_mode == "rename"
+        assert app._rename_target == "source" and prompt.value == "source"
+        await pilot.pause(0.4)  # 定时器已被取消, 值面板不会再弹
+        assert not isinstance(app.screen, ValueFilterScreen)
+        prompt.value = "src"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._renames == {"source": "src"}
+        # 单击: 0.15s 后才开值面板
+        await pilot.click("#table", offset=(_header_x(app, "source"), 1))
+        await pilot.pause(0.02)
+        assert not isinstance(app.screen, ValueFilterScreen)
+        await pilot.pause(0.4)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        assert app.screen._col == "source"  # 约束用原始名
+
+
+@pytest.mark.asyncio
+async def test_double_click_derived_header_does_not_rename():
+    app = _chat_app(5)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.click("#table", offset=(_header_x(app, "turns"), 1), times=2)
+        await pilot.pause()
+        assert not app.query_one("#prompt").has_class("active")
+
+
+@pytest.mark.asyncio
+async def test_escape_closes_prompt():
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        await pilot.press("slash")
+        assert app.query_one("#prompt").has_class("active")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.query_one("#prompt").has_class("active") and app._prompt_mode is None
+
+
+@pytest.mark.asyncio
+async def test_quit_asks_only_when_renamed():
+    from dtflow.cli.view.app import SaveScreen
+
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        app._rename_column("source", "src")
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(app.screen, SaveScreen)
+        assert not app._exit
+        # stdin/内存源没有文件: 没有写回按钮
+        assert not app.screen.query("#sv-write")
+        app.screen.action_cancel()
+        await pilot.pause()
+        assert not app._exit and app._renames == {"source": "src"}
+        await pilot.press("q")
+        await pilot.pause()
+        app.screen.action_discard()
+        await pilot.pause()
+        assert app._exit
+    app2 = _chat_app(5)
+    async with app2.run_test() as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        assert app2._exit
+
+
+@pytest.mark.asyncio
+async def test_write_back_rewrites_file_and_lineage(tmp_path):
+    import orjson
+
+    from dtflow.cli.view.app import SaveScreen
+
+    app = _head_app(tmp_path, filepath=str(tmp_path / "head.jsonl"))
+    p = tmp_path / "head.jsonl"
+    async with app.run_test() as pilot:
+        app._rename_column("i", "idx")
+        await pilot.pause()
+        app.action_quit()
+        await pilot.pause()
+        assert isinstance(app.screen, SaveScreen)
+        assert app.screen.query("#sv-write")
+        app.screen.action_write()
+        await pilot.pause()
+        assert app._exit
+    rows = [orjson.loads(line) for line in p.read_bytes().splitlines()]
+    assert [list(r) for r in rows] == [["idx"]] * 10 and [r["idx"] for r in rows] == list(range(10))
+    assert not list(tmp_path.glob(".tmp_*"))
+    rec = orjson.loads((tmp_path / "head.jsonl.lineage.json").read_bytes())
+    op = rec["operations"][-1]
+    assert op["type"] == "view_rename" and op["params"]["renames"] == {"i": "idx"}
+    assert (
+        "--rename 'i:idx' -i" in op["params"]["command"]
+        or "--rename i:idx -i" in op["params"]["command"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_follow_mode_cannot_write_back(tmp_path):
+    from dtflow.cli.view.app import SaveScreen
+
+    app = _head_app(tmp_path, filepath=str(tmp_path / "head.jsonl"), follow=True)
+    async with app.run_test() as pilot:
+        app._rename_column("i", "idx")
+        app.action_quit()
+        await pilot.pause()
+        assert isinstance(app.screen, SaveScreen) and not app.screen.query("#sv-write")
+        app.screen.action_discard()
+        await pilot.pause()
+    assert (tmp_path / "head.jsonl").read_text().startswith('{"i":0}')
+
+
+@pytest.mark.asyncio
+async def test_export_applies_renames(tmp_path):
+    import orjson
+
+    app = _make_app(_chat_rows(6))
+    app.filepath = str(tmp_path / "src.jsonl")
+    out = tmp_path / "out.jsonl"
+    async with app.run_test() as pilot:
+        app._rename_column("source", "src")
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+    rows = [orjson.loads(x) for x in out.read_text().strip().split("\n")]
+    assert len(rows) == 6 and all("src" in r and "source" not in r for r in rows)
+    rec = orjson.loads((tmp_path / "out.jsonl.lineage.json").read_bytes())
+    assert rec["operations"][0]["params"]["renames"] == {"source": "src"}
