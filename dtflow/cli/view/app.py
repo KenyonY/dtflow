@@ -639,6 +639,41 @@ class ColumnPicker(ModalScreen):
         self.dismiss(None)
 
 
+def _rename_checked(row: Dict, renames: Dict[str, str]) -> Dict:
+    """改名, 但目标键已存在于该行时中止: 列目录只认已加载窗口, 窗口外的行可能有同名字段,
+    静默覆盖等于丢数据。"""
+    for old, new in renames.items():
+        if old in row and new in row:
+            raise ValueError(
+                t(
+                    f"a row already has a field {new!r}; renaming {old!r} would overwrite it",
+                    f"有行已含字段 {new!r}, 把 {old!r} 改名会覆盖它",
+                )
+            )
+    from ...ops import _rename_item
+
+    return _rename_item(row, renames)
+
+
+def _append_lineage(path: str, op_type: str, params: Dict, count: int) -> None:
+    """原地写回的血缘: 文件已有血缘则在其记录上追加操作 (来源链不断), 否则新建一条指向自身。"""
+    import orjson as _orjson
+
+    from ...lineage import LineageTracker, _get_lineage_path, load_lineage
+
+    existing = load_lineage(path)
+    if existing is None:
+        LineageTracker(path).record(
+            op_type, params=params, input_count=count, output_count=count
+        ).save(path, count)
+        return
+    existing.add_operation(op_type, params=params, input_count=count, output_count=count)
+    existing.metadata["output_path"] = str(path)
+    existing.metadata["output_count"] = count
+    with open(_get_lineage_path(path), "wb") as f:
+        f.write(_orjson.dumps(existing.to_dict(), option=_orjson.OPT_INDENT_2))
+
+
 class SaveScreen(ModalScreen):
     """退出时的待保存询问: 写回原文件 / 丢弃 / 取消。返回 "write" | "discard" | None。"""
 
@@ -719,9 +754,10 @@ class ValueFilterScreen(ModalScreen):
         Binding("n", "none", t("None", "全不选")),
     ]
 
-    def __init__(self, col: str, items: List, total: int, prior=None, anchor=None):
+    def __init__(self, col: str, items: List, total: int, prior=None, anchor=None, label: str = ""):
         super().__init__()
         self._col = col
+        self._label = label or col  # 标题给人看: 列改名后显示新名, 约束仍按原名
         self._items = items  # [(value, count), ...] 按频次降序
         self._total = total
         self._prior = prior  # 上次保留值集 (None=未筛→默认全不选)
@@ -816,8 +852,8 @@ class ValueFilterScreen(ModalScreen):
         self.query_one("#picker-title", Static).update(
             Text.from_markup(
                 t(
-                    f"[b]Filter {escape(self._col)}[/b] [dim]({scope})[/dim]",
-                    f"[b]按 {escape(self._col)} 值筛选[/b] [dim]({scope})[/dim]",
+                    f"[b]Filter {escape(self._label)}[/b] [dim]({scope})[/dim]",
+                    f"[b]按 {escape(self._label)} 值筛选[/b] [dim]({scope})[/dim]",
                 )
             )
         )
@@ -1373,36 +1409,41 @@ class ViewApp(App):
     def _write_back(self) -> bool:
         """把重命名应用到原文件: 流式重写到同目录临时文件再原子替换, 并记血缘。成功返回 True。"""
         import os
+        import shutil
         import tempfile
 
-        from ...lineage import LineageTracker
-        from ...ops import clean_rows
         from ...streaming import open_stream
 
-        path = self.filepath
-        out = Path(path)
-        fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
-        os.close(fd)
+        real = os.path.realpath(self.filepath)  # 符号链接: 改真实文件, 不把链接替换成普通文件
+        out = Path(real)
+        renames = dict(self._renames)
+        tmp = None
         try:
-            st = clean_rows(open_stream(path), rename_map=dict(self._renames))
+            fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
+            os.close(fd)
+            st = open_stream(real).transform(
+                lambda row: _rename_checked(row, renames), raw=True, on_error="raise"
+            )
             n = st.save(tmp, show_progress=False)
-            os.replace(tmp, path)
+            shutil.copymode(real, tmp)  # mkstemp 建的是 0600, 保留原文件权限
+            os.replace(tmp, real)
+            tmp = None
         except Exception as e:
-            if os.path.exists(tmp):
+            if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
             self.notify(escape(t(f"Write back failed: {e}", f"写回失败: {e}")), severity="error")
             return False
         try:
-            LineageTracker(path).record(
+            _append_lineage(
+                real,
                 "view_rename",
-                params={
-                    "renames": dict(self._renames),
+                {
+                    "renames": renames,
                     "command": self._rename_command(),
                     "source_snapshot": self.source.snapshot_info(),
                 },
-                input_count=n,
-                output_count=n,
-            ).save(path, n)
+                n,
+            )
         except Exception:
             pass  # 文件已写好; 血缘只是附带记录, 不因它失败而回滚
         self._renames.clear()
@@ -2116,7 +2157,8 @@ class ViewApp(App):
             self.notify(
                 escape(
                     t(f"{col} is not a data field, can't rename", f"{col} 不是数据字段, 不能重命名")
-                )
+                ),
+                severity="error",
             )
             return
         self._rename_target = col
@@ -3495,7 +3537,9 @@ class ViewApp(App):
             self._recompute_subset(snap)
 
         anchor = self._column_anchor(col)
-        self.push_screen(ValueFilterScreen(col, items, total, prior, anchor), apply)
+        self.push_screen(
+            ValueFilterScreen(col, items, total, prior, anchor, label=self._shown(col)), apply
+        )
 
     def _apply_value_rows(self, col: str, spec: ScanSpec, value_rows, picked) -> bool:
         """用刚扫出来的 值→行号表 直接拼出子集; 前提不成立时返回 False 交给全量重算。

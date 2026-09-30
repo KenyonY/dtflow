@@ -3511,3 +3511,108 @@ async def test_export_applies_renames(tmp_path):
     assert len(rows) == 6 and all("src" in r and "source" not in r for r in rows)
     rec = orjson.loads((tmp_path / "out.jsonl.lineage.json").read_bytes())
     assert rec["operations"][0]["params"]["renames"] == {"source": "src"}
+
+
+@pytest.mark.asyncio
+async def test_write_back_readonly_dir_notifies_instead_of_crashing(tmp_path):
+    """目标目录不可写: 提示错误, 不退出, 改名保留 (mkstemp 在 try 内)。"""
+    import os
+
+    from dtflow.cli.view.app import SaveScreen
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    d = tmp_path / "ro"
+    d.mkdir()
+    p = d / "head.jsonl"
+    p.write_text("".join(f'{{"i":{i}}}\n' for i in range(10)))
+    from dtflow.cli.view.source import open_source
+
+    src = open_source(p, initial_size=3)
+    app = ViewApp(src, src.window(0, 3), 0, 3, "generic", p.name, filepath=str(p))
+    d.chmod(0o555)
+    try:
+        async with app.run_test() as pilot:
+            app._rename_column("i", "idx")
+            app.action_quit()
+            await pilot.pause()
+            assert isinstance(app.screen, SaveScreen)
+            app.screen.action_write()
+            await pilot.pause()
+            assert not app._exit and app._renames == {"i": "idx"}
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, SaveScreen)
+            app.screen.action_discard()
+            await pilot.pause()
+    finally:
+        d.chmod(0o755)
+    assert p.read_text().startswith('{"i":0}')
+
+
+@pytest.mark.asyncio
+async def test_write_back_appends_to_existing_lineage(tmp_path):
+    """文件已有血缘 (来自 dt clean 等) 时写回追加操作, 不冲掉来源链。"""
+    import orjson
+
+    from dtflow.lineage import LineageTracker
+
+    app = _head_app(tmp_path, filepath=str(tmp_path / "head.jsonl"))
+    p = tmp_path / "head.jsonl"
+    LineageTracker(str(tmp_path / "raw.jsonl")).record(
+        "clean", params={"strip": True}, input_count=12, output_count=10
+    ).save(str(p), 10)
+    async with app.run_test() as pilot:
+        app._rename_column("i", "idx")
+        app.action_quit()
+        await pilot.pause()
+        app.screen.action_write()
+        await pilot.pause()
+        assert app._exit
+    rec = orjson.loads((tmp_path / "head.jsonl.lineage.json").read_bytes())
+    assert rec["source"]["path"].endswith("raw.jsonl")
+    assert [op["type"] for op in rec["operations"]] == ["clean", "view_rename"]
+    assert rec["metadata"]["output_count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_write_back_refuses_collision_with_unseen_field(tmp_path):
+    """目标列名只出现在窗口外的行里: 写回中止、原文件不动, 而不是静默覆盖那一行的字段。"""
+    from dtflow.cli.view.source import open_source
+
+    p = tmp_path / "head.jsonl"
+    lines = [f'{{"i":{i}}}' for i in range(9)] + ['{"i":9,"idx":"keep"}']
+    p.write_text("\n".join(lines) + "\n")
+    before = p.read_bytes()
+    src = open_source(p, initial_size=3)
+    app = ViewApp(src, src.window(0, 3), 0, 3, "generic", p.name, filepath=str(p))
+    async with app.run_test() as pilot:
+        app._rename_column("i", "idx")  # 窗口里没有 idx, 校验放行
+        app.action_quit()
+        await pilot.pause()
+        app.screen.action_write()
+        await pilot.pause()
+        assert not app._exit and app._renames == {"i": "idx"}
+        await pilot.press("q")
+        await pilot.pause()
+        app.screen.action_discard()
+        await pilot.pause()
+    assert p.read_bytes() == before
+    assert not list(tmp_path.glob(".tmp_*"))
+    assert not (tmp_path / "head.jsonl.lineage.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_value_filter_title_shows_renamed_column():
+    from dtflow.cli.view.app import ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app._rename_column("source", "src")
+        app._start_value_scan("source")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        title = str(app.screen.query_one("#picker-title").render())
+        assert "src" in title and app.screen._col == "source"
+        await pilot.press("escape")
