@@ -11,6 +11,7 @@ import binascii
 import hashlib
 import io
 import os
+import tempfile
 import urllib.error
 import urllib.request
 from functools import lru_cache
@@ -96,7 +97,10 @@ def _fetch(url: str) -> bytes:
         reason = getattr(e, "reason", e)
         raise ImageError(t(f"download failed: {reason}", f"下载失败: {reason}")) from e
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = cached.with_suffix(".part")
-    tmp.write_bytes(data)
-    tmp.replace(cached)  # 先写临时文件再改名: 中途退出不留半截缓存
+    # 先写临时文件再改名: 中途退出不留半截缓存。临时名必须唯一 —— 同一 URL 可能被两个
+    # 线程同时下载 (缩略图与大图弹窗), 共用 .part 时后改名的那个会 FileNotFoundError
+    fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".part")
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, cached)
     return data

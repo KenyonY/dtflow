@@ -503,3 +503,104 @@ async def test_sixel_blank_while_hold():
         lines = impl.render_lines(Region(0, 0, *impl.content_size))
         assert "\x1bP" not in "".join(seg.text for line in lines for seg in line)
         assert impl._painted is None
+
+
+def test_concurrent_download_same_url(tmp_path):
+    # 缩略图与大图弹窗可能同时下载同一 URL: 临时文件名须唯一, 两边都要成功
+    import time
+
+    (tmp_path / "a.png").write_bytes(_png(6, 6))
+
+    class Slow(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            time.sleep(0.3)
+            super().do_GET()
+
+        def log_message(self, *a):
+            pass
+
+    handler = functools.partial(Slow, directory=str(tmp_path))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/a.png"
+    results, errors = [], []
+
+    def fetch():
+        try:
+            results.append(vimg._fetch(url))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=fetch) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    server.shutdown()
+    assert not errors and len(results) == 4
+    assert not list(vimg.CACHE_DIR.glob("*.part"))  # 不留半截文件
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_keeps_aspect_ratio(graphics):
+    # 宽度不够时整体缩小, 而不是只截宽 (图被压扁)
+    from textual.app import App
+    from textual_image._terminal import get_cell_size
+
+    from dtflow.cli.view.app import THUMB_ROWS, _Thumbs
+
+    class Demo(App):
+        def compose(self):
+            yield _Thumbs("msg0", ["a"], graphics)
+
+    app = Demo()
+    async with app.run_test(size=(40, 20)) as pilot:
+        await pilot.pause()
+        th = app.query_one(_Thumbs)
+        cell = get_cell_size()
+        for w, h in [(580, 164), (1600, 900), (300, 1200)]:
+            cols, rows = th._fit(w, h)
+            assert rows <= THUMB_ROWS and cols <= th.size.width
+            shown = (cols * cell.width) / (rows * cell.height)  # 画出来的宽高比
+            assert abs(shown - w / h) / (w / h) < 0.25  # 取整误差内保持比例
+
+
+@pytest.mark.asyncio
+async def test_popup_not_blanked_by_thumbnail_hold(tmp_path, monkeypatch):
+    # 大图弹窗开着时缩略图读完/缩放: 不擦 (ECH 会在大图上擦洞), 也不让大图变空白
+    from dtflow.cli.view import app as A
+
+    monkeypatch.setattr(A, "_graphics_image_class", lambda: A._sixel_once_class())
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(140, 30)) as pilot:
+        await _settle(app, pilot)
+        await pilot.pause(A.ViewApp._HOLD_SECONDS + 0.2)
+        await pilot.press("i")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, A.ImageScreen)
+        written = []
+        monkeypatch.setattr(app._driver, "write", lambda data: written.append(data))
+        app._hold_thumbs(full=True)
+        assert not app.images_hold and not any("\x1b[1X" in w for w in written)
+
+
+@pytest.mark.asyncio
+async def test_layout_change_frees_whole_screen(tmp_path, monkeypatch):
+    # 调分界/切布局后缩略图挪位: 图原来的行可能已不在详情区, 须擦整屏每行
+    import re
+
+    from dtflow.cli.view import app as A
+
+    monkeypatch.setattr(A, "_graphics_image_class", lambda: A._sixel_once_class())
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(140, 30)) as pilot:
+        await _settle(app, pilot)
+        await pilot.pause(A.ViewApp._HOLD_SECONDS + 0.2)
+        for key in ("plus", "z"):
+            written = []
+            monkeypatch.setattr(app._driver, "write", lambda data, w=written: w.append(data))
+            app.images_hold = False
+            await pilot.press(key)
+            await pilot.pause()
+            assert app.images_hold
+            assert max(len(re.findall(r"\x1b\[1X", w)) for w in written) == app.size.height

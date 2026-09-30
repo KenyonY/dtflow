@@ -4,6 +4,7 @@ dt view 的 Textual TUI: 表格 + 详情 master-detail 联动浏览器。
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from functools import lru_cache
@@ -688,7 +689,7 @@ def _sixel_once_class():
             return (self.content_size, where, getattr(self.app, "screen_epoch", 0))
 
         def render_lines(self, crop: Region) -> List[Strip]:
-            if getattr(self.app, "images_hold", False):
+            if getattr(self.app, "images_hold", False) and not self.screen.is_modal:
                 # 滚动中: 画空白不发图, 停下后再发一次 (翻页动画每帧都发会又慢又闪)
                 self._painted = None
                 blank = Segment(" " * crop.width, style=self._get_clear_style())
@@ -740,8 +741,26 @@ class _Thumbs(Horizontal):
             new = Static(Text(f"⚠ {error}", style="red"), classes="thumb-msg")
         else:
             new = self._image_cls(got.image, classes="thumb")
+            new.styles.width, new.styles.height = self._fit(*got.image.size)
         self.mount(new, after=old)
         old.remove()
+
+    def _fit(self, w: int, h: int) -> Tuple[int, int]:
+        """按图片比例算缩略图占几列几行: 默认 THUMB_ROWS 行高, 宽不够就整体缩小。
+
+        不能交给 textual-image 的 width:auto —— 它只把宽截到容器宽、高还是满格, 图被压扁。
+        字符格一般是高 ≈ 2 倍宽, 实际比例按终端报的像素尺寸算。
+        """
+        from textual_image._terminal import get_cell_size
+
+        cell = get_cell_size()
+        ratio = (w / max(1, h)) * (cell.height / max(1, cell.width))  # 每行对应的列数
+        rows = THUMB_ROWS
+        cols = max(1, round(rows * ratio))
+        avail = max(1, (self.size.width or self.parent.size.width) - 2)  # 留出与下一张的间距
+        if cols > avail:
+            cols, rows = avail, max(1, round(avail / ratio))
+        return cols, rows
 
     def on_click(self, event: events.Click) -> None:
         w, _ = self.screen.get_widget_at(event.screen_x, event.screen_y)  # 被点中的那张 (或其内部)
@@ -2005,6 +2024,7 @@ class ViewApp(App):
 
     def _apply_split(self) -> None:
         """按 self._split 设置两区大小 (竖排改高度, 横排改宽度)。"""
+        self._hold_thumbs(full=True)  # 分界/布局变了, 详情里的缩略图整体挪位 (+/-/拖动/z)
         main = self.query_one("#main", Vertical)
         table = self.query_one("#table", DataTable)
         detail = self.query_one("#detail", VerticalScroll)
@@ -2356,32 +2376,51 @@ class ViewApp(App):
     def _sixel_thumbs(self) -> bool:
         return bool(self._thumbs) and _graphics_image_class() is _sixel_once_class()
 
-    def _free_thumb_images(self) -> None:
-        """让终端 (tmux) 丢掉详情区里的 sixel 缩略图: 每行用 ECH 擦 1 格。"""
-        if not self._sixel_thumbs():
-            return
-        try:
-            r = self.query_one("#detail", VerticalScroll).content_region
-        except NoMatches:
-            return
-        self._driver.write("".join(f"\x1b[{y + 1};{r.x + 1}H\x1b[1X" for y in range(r.y, r.bottom)))
+    def _free_thumb_images(self, full: bool = False) -> None:
+        """让终端 (tmux) 丢掉 sixel 缩略图: 每行用 ECH 擦 1 格 (擦的格子下一帧会重画)。
 
-    def _hold_thumbs(self) -> None:
+        full: 布局/尺寸变了, 图原来所在的行可能已不在详情区, 擦整屏每行 (整屏也会重画)。
+        弹窗盖着时不动: 缩略图在盖上前已释放, ECH 会在弹窗 (大图) 上擦出洞。
+        """
+        if not self._sixel_thumbs() or len(self.screen_stack) > 1:
+            return
+        if full:
+            x, rows = 0, range(self.size.height)
+        else:
+            try:
+                r = self.query_one("#detail", VerticalScroll).content_region
+            except NoMatches:
+                return
+            x, rows = r.x, range(r.y, r.bottom)
+        self._driver.write("".join(f"\x1b[{y + 1};{x + 1}H\x1b[1X" for y in rows))
+
+    def _hold_thumbs(self, full: bool = False) -> None:
         """滚动/挂载/填图: 释放旧图并停画; 最后一次变动 _HOLD_SECONDS 后可见缩略图各发一次。
 
         位置每变一次 tmux 就多存一份旧图, 所以宁可晚 0.2 秒, 也只在稳定的位置发。
         """
-        if not self._sixel_thumbs():
-            return
-        if not self.images_hold:
-            self._free_thumb_images()
+        if not self._sixel_thumbs() or len(self.screen_stack) > 1:
+            return  # 弹窗盖着: 露出来时换屏代次会让缩略图重发
+        if not self.images_hold or full:
+            self._free_thumb_images(full)
             self.images_hold = True
         if self._hold_timer is not None:
             self._hold_timer.stop()
         self._hold_timer = self.set_timer(self._HOLD_SECONDS, self._release_thumbs)
 
+    def _on_terminal_supports_synchronized_output(self, message) -> None:
+        """tmux + sixel 时不开同步输出 (DEC 2026)。
+
+        Textual 每帧都用 2026 包起来, 而 tmux 每收到一次"同步结束"就整 pane 重画, 把存着的
+        sixel 图全部重发 —— 鼠标悬停改一行高亮也会让缩略图/大图整张重发一遍 (实测悬停 15 次
+        重发 16 次, 800KB)。不开同步只是 tmux 里偶尔可能撕裂一帧, 远好过每帧重发图。
+        """
+        # Textual 会沿 MRO 调每一层的同名处理函数, 拦住父类 App 的那个要靠 prevent_default
+        if os.environ.get("TMUX") and _graphics_image_class() is _sixel_once_class():
+            message.prevent_default()
+
     def on_resize(self, event: events.Resize) -> None:
-        self._hold_thumbs()  # 终端缩放 (含 tmux 接入时的几次尺寸同步): 缩略图位置会变
+        self._hold_thumbs(full=True)  # 终端缩放 (含 tmux 接入时的几次尺寸同步): 缩略图位置会变
 
     def _release_thumbs(self) -> None:
         self._hold_timer = None
