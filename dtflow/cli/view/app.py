@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 import orjson
 from rich.console import RenderableType
 from rich.markup import escape
+from rich.padding import Padding
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -40,6 +41,10 @@ def _fmt_num(x: float) -> str:
     if x == int(x):
         return str(int(x))
     return f"{x:.2f}"
+
+
+def _pad_right(text: Text) -> Padding:
+    return Padding(text, (0, 1, 0, 0))
 
 
 class FastDataTable(DataTable):
@@ -930,6 +935,13 @@ class ViewApp(App):
     #detail { height: 3fr; border: round $secondary; padding: 0 1; }
     #main.horizontal #detail { width: 1fr; height: 1fr; }
     #detail.zoomed { height: 1fr; }
+    /* Scrollbars recede: the default black track and blue thumb outshine the data */
+    #table, #detail {
+        scrollbar-background: $surface; scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface; scrollbar-corner-color: $surface;
+        scrollbar-color: $panel-lighten-2; scrollbar-color-hover: $panel-lighten-3;
+        scrollbar-color-active: $primary;
+    }
     /* Field separator as a border, not a widget of its own: halves the widget count on long chats */
     .detail-field { border-top: solid $foreground 20%; }
     .detail-field:first-child { border-top: none; }
@@ -1117,6 +1129,7 @@ class ViewApp(App):
         )
         # 用户拖出来的列宽 {列名: 内容宽}: 只认名字, 所以换窗口/改可见列/改格式后依然保留
         self._manual_widths: Dict[str, int] = {}
+        self._numeric_cols: Set[str] = set()  # 右对齐的数值列, 随列重建重算
         self._edge_hint = False  # 鼠标压在列分隔线上: 状态栏说明这条线能干什么
         # 列重命名 {原始列名: 新名}: 只改显示, 文件到退出时按用户选择才写回 (见 action_quit)
         self._renames: Dict[str, str] = {}
@@ -1345,12 +1358,18 @@ class ViewApp(App):
         shown = self._shown(name)
         return f"{shown} ▾" if name in self._col_value_filters else shown
 
-    def _header_label(self, name: str) -> Text:
-        """列头显示: 被值筛选的列加黄色漏斗 ▾ 标记, 一眼可辨。"""
-        shown = self._shown(name)
+    def _header_label(self, name: str) -> RenderableType:
+        """列头显示: 被值筛选的列加黄色漏斗 ▾ 标记, 一眼可辨; 对齐方式随该列单元格。"""
+        label = self._shown(name)
         if name in self._col_value_filters:
-            return Text(f"{shown} ▾", style="bold yellow")
-        return Text(shown)
+            label += " ▾"
+        style = "bold yellow" if name in self._col_value_filters else ""
+        if self._right_aligned(name):  # 与单元格同样右侧留一格 (列宽里表头已含这一格)
+            return _pad_right(Text(label, style=style, justify="right"))
+        return Text(label, style=style)
+
+    def _right_aligned(self, name: str) -> bool:
+        return name == "#" or name in self._numeric_cols
 
     # ------------------------------------------------------------------ #
     # 列重命名: 界面即时, 文件退出时写回
@@ -1486,8 +1505,21 @@ class ViewApp(App):
     def _add_columns(self, table: DataTable) -> None:
         """显式给每列宽度, 避免 DataTable 对全表自动测量 (大文件会两阶段闪烁 + 卡顿)。"""
         vis = self._visible_columns()
+        self._numeric_cols = self._detect_numeric(vis)
         for name, w in zip(vis, self._column_widths(vis), strict=False):
             table.add_column(self._header_label(name), width=w)
+
+    _NUMBER = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?")
+
+    def _detect_numeric(self, vis: List[str]) -> Set[str]:
+        """采样判定数值列 (非空采样值全是数字), 这些列右对齐, 位数一眼可比。"""
+        sample = [self._cells(idx, vis) for idx in self.view_indices[:200]]
+        out = set()
+        for ci, name in enumerate(vis):
+            vals = [cells[ci] for cells in sample if cells[ci]]
+            if vals and all(self._NUMBER.fullmatch(v) for v in vals):
+                out.add(name)
+        return out
 
     def _column_widths(self, vis: List[str]) -> List[int]:
         """自适应列宽: 采样估算每列自然宽, 再按可用屏宽做 max-min 公平分配。
@@ -1507,15 +1539,16 @@ class ViewApp(App):
             # +1: 给表头右边的列分隔线留一格, 否则列名恰好占满时会被挤成 "turns│ roles"
             header_w = cell_len(self._header_plain(name)) + 1
             header_widths.append(header_w)
+            pad = 1 if self._right_aligned(name) else 0  # 右对齐列末尾留一格, 见 _cell_formatters
             if name == "#":
                 # # 列是全局行号, 最大值取当前窗口的真实全局行号 (子集态可能很大), 不靠采样——
                 # 否则采样只看前 200 行, 宽度按 3 位数估算, 上万的行号会显示不下被截断。
                 labels = [str(n if n < 0 else n + 1) for n in self._global_nos] or ["1"]
-                naturals.append(max(header_w, max(map(len, labels))))
+                naturals.append(max(header_w, max(map(len, labels)) + pad))
                 continue
             w = header_w  # 含 ▾ 标记宽度, 避免标记被截
             for cells in sample:
-                w = max(w, cell_len(cells[ci]))
+                w = max(w, cell_len(cells[ci]) + pad)
             naturals.append(min(max(w, 1), CAP))
 
         # 用户拖过的列: 宽度即用户意图, 既不按自然宽估也不参与后面的压缩
@@ -1669,10 +1702,40 @@ class ViewApp(App):
     # ------------------------------------------------------------------ #
     # 表格填充 / 详情刷新
     # ------------------------------------------------------------------ #
-    def _cell_text(self, s: str) -> Text:
-        """单元格 → Text。包成 Text 绕过 DataTable 的 markup 解析 (数据含 [/xxx] 会
-        MarkupError); 有搜索时顺带把命中处画上黄底。"""
-        return render._hl(Text(s), self._search_re)
+    def _cell_formatters(self, vis: List[str]) -> List[Callable[[str], RenderableType]]:
+        """每列一个 单元格字符串 → renderable 的函数, 填表前按列定好 (10k 行 × 列数的热路径,
+        逐格判断列类型要多花 10%+)。
+
+        一律包成 Text 绕过 DataTable 的 markup 解析 (数据含 [/xxx] 会 MarkupError); 列宽装不下
+        以 … 收尾; 行号列暗色、数值列右对齐、roles 按角色着色; 有搜索时命中处画上黄底。
+        """
+        hl = self._search_re
+
+        def plain(s: str) -> Text:
+            return render._hl(Text(s, no_wrap=True, overflow="ellipsis"), hl)
+
+        def roles(s: str) -> Text:
+            return render._hl(render.roles_text(s), hl)
+
+        def right(style: str) -> Callable[[str], RenderableType]:
+            # 右侧留一格: 贴着列边的数字会和表头的列分隔线 │ 粘成一团。不能用尾随空格 ——
+            # rich 右对齐时先 rstrip, 空格会被吃掉
+            def fmt(s: str) -> Padding:
+                text = Text(s, style=style, no_wrap=True, overflow="ellipsis", justify="right")
+                return _pad_right(render._hl(text, hl))
+
+            return fmt
+
+        special = {"#": right("dim"), "roles": roles}
+        number = right("")
+        return [
+            special.get(name) or (number if name in self._numeric_cols else plain) for name in vis
+        ]
+
+    def _row_texts(
+        self, idx: int, vis: List[str], fmts: List[Callable[[str], RenderableType]]
+    ) -> List[RenderableType]:
+        return [f(c) for f, c in zip(fmts, self._cells(idx, vis), strict=True)]
 
     def _populate(self) -> None:
         table = self.query_one("#table", DataTable)
@@ -1680,11 +1743,12 @@ class ViewApp(App):
         table.clear()
         self._row_keys = []
         vis = self._visible_columns()
+        fmts = self._cell_formatters(vis)
         for idx in self.view_indices:
             key = f"r{self._row_key_seq}"
             self._row_key_seq += 1
             self._row_keys.append(key)
-            table.add_row(*(self._cell_text(c) for c in self._cells(idx, vis)), key=key)
+            table.add_row(*self._row_texts(idx, vis, fmts), key=key)
         self._update_status()
         if self.view_indices:
             self._refresh_detail(0)
@@ -2178,12 +2242,13 @@ class ViewApp(App):
             if overflow:
                 del self._row_keys[:overflow]
             vis = self._visible_columns()
+            fmts = self._cell_formatters(vis)
             first = len(self.all_rows) - len(rows)
             for idx in range(max(0, first), len(self.all_rows)):
                 key = f"r{self._row_key_seq}"
                 self._row_key_seq += 1
                 self._row_keys.append(key)
-                table.add_row(*(self._cell_text(c) for c in self._cells(idx, vis)), key=key)
+                table.add_row(*self._row_texts(idx, vis, fmts), key=key)
             self._update_status()
 
         self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)

@@ -396,3 +396,15 @@ def test_sharegpt_function_call_dict_without_name_not_misreported():
     text = cap.get()
     assert "⚠ 缺少函数名" in text and "⚠ arguments 不是合法 JSON" not in text
     assert '"foo": 1' in text  # 按 JSON 格式化, 不是 Python repr
+
+
+def test_roles_text_colors_by_role():
+    # roles 列与详情同色: 缩写按角色着色, 箭头暗色, 未知缩写原样
+    from dtflow.cli.view.render import roles_text
+
+    text = roles_text("sys→u→a→t→xyz")
+    assert text.plain == "sys→u→a→t→xyz"
+    styles = {text.plain[s.start : s.end]: str(s.style) for s in text.spans}
+    assert styles["u"] == "cyan" and styles["a"] == "green" and styles["t"] == "yellow"
+    assert styles["→"] == "dim"
+    assert "xyz" not in styles

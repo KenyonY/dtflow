@@ -3712,3 +3712,19 @@ async def test_queued_cursor_moves_render_detail_once(monkeypatch):
             await pilot.pause()
         assert app.query_one("#table").cursor_row == 10
         assert calls == [10]
+
+
+@pytest.mark.asyncio
+async def test_numeric_columns_right_aligned():
+    # 采样全为数字的列右对齐 (列头同); 夹杂非数字的列保持左对齐
+    rows = [{"n": i * 7, "score": 0.5 + i, "mixed": "x" if i == 3 else i} for i in range(10)]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        assert {"n", "score"} <= app._numeric_cols
+        assert "mixed" not in app._numeric_cols
+        table = app.query_one("#table")
+        vis = app._visible_columns()
+        cell = table.get_row_at(0)[vis.index("n")]
+        assert cell.renderable.justify == "right"  # Padding 包着右对齐的 Text
+        assert table.get_row_at(0)[vis.index("mixed")].justify != "right"

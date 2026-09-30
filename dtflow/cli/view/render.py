@@ -40,6 +40,21 @@ _ROLE_STYLE = {
     "function_call": "bold green",
 }
 
+# roles 列的缩写 (rowfn._roles_sig) → 角色, 表格与详情同色, 一眼对上号
+_ABBR_ROLE = {"sys": "system", "u": "user", "a": "assistant", "t": "tool"}
+
+
+def roles_text(sig: str) -> Text:
+    """把 ``sys→u→a→t`` 签名按角色着色 (不加粗, 表格里太重); 箭头与未知角色原色。"""
+    text = Text(no_wrap=True, overflow="ellipsis")
+    for i, abbr in enumerate(sig.split("→")):
+        if i:
+            text.append("→", style="dim")
+        role = _ABBR_ROLE.get(abbr)
+        text.append(abbr, style=_ROLE_STYLE[role].replace("bold ", "") if role else "")
+    return text
+
+
 _CODE_FENCE = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
 
 
