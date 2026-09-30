@@ -3179,7 +3179,7 @@ class ViewApp(App):
                     t(
                         f"{len(bad)} value(s) of {self._shown(col)} are truncated"
                         " and can't go into a command",
-                        f"{self._shown(col)} 的 {len(bad)} 个值含特殊字符/被截断, 无法写进命令",
+                        f"{self._shown(col)} 的 {len(bad)} 个值被截断, 无法写进命令",
                     )
                 )
                 continue
