@@ -76,7 +76,7 @@ any('keyword' in m.content for m in x.messages)   # whole conversation
 
 ## Renaming columns
 
-Double-click a column header: an input box opens over the header cell; type the new name, Enter. The rename is applied to what you see (header, detail pane, `c` column picker) and to what `w` exports; filters, sorts and the `C` command keep using the on-disk names because the file has not changed. The status bar shows `renamed ×N · q to save`.
+Double-click a column header: an input box opens over the header cell; type the new name, Enter. The rename is applied to what you see (header, detail pane, `c` column picker) and to what `w` exports. **Type the names you see** everywhere: `f` (`x.quality > 0.5`), `s`, `S`, `F`, and the `|` pipe (it is fed the renamed rows). Conditions are stored against the on-disk names, so a filter written before a rename keeps working after it, and what `C`/`P`/lineage record stays valid for the file as it is on disk: `P` ends with `| dt clean - --rename old:new` so its output looks like the browser; `C` notes that renames are not part of `dt view` options. Renaming is a layer over the file, so it is disabled while a pipe result is shown (`r` returns to the file). The status bar shows `renamed ×N · q to save`.
 
 Pressing `q` with pending renames asks:
 

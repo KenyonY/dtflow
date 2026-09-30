@@ -234,3 +234,133 @@ def compile_map(code_str: str) -> Callable[[Row], Row]:
         return unwrap(ns["x"])
 
     return map_fn
+
+
+# --------------------------------------------------------------------------- #
+# 字段改名翻译: dt view 里列被重命名后, 用户按看到的新名写条件, 存储/扫描/复制命令用磁盘原名
+# --------------------------------------------------------------------------- #
+_FIELD_PATH_HEAD = re.compile(r"^([^.\[]+)(.*)$", re.S)
+_SCOPES = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+
+
+def _binds_x(target: ast.AST) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == "x" for n in ast.walk(target))
+
+
+def _is_x(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "x" and isinstance(node.ctx, ast.Load)
+
+
+def _str_const(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def rename_fields(expr: str, mapping: Dict[str, str]) -> str:
+    """把表达式里对当前行**顶层**字段的引用按 mapping 改名, 其余一字不动。
+
+    认的写法: ``x.a`` / ``x['a']`` / ``x.get('a', …)`` / ``'a' in x`` / ``get(x, 'a.b…')``。
+    所有替换同时生效 (交换 a↔b 不会互相覆盖)。按源码位置替换而不是 ast.unparse, 用户的
+    空格与引号保留。推导式/lambda 里把 x 重新绑定的部分不动 (那个 x 不是当前行)。
+    语法错误原样返回, 交给随后的编译按用户原文报位置。
+    """
+    if not mapping:
+        return expr
+    try:
+        tree = ast.parse(expr, "<expr>", "eval")
+    except SyntaxError:
+        return expr
+    data = expr.encode("utf-8")  # ast 的列偏移是 UTF-8 字节
+    line_starts = [0] + [i + 1 for i, b in enumerate(data) if b == 0x0A]
+    edits = []  # (起, 止, 新文本)
+
+    def span(node: ast.AST):
+        return (
+            line_starts[node.lineno - 1] + node.col_offset,
+            line_starts[node.end_lineno - 1] + node.end_col_offset,
+        )
+
+    def put_str(node: ast.Constant, new: str) -> None:
+        a, b = span(node)
+        old = data[a:b].decode("utf-8")
+        q = old[:1]
+        if q in ("'", '"') and q not in new and "\\" not in new and "\n" not in new:
+            edits.append((a, b, q + new + q))
+        else:
+            edits.append((a, b, repr(new)))
+
+    def attr_form(new: str) -> str:
+        import keyword
+
+        return f"x.{new}" if new.isidentifier() and not keyword.iskeyword(new) else f"x[{new!r}]"
+
+    def visit(node: ast.AST, shadowed: bool) -> None:
+        if isinstance(node, ast.Lambda):
+            a = node.args
+            params = [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg]
+            for d in [*a.defaults, *(d for d in a.kw_defaults if d is not None)]:
+                visit(d, shadowed)
+            visit(node.body, shadowed or any(p is not None and p.arg == "x" for p in params))
+            return
+        if isinstance(node, _SCOPES):
+            sh = shadowed
+            for i, gen in enumerate(node.generators):
+                visit(gen.iter, shadowed if i == 0 else sh)
+                sh = sh or _binds_x(gen.target)
+                for cond in gen.ifs:
+                    visit(cond, sh)
+            for part in (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,):
+                visit(part, sh)
+            return
+        if not shadowed:
+            if isinstance(node, ast.Attribute) and _is_x(node.value) and node.attr in mapping:
+                a, b = span(node)
+                edits.append((a, b, attr_form(mapping[node.attr])))
+                return
+            if (
+                isinstance(node, ast.Subscript)
+                and _is_x(node.value)
+                and _str_const(node.slice)
+                and node.slice.value in mapping
+            ):
+                put_str(node.slice, mapping[node.slice.value])
+            elif isinstance(node, ast.Call) and node.args and _str_const(node.args[0]):
+                f = node.func
+                if (
+                    isinstance(f, ast.Attribute)
+                    and f.attr == "get"
+                    and _is_x(f.value)
+                    and node.args[0].value in mapping
+                ):
+                    put_str(node.args[0], mapping[node.args[0].value])
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "get"
+                and len(node.args) >= 2
+                and _is_x(node.args[0])
+                and _str_const(node.args[1])
+            ):
+                m = _FIELD_PATH_HEAD.match(node.args[1].value)
+                if m and m.group(1) in mapping:
+                    put_str(node.args[1], mapping[m.group(1)] + m.group(2))
+            elif isinstance(node, ast.Compare):
+                left = node.left
+                for op, right in zip(node.ops, node.comparators, strict=True):
+                    if (
+                        isinstance(op, (ast.In, ast.NotIn))
+                        and _is_x(right)
+                        and _str_const(left)
+                        and left.value in mapping
+                    ):
+                        put_str(left, mapping[left.value])
+                    left = right
+        for child in ast.iter_child_nodes(node):
+            visit(child, shadowed)
+
+    visit(tree.body, False)
+    if not edits:
+        return expr
+    out = data
+    for a, b, new in sorted(set(edits), reverse=True):
+        out = out[:a] + new.encode("utf-8") + out[b:]
+    return out.decode("utf-8")

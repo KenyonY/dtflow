@@ -4095,3 +4095,102 @@ async def test_rename_chain_does_not_crash_render(tmp_path):
         assert app._apply_renames({"a": 1, "b": 2}) == {"b": 1, "c": 2}
         # 显示路径遇到窗口外才会有的冲突行也不抛
         assert app._apply_renames({"a": 1, "b": 2, "c": 9}) == {"b": 1, "c": 9}
+
+
+# ---------------------------------------------------------------------------
+# 改名后按新名敲条件: 入口翻译回磁盘原名存储, 显示再译回新名
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_filter_sort_snapshot_use_renamed_names():
+    app = _chat_app(10)
+    async with app.run_test() as pilot:
+        app._apply_filter("len(x.messages) >= 2")  # 改名前写的条件: 改名后照样有效
+        await app.workers.wait_for_complete()
+        app._rename_column("source", "src")
+        app._apply_filter("x.src == 'a'")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._wheres == ["len(x.messages) >= 2", "x.source == 'a'"]  # 存磁盘原名
+        assert app._seq_total() == 5
+        label = app._constraint_label()
+        assert "x.src == 'a'" in label and "x.source" not in label
+        assert app._filter_label == label
+        # 排序与快照按新名敲
+        app._apply_sort("-src")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._sort_spec == ("source", True) and app._sort_label == "src↓"
+        notes = []
+        app.notify = lambda m, **k: notes.append(str(m))
+        app._set_sort_spec("nope")
+        assert "src" in notes[-1] and "source" not in notes[-1]  # 可选列按显示名列出
+        # 再改一次名: 已存的条件不失效, 显示跟着变
+        app._rename_column("source", "origin")
+        assert "x.origin == 'a'" in app._constraint_label()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_command_with_renames_runs_in_shell(tmp_path):
+    """P: 条件按原名筛, 末段 dt clean --rename, 在真实 shell 里跑出来就是所见的样子。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import orjson
+
+    p = tmp_path / "d.jsonl"
+    p.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in _chat_rows(10)))
+    app = _chat_app(10)
+    app.filepath = str(p)
+    async with app.run_test() as pilot:
+        app._rename_column("source", "src")
+        cmd, _ = app._build_pipeline_command()
+        assert cmd == f"dt clean {p} --rename source:src"  # 无条件时只剩改名
+        app._apply_filter("x.src == 'a'")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        cmd, skipped = app._build_pipeline_command()
+        assert not skipped and cmd.endswith("| dt clean - --rename source:src")
+        bin_dir = str(Path(sys.executable).parent)
+        out = subprocess.run(
+            ["bash", "-o", "pipefail", "-c", cmd],
+            capture_output=True,
+            env={**os.environ, "PATH": bin_dir + os.pathsep + os.environ["PATH"]},
+            check=True,
+        ).stdout
+        rows = [orjson.loads(line) for line in out.splitlines()]
+        assert len(rows) == 5 and all(r["src"] == "a" and "source" not in r for r in rows)
+        # C 复现的是对磁盘文件的视图: 条件用原名, 并说明改名没带上
+        vcmd, vskipped = app._build_command()
+        assert "--where=" in vcmd and "x.source == " in vcmd
+        assert any("P" in s for s in vskipped)
+
+
+@pytest.mark.asyncio
+async def test_pipe_sees_renamed_rows_and_blocks_renaming():
+    app = _chat_app(10)
+    app.filepath = "data.jsonl"
+    async with app.run_test() as pilot:
+        app._rename_column("source", "src")
+        await _pipe(app, pilot, "dt filter - \"x.src == 'b'\"")  # 管道照着新名写
+        assert app._pipe is not None and app.source.total == 5
+        assert "src" in app.columns and app._shown("src") == "src"
+        # 管道结果上的条件按它自己的列名 (已是新名), 不再翻译
+        app._apply_filter("x.src == 'b'")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._wheres == ["x.src == 'b'"] and app._seq_total() == 5
+        cmd, _ = app._build_command()
+        assert "--pipe='dt clean - --rename source:src | dt filter - " in cmd
+        pcmd, _ = app._build_pipeline_command()
+        assert pcmd.startswith("dt clean data.jsonl --rename source:src | dt filter - ")
+        # 管道态不能改名
+        notes = []
+        app.notify = lambda m, **k: notes.append((str(m), k.get("severity")))
+        app._rename_column("src", "s2")
+        assert app._renames == {"source": "src"} and notes[-1][1] == "error"
+        # r 回到原文件: 改名层重新生效
+        app.action_reset()
+        await pilot.pause()
+        assert app._pipe is None and app._shown("source") == "src"

@@ -34,7 +34,9 @@ from textual.widgets._data_table import RowRenderables
 from textual.widgets.selection_list import Selection
 from textual.worker import WorkerState
 
+from ...expr import rename_fields
 from ...i18n import t
+from ...ops import _rename_item
 from ...rowfn import _normalize_turns
 from ...utils import clipboard
 from . import image, render, scan
@@ -369,7 +371,8 @@ _HELP = t(
   Esc          cancel a running scan
   Enter        zoom into the current sample (Esc to return)
   dbl-click hdr  rename the column: shows at once, the file is untouched until you quit,
-                 then q asks save (dt clean --rename, lineage recorded) / discard
+                 then q asks save (dt clean --rename, lineage recorded) / discard;
+                 f/s/S/F/| then take the new name (x.new_name)
   drag hdr │   resize columns (Excel-style): the │ right of each header is the divider;
                  hover turns it ┃, drag left/right to resize, double-click to auto-fit;
                  widths stick to the column name across windows and filters
@@ -430,7 +433,7 @@ _HELP = t(
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
   双击列头     重命名该列: 界面立即改, 文件退出前不动; q 时询问 保存 (等价 dt clean
-                 --rename, 记血缘) / 丢弃
+                 --rename, 记血缘) / 丢弃; 之后 f/s/S/F/| 都按新名写 (x.新名)
   拖表头的 │   改列宽 (Excel 式): 表头每列右侧那道 │ 即分隔线, 鼠标压上去变 ┃
                  按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
   z            切换 左右 / 上下 布局 (默认左右)
@@ -1399,7 +1402,7 @@ class ViewApp(App):
         if self._sort_spec is None:
             return None
         name, desc = self._sort_spec
-        return f"{name}{'↓' if desc else '↑'}"
+        return f"{self._shown(name)}{'↓' if desc else '↑'}"
 
     # ------------------------------------------------------------------ #
     # 扫描的统一出入口。四种全量扫描 (筛选/值/快照/导出) 共用一个 worker 槽位
@@ -1628,25 +1631,58 @@ class ViewApp(App):
     # ------------------------------------------------------------------ #
     # 列重命名: 界面即时, 文件退出时写回
     # ------------------------------------------------------------------ #
+    def _active_renames(self) -> Dict[str, str]:
+        """当前数据源上生效的改名。改名是原文件之上的一层"看法"; 管道态看的是管道结果,
+        它的列名已经是新名 (喂进管道的就是改过名的行), 不再叠一层。"""
+        return {} if self._pipe is not None else self._renames
+
     def _shown(self, col: str) -> str:
-        """列的显示名 (重命名后)。约束/血缘/导出用原始名, 只有人看的地方用它。"""
-        return self._renames.get(col, col)
+        """列的显示名 (重命名后)。约束/血缘用磁盘原名存, 人看到和敲的都是它。"""
+        return self._active_renames().get(col, col)
 
     def _original(self, shown: str) -> str:
         """显示名 → 原始列名 (提示框里用户敲的是看到的名字)。"""
-        for col, new in self._renames.items():
+        for col, new in self._active_renames().items():
             if new == shown:
                 return col
         return shown
 
+    def _to_disk_expr(self, expr: str) -> str:
+        """按新名写的条件 → 磁盘原名 (存储/扫描/C/P/血缘都对磁盘文件成立)。"""
+        renames = self._active_renames()
+        return rename_fields(expr, {new: old for old, new in renames.items()}) if renames else expr
+
+    def _to_shown_expr(self, expr: str) -> str:
+        """存储的条件 → 显示给人看的新名写法。"""
+        renames = self._active_renames()
+        return rename_fields(expr, renames) if renames else expr
+
+    def _shown_columns(self) -> str:
+        return ", ".join(self._shown(c) for c in self.columns)
+
     def _apply_renames(self, row: Dict) -> Dict:
         """显示用的改名: 不做冲突检查 (校验在输入时按列目录做, 写回时按每一行做), 渲染绝不抛错。"""
-        if not self._renames or not isinstance(row, dict):
+        renames = self._active_renames()
+        if not renames or not isinstance(row, dict):
             return row
-        return {self._renames.get(k, k): v for k, v in row.items()}
+        return {renames.get(k, k): v for k, v in row.items()}
+
+    def _pipe_blocks_rename(self) -> bool:
+        if self._pipe is None:
+            return False
+        self.notify(
+            t(
+                "Renaming applies to the file; leave the pipe first (r)",
+                "改名作用于原文件; 先按 r 退出管道",
+            ),
+            severity="error",
+        )
+        return True
 
     def _rename_column(self, col: str, new: str) -> None:
         """把原始列 col 显示为 new。校验在此刻报错, 不留到保存。"""
+        if self._pipe_blocks_rename():
+            return
         new = new.strip()
         derived = render.derived_columns(self.fmt)
         if col == "#" or col in derived or col not in self.columns:
@@ -1670,6 +1706,8 @@ class ViewApp(App):
             self._renames.pop(col, None)
         else:
             self._renames[col] = new
+        if self._filter_label:  # 状态栏的条件说明也换成新名
+            self._filter_label = self._constraint_label()
         self._rebuild_columns()
         self._refresh_detail(self.query_one("#table", DataTable).cursor_row)
         self._update_status()
@@ -2590,6 +2628,8 @@ class ViewApp(App):
             self._begin_rename(vis[msg.index])
 
     def _begin_rename(self, col: str) -> None:
+        if self._pipe_blocks_rename():
+            return
         if col == "#" or col in render.derived_columns(self.fmt):
             self.notify(
                 escape(
@@ -2793,13 +2833,13 @@ class ViewApp(App):
     def _set_sort_spec(self, text: str) -> bool:
         """校验并记下排序列; 列名非法返回 False。"""
         desc = text.startswith("-")
-        name = text.lstrip("-").strip()
+        name = self._original(text.lstrip("-").strip())
         if name not in self.columns:
             self.notify(
                 escape(
                     t(
-                        f"No such column: {name} (available: {', '.join(self.columns)})",
-                        f"无此列: {name} (可选: {', '.join(self.columns)})",
+                        f"No such column: {name} (available: {self._shown_columns()})",
+                        f"无此列: {name} (可选: {self._shown_columns()})",
                     )
                 ),
                 severity="error",
@@ -3036,6 +3076,28 @@ class ViewApp(App):
             wheres.append(self._value_filter_expr(col, kept))
         return wheres, skipped
 
+    def _rename_pairs(self) -> str:
+        import shlex
+
+        return shlex.quote(",".join(f"{k}:{v}" for k, v in self._renames.items()))
+
+    def _view_pipe(self) -> Optional[str]:
+        """C 里的 --pipe: 管道当初喂的是改过名的行, 复现时前面接上同样的改名。"""
+        if self._pipe is None or not self._renames:
+            return self._pipe
+        return f"dt clean - --rename {self._rename_pairs()} | {self._pipe}"
+
+    def _shell_pipe(self) -> Optional[str]:
+        """P/血缘里对源文件重跑管道的 shell 命令 (含改名段)。"""
+        if self._pipe is None or not self.filepath:
+            return None
+        if not self._renames:
+            return shell_form(self._pipe, self.filepath)
+        import shlex
+
+        head = f"dt clean {shlex.quote(self.filepath)} --rename {self._rename_pairs()}"
+        return f"{head} | {self._pipe}"
+
     def _build_command(self) -> Tuple[Optional[str], List[str]]:
         """(可复现当前视图的 dt view 命令, 无法表达的部分说明)。"""
         import shlex
@@ -3059,7 +3121,14 @@ class ViewApp(App):
         if self._follow:
             parts.append("--follow")
         if self._pipe is not None:
-            parts.append(f"--pipe={shlex.quote(self._pipe)}")
+            parts.append(f"--pipe={shlex.quote(self._view_pipe())}")
+        elif self._renames:
+            skipped.append(
+                t(
+                    "column renames (dt view has no option for them; P includes them)",
+                    "列改名 (dt view 没有对应选项; P 的处理链里有)",
+                )
+            )
         for w in wheres:
             parts.append(f"--where={shlex.quote(w)}")
         if self._search_text:
@@ -3094,7 +3163,7 @@ class ViewApp(App):
         stages: List[str] = []
         src = shlex.quote(self.filepath)
         if self._pipe is not None:  # 先是管道本身 (对源文件重跑), 再接当前约束
-            stages.append(shell_form(self._pipe, self.filepath))
+            stages.append(self._shell_pipe())
         if wheres:
             expr = " and ".join(f"({w})" for w in wheres) if len(wheres) > 1 else wheres[0]
             stages.append(f"dt filter {'-' if stages else src} {shlex.quote(expr)}")
@@ -3108,6 +3177,9 @@ class ViewApp(App):
             else:
                 head = "dt sort - " if stages else f"dt sort {src} "
                 stages.append(head + f"--by {shlex.quote(key)}" + (" --desc" if desc else ""))
+        if self._pipe is None and self._renames:  # 条件按原名筛完, 末段改名 = 输出与所见一致
+            head = "dt clean - " if stages else f"dt clean {src} "
+            stages.append(head + f"--rename {self._rename_pairs()}")
         if not stages:
             return None, [
                 t("no filter/search/sort to translate", "当前没有筛选/搜索/排序条件可翻译")
@@ -3303,7 +3375,7 @@ class ViewApp(App):
             params["pipe"] = self._pipe
             params["pipe_rows"] = self.source.total
             if self.filepath:
-                params["pipe_command"] = shell_form(self._pipe, self.filepath)
+                params["pipe_command"] = self._shell_pipe()
         if skipped:
             params["command_incomplete"] = skipped
         if self._renames:
@@ -3388,7 +3460,11 @@ class ViewApp(App):
             try:
                 if not self._prepare_full_scan(cancel, source=self._origin_source):
                     return self._on_pipe_done, (text, None, None, gen)
-                result = run_pipe(text, self._origin_source.iter_all(), cancel, progress)
+                rows = self._origin_source.iter_all()
+                if self._renames:  # 用户照着看到的列名写管道; 窗口外的冲突行在这里报错
+                    renames = dict(self._renames)
+                    rows = (_rename_item(r, renames) if isinstance(r, dict) else r for r in rows)
+                result = run_pipe(text, rows, cancel, progress)
             except Exception as e:  # noqa: BLE001  如 sh 不存在: 变提示, 不是崩溃
                 return self._on_pipe_done, (text, None, f"{type(e).__name__}: {e}", gen)
             return self._on_pipe_done, (text, result, None, gen)
@@ -3846,6 +3922,7 @@ class ViewApp(App):
         if self._busy():
             return
         snap = self._constraints_snapshot()
+        expr = self._to_disk_expr(expr)  # 按看到的列名写; 存磁盘原名, 之后再改名也不失效
         try:
             scan.compile_where(expr)  # 只为校验: 谓词由 spec 现编
         except ValueError as e:
@@ -3863,9 +3940,11 @@ class ViewApp(App):
         parts = []
         if self._search_text:
             parts.append(t(f"search '{self._search_text}'", f"搜索'{self._search_text}'"))
-        parts += [t(f"where '{e}'", f"筛选'{e}'") for e in self._wheres]
+        wheres = [self._to_shown_expr(e) for e in self._wheres]
+        parts += [t(f"where '{e}'", f"筛选'{e}'") for e in wheres]
         parts += [
-            t(f"{c}∈{len(v)} values", f"{c}∈{len(v)}值") for c, v in self._col_value_filters.items()
+            t(f"{self._shown(c)}∈{len(v)} values", f"{self._shown(c)}∈{len(v)}值")
+            for c, v in self._col_value_filters.items()
         ]
         return " · ".join(parts)
 
@@ -4108,8 +4187,8 @@ class ViewApp(App):
             self.notify(
                 escape(
                     t(
-                        f"No such column: {col} (available: {', '.join(self.columns)})",
-                        f"无此列: {col} (可选: {', '.join(self.columns)})",
+                        f"No such column: {col} (available: {self._shown_columns()})",
+                        f"无此列: {col} (可选: {self._shown_columns()})",
                     )
                 ),
                 severity="error",
@@ -4237,13 +4316,15 @@ class ViewApp(App):
         )
 
     def _apply_snapshot(self, col: str) -> None:
-        col = col.strip() or next((c for c in self._visible_columns() if c != "#"), "")
+        col = self._original(col.strip()) or next(
+            (c for c in self._visible_columns() if c != "#"), ""
+        )
         if col not in self.columns:
             self.notify(
                 escape(
                     t(
-                        f"No such column: {col} (available: {', '.join(self.columns)})",
-                        f"无此列: {col} (可选: {', '.join(self.columns)})",
+                        f"No such column: {col} (available: {self._shown_columns()})",
+                        f"无此列: {col} (可选: {self._shown_columns()})",
                     )
                 ),
                 severity="error",
@@ -4309,6 +4390,7 @@ class ViewApp(App):
             self._update_status()
             return
         n, nonempty, nnum, vmin, vmax, vsum = stats
+        col = self._shown(col)
         scope = t("subset", "子集") if self._subset is not None else t("all", "全量")
         rate = f"{100 * nonempty / n:.1f}%" if n else "-"
         if nnum:

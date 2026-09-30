@@ -232,3 +232,50 @@ class TestMultiprocess:
         with ctx.Pool(2) as pool:
             got = pool.map(_eval_in_child, [("x.id == 7", ROW), ("x.id == 8", ROW)])
         assert got == [True, False]
+
+
+class TestRenameFields:
+    """dt view 列改名后按新名写条件: 翻译回磁盘原名 (以及反向用于显示)。"""
+
+    def test_forms_and_formatting_kept(self):
+        from dtflow.expr import rename_fields
+
+        m = {"quality": "score"}
+        assert rename_fields("x.quality  >  0.5", m) == "x.score  >  0.5"
+        assert rename_fields('x["quality"] > 1', m) == 'x["score"] > 1'
+        assert rename_fields("x.get('quality', 0) > 1", m) == "x.get('score', 0) > 1"
+        assert rename_fields("'quality' in x", m) == "'score' in x"
+        assert rename_fields("get(x, 'quality.a[0]') == 1", m) == "get(x, 'score.a[0]') == 1"
+        # 嵌套字段与非 x 的同名属性不动
+        assert rename_fields("x.meta.quality and m.quality", m) == "x.meta.quality and m.quality"
+
+    def test_swap_and_chain_are_simultaneous(self):
+        from dtflow.expr import rename_fields
+
+        assert rename_fields("x.a < x.b", {"a": "b", "b": "a"}) == "x.b < x.a"
+        assert rename_fields("x.c + x.b", {"c": "b", "b": "a"}) == "x.b + x.a"
+
+    def test_shadowed_x_untouched(self):
+        from dtflow.expr import rename_fields
+
+        m = {"role": "kind", "msgs": "messages"}
+        e = "any(x.role == 'u' for x in x.msgs)"
+        assert rename_fields(e, m) == "any(x.role == 'u' for x in x.messages)"
+        assert rename_fields("(lambda x: x.role)(x.msgs)", m) == "(lambda x: x.role)(x.messages)"
+        assert rename_fields("[m.role for m in x.msgs if x.role]", m) == (
+            "[m.role for m in x.messages if x.kind]"
+        )
+
+    def test_non_identifier_target_and_unicode(self):
+        from dtflow.expr import rename_fields
+
+        assert rename_fields("x.q > 1", {"q": "my score"}) == "x['my score'] > 1"
+        assert rename_fields("'中文' in x.标题 and x.标题", {"标题": "title"}) == (
+            "'中文' in x.title and x.title"
+        )
+
+    def test_syntax_error_returned_unchanged(self):
+        from dtflow.expr import rename_fields
+
+        assert rename_fields("x.a >", {"a": "b"}) == "x.a >"
+        assert rename_fields("x.a", {}) == "x.a"
