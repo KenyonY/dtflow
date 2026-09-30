@@ -68,6 +68,53 @@ def test_llava_single_image_field():
     assert _normalize_turns(row)[0].images == ("coco/1.jpg",)
 
 
+def test_extra_images_follow_ms_swift_to_first_non_system_message():
+    # 图多于占位: 缺的占位补在首条非 system 消息开头 (ms-swift _add_default_tags), 图不丢
+    row = {
+        "images": ["a", "b", "c"],
+        "messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "<image>再看"},
+        ],
+    }
+    turns = _normalize_turns(row)
+    assert [t.images for t in turns] == [(), ("a", "b"), (), ("c",)]
+    assert imgs(row) == 3
+    assert image_mismatch(row, turns) == (1, 3)
+
+
+def test_images_null_falls_back_to_image():
+    row = {"images": None, "image": "x.png", "messages": [{"role": "user", "content": "<image>"}]}
+    assert _normalize_turns(row)[0].images == ("x.png",)
+
+
+def test_sharegpt_multimodal_value():
+    row = {
+        "conversations": [
+            {
+                "from": "human",
+                "value": [{"type": "image", "image": "a.png"}, {"type": "text", "text": "?"}],
+            }
+        ]
+    }
+    (turn,) = _normalize_turns(row)
+    assert turn.images == ("a.png",) and turn.content == "<image> ?"
+
+
+@pytest.mark.parametrize(
+    "row, color",
+    [
+        ({"images": ["a"], "messages": [{"role": "user", "content": "<image><image>"}]}, "red"),
+        ({"images": ["a", "b"], "messages": [{"role": "user", "content": "<image>"}]}, "yellow"),
+    ],
+)
+def test_mismatch_warning_severity(row, color):
+    rend = R.render_detail_sections(row, "openai_chat", split_turns=True)[0][1]
+    assert color in str(rend.renderables[0].style)
+
+
 @pytest.mark.parametrize(
     "row, expected",
     [
@@ -98,9 +145,9 @@ def test_detail_shows_image_lines_and_is_searchable():
 
 
 def test_detail_warns_on_mismatch_at_top():
-    row = {"images": ["a", "b"], "messages": [{"role": "user", "content": "<image>"}]}
+    row = {"images": ["a"], "messages": [{"role": "user", "content": "<image><image>"}]}
     secs = R.render_detail_sections(row, "openai_chat", split_turns=True)
-    assert secs[0][2].startswith("⚠ 1 个 <image> 占位, 但有 2 张图")
+    assert secs[0][2].startswith("⚠ 2 个 <image> 占位, 但有 1 张图")
 
 
 def test_data_uri_label_is_short():
@@ -140,6 +187,11 @@ def test_load_relative_and_absolute_path(tmp_path):
     assert vimg.load(str(tmp_path / "img" / "a.png"), "/nowhere").image.size == (8, 6)
 
 
+def test_load_file_uri(tmp_path):
+    (tmp_path / "a.png").write_bytes(_png(3, 3))
+    assert vimg.load(f"file://{tmp_path}/a.png", "/nowhere").image.size == (3, 3)
+
+
 def test_load_data_uri():
     ref = "data:image/png;base64," + base64.b64encode(_png(2, 2)).decode()
     assert vimg.load(ref, ".").image.size == (2, 2)
@@ -151,7 +203,7 @@ def test_load_data_uri():
         ("", "图片引用为空"),
         ("missing.png", "文件不存在"),
         ("oss://bucket/a.png", "不支持的协议: oss://"),
-        ("data:image/png;base64,bm90IGFuIGltYWdl", "图片解码失败"),
+        ("data:image/png;base64,bm90IGFuIGltYWdl", "不是可识别的图片格式"),
     ],
 )
 def test_load_errors(tmp_path, ref, reason):
@@ -288,3 +340,21 @@ async def test_popup_without_images_just_notifies(tmp_path):
         await pilot.press("i")
         await pilot.pause()
         assert not isinstance(app.screen, ImageScreen)
+
+
+@pytest.mark.parametrize("has_image, probed", [(False, False), (True, True)])
+def test_terminal_probe_only_when_first_window_has_images(tmp_path, has_image, probed):
+    # 子进程: 本进程的 textual_image 可能已被别的测试 import 过
+    import subprocess
+    import sys
+
+    content = "<image>" if has_image else "hi"
+    row = {"images": ["a.png"]} if has_image else {}
+    row["messages"] = [{"role": "user", "content": content}]
+    code = (
+        "import sys; from dtflow.cli.view import _probe_graphics; "
+        f"_probe_graphics('openai_chat', [{row!r}]); "
+        "print('textual_image.widget' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == str(probed)

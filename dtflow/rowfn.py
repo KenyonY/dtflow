@@ -109,7 +109,8 @@ def _normalize_turns(row: Any) -> List[Turn]:
                     raw = value if isinstance(value, str) else orjson.dumps(value).decode()
                     calls = (ToolCall("?", raw, ""),)
                 value = None
-            turns.append(Turn(role=role, content=_as_text(value), tool_calls=calls))
+            content, images = _split_content(value)
+            turns.append(Turn(role=role, content=content, tool_calls=calls, images=images))
         return _attach_top_images(turns, row)
     return []
 
@@ -175,8 +176,8 @@ def _image_ref(seg: Dict) -> Optional[str]:
 def _top_images(row: Dict) -> List[str]:
     """样本级图片列表: LLaMA-Factory/swift 的 ``images``, LLaVA 的单个 ``image``。
     元素是路径/URL 字符串, 或带 path/url 的 dict (HF datasets 导出的样子)。"""
-    v = row.get("images", row.get("image"))
-    if v is None:
+    v = row.get("images") or row.get("image")  # 混合数据集转列存后常见 images=null 与 image 并存
+    if not v:
         return []
     out = []
     for x in v if isinstance(v, list) else [v]:
@@ -188,14 +189,25 @@ def _top_images(row: Dict) -> List[str]:
 
 def _attach_top_images(turns: List[Turn], row: Dict) -> List[Turn]:
     """样本级图片按顺序对上正文里的 <image>, 分到各条消息。已有内联图片的样本不动
-    (占位是片段生成的, 再对一遍会重复)。对不上的由 image_mismatch 报出来。"""
+    (占位是片段生成的, 再对一遍会重复)。
+
+    图比占位多时照 ms-swift (Template._add_default_tags) 的做法: 缺的占位补在第一条
+    非 system 消息开头, 所以多出的图从那条消息起按序分配 —— 图不能因为缺标签就看不到,
+    数量对不上时恰恰最需要看图。占位比图多时, 多的占位没有图。两种情况都由 image_mismatch 报出。
+    """
     refs = _top_images(row)
     if not refs or any(t.images for t in turns):
         return turns
+    counts = [turn.content.count(IMAGE_TOKEN) for turn in turns]
+    missing = len(refs) - sum(counts)
+    if missing > 0:
+        first = next((i for i, turn in enumerate(turns) if turn.role != "system"), None)
+        if first is None:
+            return turns
+        counts[first] += missing
     it = iter(refs)
     out = []
-    for turn in turns:
-        n = turn.content.count(IMAGE_TOKEN)
+    for turn, n in zip(turns, counts, strict=True):
         if n:  # zip 先耗尽 range 就停, 不会多吃 it 的元素
             turn = turn._replace(images=tuple(r for _, r in zip(range(n), it, strict=False)))
         out.append(turn)

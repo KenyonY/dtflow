@@ -31,3 +31,31 @@ def test_records_round_trip_unchanged(path, sample_type):
 
 def test_tail_takes_last_lines(path):
     assert [r["id"] for r in sample_file(str(path), num=2, sample_type="tail")] == [3, 4]
+
+
+@pytest.fixture
+def blank_path(tmp_path):
+    """记录之间与末尾夹空行: N 指记录数, 空行不占名额。"""
+    p = tmp_path / "b.jsonl"
+    p.write_bytes(b"".join(b'{"a":%d}\n\n' % i for i in range(10)))
+    return p
+
+
+def test_tail_ignores_blank_lines(blank_path):
+    assert [r["a"] for r in sample_file(str(blank_path), num=2, sample_type="tail")] == [8, 9]
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_random_sample_full_count_and_spread(blank_path, seed):
+    got = sample_file(str(blank_path), num=5, sample_type="random", seed=seed)
+    assert len(got) == 5  # 不因抽中空行而缺条
+    assert len({r["a"] for r in got}) == 5
+
+
+def test_random_sample_covers_whole_file(blank_path):
+    seen = set()
+    for seed in range(30):
+        seen |= {
+            r["a"] for r in sample_file(str(blank_path), num=3, sample_type="random", seed=seed)
+        }
+    assert seen == set(range(10))  # 不偏向文件前部

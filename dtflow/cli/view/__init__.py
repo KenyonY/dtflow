@@ -21,6 +21,22 @@ from ...i18n import t
 _DEFAULT_CAP = 10000
 
 
+def _probe_graphics(fmt: str, window) -> None:
+    """图片弹窗要知道终端支持哪种图形协议, 只能在 Textual 接管 stdin 之前问 (import
+    textual_image.widget 即探测)。只在首窗口真有图时问: 终端不回应时要等到超时 (约 2 秒),
+    纯文本数据不该付这笔。探测是与终端的外部交互, 失败 (如 0x0 的 pty 上 textual-image
+    自己除零) 只意味着不画图, 不能让 dt view 起不来 —— 弹窗对此另有提示。
+    """
+    from .render import _has_images
+
+    if fmt not in ("openai_chat", "sharegpt") or not any(_has_images(r) for r in window):
+        return
+    try:
+        import textual_image.widget  # noqa: F401
+    except Exception:  # noqa: BLE001 (外部终端的任意异常都只降级为不画图)
+        pass
+
+
 def _run_tui(
     source,
     cap: int,
@@ -47,10 +63,7 @@ def _run_tui(
     from .render import detect_format
 
     fmt = format_hint or detect_format(window)
-    if fmt in ("openai_chat", "sharegpt"):
-        # 图片弹窗要知道终端支持哪种图形协议, 只能在 Textual 接管 stdin 之前问 (import 即探测,
-        # 一次往返); 只有对话格式会有图, 其余格式不付这笔启动成本
-        import textual_image.widget  # noqa: F401
+    _probe_graphics(fmt, window)
 
     from .app import ViewApp
 

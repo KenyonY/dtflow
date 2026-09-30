@@ -493,13 +493,24 @@ def render_detail_sections(
         mismatch = image_mismatch(row, turns)
         if mismatch and secs:  # 坏样本放最上面, 一打开就看到
             n, m = mismatch
-            warn = Text(
-                t(
-                    f"⚠ {n} <image> placeholder(s) but {m} image(s)",
-                    f"⚠ {n} 个 <image> 占位, 但有 {m} 张图",
-                ),
-                style="bold red",
-            )
+            if n > m:  # 占位没有图: 哪个框架都训不对
+                warn = Text(
+                    t(
+                        f"⚠ {n} <image> placeholder(s) but {m} image(s)",
+                        f"⚠ {n} 个 <image> 占位, 但有 {m} 张图",
+                    ),
+                    style="bold red",
+                )
+            else:  # 图多于占位: ms-swift 自动在首条消息前补占位, LLaMA-Factory 直接报错
+                warn = Text(
+                    t(
+                        f"⚠ {m} image(s) but {n} <image> placeholder(s): ms-swift prepends the "
+                        "missing ones to the first message (shown there), LLaMA-Factory rejects it",
+                        f"⚠ {m} 张图但只有 {n} 个 <image> 占位: ms-swift 会在首条消息前补占位"
+                        "(图已按此显示), LLaMA-Factory 会报错",
+                    ),
+                    style="bold yellow",
+                )
             name, rend, plain = secs[0]
             secs[0] = (name, Group(warn, rend), f"{warn.plain}\n{plain}")
         extra = {

@@ -640,7 +640,7 @@ class HelpScreen(ModalScreen):
 
 
 class ImageScreen(ModalScreen):
-    """一条样本里的图片逐张大图显示: ←/→ 切换, Esc/q/i 或点框外关闭。
+    """一条样本里的图片逐张大图显示: ←/→ 切换, Esc/q/i 关闭 (弹窗占满全屏, 没有"框外")。
 
     放弹窗而不是详情里: 弹窗能用满整屏分辨率, 也不牵动详情的分批挂载与锚点定位。
     读图 (可能要下载) 在线程 worker 里, 结果按代次作废, 快速翻页不会串图。
@@ -672,7 +672,7 @@ class ImageScreen(ModalScreen):
         self._show()
 
     def dismiss(self, result=None):
-        # 关闭的各条路 (Esc/q/i/点框外) 都走这里; 卸载时子 widget 已先没了, 等不到那会儿
+        # 关闭的各条路 (Esc/q/i) 都走这里; 卸载时子 widget 已先没了, 等不到那会儿
         self._release()
         return super().dismiss(result)
 
@@ -680,16 +680,12 @@ class ImageScreen(ModalScreen):
         self._i = (self._i + step) % len(self._items)
         self._show()
 
-    def on_click(self, event: events.Click) -> None:
-        if event.screen_offset not in self.query_one("#img-box", Vertical).region:
-            self.dismiss()
-            event.stop()
-
     def _title(self, extra: str) -> Text:
         where, ref = self._items[self._i]
         title = Text(f"{self._i + 1}/{len(self._items)} · {where} · ", style="bold")
         title.append(render.image_label(ref))
-        title.append(f"  {extra}", style="dim")
+        if extra:
+            title.append(f" · {extra}", style="dim")
         return title
 
     def _release(self) -> None:
@@ -733,8 +729,9 @@ class ImageScreen(ModalScreen):
             view.mount(
                 Static(
                     t(
-                        "Image preview needs the terminal probe at startup (chat formats only)",
-                        "图片预览需在启动时探测终端 (仅对话格式)",
+                        "No preview: the terminal graphics probe runs at startup only when the "
+                        "first window has images, and it did not run or failed",
+                        "无法预览: 终端图形探测只在首窗口有图时于启动时进行, 这次没有进行或失败了",
                     ),
                     classes="img-msg",
                 )

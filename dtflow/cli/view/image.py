@@ -46,7 +46,9 @@ def load(ref: str, root: str) -> Loaded:
     try:
         img = Image.open(io.BytesIO(data))
         img.load()  # open 是惰性的, 截断/损坏的文件到这里才报错
-    except (UnidentifiedImageError, OSError, ValueError) as e:
+    except UnidentifiedImageError as e:  # 原始信息只有 "<_io.BytesIO object at 0x…>", 没用
+        raise ImageError(t("not a recognized image format", "不是可识别的图片格式")) from e
+    except (OSError, ValueError) as e:  # 截断/损坏
         raise ImageError(t(f"cannot decode image: {e}", f"图片解码失败: {e}")) from e
     return Loaded(img, len(data))
 
@@ -62,6 +64,8 @@ def _read(ref: str, root: str) -> bytes:
             raise ImageError(t(f"bad base64: {e}", f"base64 解码失败: {e}")) from e
     if ref.startswith(("http://", "https://")):
         return _fetch(ref)
+    if ref.startswith("file://"):  # Qwen 示例的本地图片写法
+        ref = ref[len("file://") :]
     if "://" in ref:
         scheme = ref.split("://", 1)[0]
         raise ImageError(t(f"unsupported scheme: {scheme}://", f"不支持的协议: {scheme}://"))

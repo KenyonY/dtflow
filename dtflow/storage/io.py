@@ -635,21 +635,20 @@ def _stream_head_excel(filepath: Path, num: int) -> List[Dict[str, Any]]:
 
 
 def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
-    """JSONL 读取后 N 行: 一遍扫描只留最后 N 个原始行, 再解析这 N 行 (不用 Polars, 原因同
-    _stream_head_jsonl)。空行/坏行也占位, 与"文件最后 N 行"的直觉一致; 坏行跳过并报出来。"""
+    """JSONL 读取后 N 条记录: 一遍扫描只留最后 N 个非空行, 再解析这 N 行 (不用 Polars,
+    原因同 _stream_head_jsonl)。空行不占名额 (N 是记录数, 与 head 同口径); 坏行占名额,
+    跳过并报出行号 —— 它本来就是一条 (坏的) 记录。"""
     from collections import deque
 
     with _open_bin(filepath, "rb") as f:
-        last = deque(enumerate(f), maxlen=num)
+        last = deque(((i, ln) for i, ln in enumerate(f) if ln.strip()), maxlen=num)
     result: List[Dict[str, Any]] = []
     skipped: List[int] = []
     for i, line in last:
-        line = line.strip()
-        if line:
-            try:
-                result.append(orjson.loads(line))
-            except orjson.JSONDecodeError:
-                skipped.append(i + 1)
+        try:
+            result.append(orjson.loads(line))
+        except orjson.JSONDecodeError:
+            skipped.append(i + 1)
     _warn_skipped_lines(filepath, skipped)
     return result
 
@@ -675,51 +674,38 @@ def _stream_tail_arrow(filepath: Path, num: int) -> List[Dict[str, Any]]:
 def _count_sample_jsonl(
     filepath: Path, num: int, seed: Optional[int] = None
 ) -> List[Dict[str, Any]]:
-    """JSONL 流式采样（Polars 计数 + Python 选择性读取）
+    """JSONL 随机采样: 一遍数非空行 → 在"第几条记录"上抽 → 二遍只解析抽中的行。
 
-    策略：
-    1. 使用 Polars 快速获取行数（比 Python 快 4 倍）
-    2. 生成随机索引
-    3. Python 遍历文件，只解析选中的行
+    计数与抽取必须同一单位: 过去用 Polars 数"记录"却按"物理行号"取, 文件里有空行时
+    抽中空行就白抽 (返回不足 N 条), 且只落在文件前部 (有偏)。坏行跳过并报出行号。
     """
     import random
 
-    # Step 1: Polars 快速获取行数
-    try:
-        total_lines = pl.scan_ndjson(filepath).select(pl.len()).collect().item()
-    except Exception:
-        # 回退到 Python 计数
-        with _open_bin(filepath, "rb") as f:
-            total_lines = sum(1 for _ in f)
-
-    if total_lines == 0:
+    with _open_bin(filepath, "rb") as f:
+        total = sum(1 for line in f if line.strip())
+    if total == 0:
         return []
+    chosen = (
+        set(range(total)) if num >= total else set(random.Random(seed).sample(range(total), num))
+    )
 
-    # 采样数超过总行数，读取全部
-    if num >= total_lines:
-        return _load_jsonl(filepath)
-
-    # Step 2: 生成随机索引
-    if seed is not None:
-        random.seed(seed)
-    selected_indices = set(random.sample(range(total_lines), num))
-
-    # Step 3: 只解析选中的行
     result: List[Dict[str, Any]] = []
     skipped: List[int] = []
+    k = -1  # 当前是第几条非空行
     with _open_bin(filepath, "rb") as f:
         for i, line in enumerate(f):
-            if i in selected_indices:
-                line = line.strip()
-                if line:
-                    try:
-                        result.append(orjson.loads(line))
-                    except orjson.JSONDecodeError:
-                        skipped.append(i + 1)
-                        continue
-                if len(result) >= num:
-                    break
-
+            line = line.strip()
+            if not line:
+                continue
+            k += 1
+            if k not in chosen:
+                continue
+            try:
+                result.append(orjson.loads(line))
+            except orjson.JSONDecodeError:
+                skipped.append(i + 1)
+            if len(result) + len(skipped) == len(chosen):
+                break
     _warn_skipped_lines(filepath, skipped)
     return result
 
