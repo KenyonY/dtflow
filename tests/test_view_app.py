@@ -3335,6 +3335,18 @@ async def test_last_column_divider_drawn_and_draggable(width):
 # --------------------------------------------------------------------------- #
 # 列重命名: 双击列头 → 界面即时改, 文件退出时写回
 # --------------------------------------------------------------------------- #
+def _click_at(app, x: int, y: int, chain: int):
+    """在当前屏的 (x, y) 处投一次连击为 chain 的 Click。
+
+    Pilot.click 每次调用都从 chain=1 数起, 模拟不出"第一击开了值面板, 第二击落在面板上"这种
+    跨屏连击; 真实终端里 App 只按同位置+0.5s 内计数, 不管中间换没换屏。
+    """
+    from textual import events
+
+    ev = events.Click(app.screen, x, y, 0, 0, 1, False, False, False, x, y, chain=chain)
+    app.screen.on_click(ev)
+
+
 def _header_x(app, col: str) -> int:
     t = app.query_one("#table")
     vis = app._visible_columns()
@@ -3394,22 +3406,24 @@ async def test_rename_rejects_invalid():
 
 @pytest.mark.asyncio
 async def test_header_double_click_opens_rename_prompt_single_click_delays_value_filter():
-    from dtflow.cli.view.app import ValueFilterScreen
+    from dtflow.cli.view.app import HeaderEditScreen, ValueFilterScreen
 
     app = _chat_app(10)
     async with app.run_test(size=(120, 30)) as pilot:
         x = _header_x(app, "source")
         await pilot.click("#table", offset=(x, 1), times=2)
         await pilot.pause()
-        prompt = app.query_one("#prompt")
-        assert prompt.has_class("active") and app._prompt_mode == "rename"
-        assert app._rename_target == "source" and prompt.value == "source"
+        assert isinstance(app.screen, HeaderEditScreen)
+        inp = app.screen.query_one("#hdr-edit")
+        assert inp.value == "source"
+        # 输入框盖在列头格上: 与列头同一行, 左边缘对齐列头格左侧 (含 padding)
+        assert inp.region.y == 1 and inp.region.x == x - 1 - app.query_one("#table").cell_padding
         await pilot.pause(0.4)  # 定时器已被取消, 值面板不会再弹
-        assert not isinstance(app.screen, ValueFilterScreen)
-        prompt.value = "src"
+        assert isinstance(app.screen, HeaderEditScreen)
+        inp.value = "src"
         await pilot.press("enter")
         await pilot.pause()
-        assert app._renames == {"source": "src"}
+        assert app._renames == {"source": "src"} and not isinstance(app.screen, HeaderEditScreen)
         # 单击: 0.15s 后才开值面板
         await pilot.click("#table", offset=(_header_x(app, "source"), 1))
         await pilot.pause(0.02)
@@ -3423,11 +3437,73 @@ async def test_header_double_click_opens_rename_prompt_single_click_delays_value
 
 @pytest.mark.asyncio
 async def test_double_click_derived_header_does_not_rename():
+    from dtflow.cli.view.app import HeaderEditScreen
+
     app = _chat_app(5)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.click("#table", offset=(_header_x(app, "turns"), 1), times=2)
         await pilot.pause()
-        assert not app.query_one("#prompt").has_class("active")
+        assert not isinstance(app.screen, HeaderEditScreen)
+
+
+@pytest.mark.asyncio
+async def test_slow_double_click_on_header_still_renames():
+    """两击间隔超过 0.15s: 值面板已弹出, 第二击落在面板外的列头格上 → 面板让位给改名框。"""
+    from dtflow.cli.view.app import HeaderEditScreen, ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        x = _header_x(app, "source")
+        await pilot.click("#table", offset=(x, 1))
+        await pilot.pause(0.25)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        _click_at(app, x, 1, chain=2)  # 第二击落在值面板上 (面板外, 列头格内), 同位置 0.5s 内
+        await pilot.pause()
+        assert isinstance(app.screen, HeaderEditScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, HeaderEditScreen) and app._renames == {}
+        # 面板外的单击仍只是取消
+        await pilot.click("#table", offset=(x, 1))
+        await pilot.pause(0.25)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        _click_at(app, x, 1, chain=1)  # 超出连击阈值的单击: 只是取消
+        await pilot.pause()
+        assert not isinstance(app.screen, (ValueFilterScreen, HeaderEditScreen))
+        # 连击落在列头格之外 (面板外的别处) 也只是取消
+        await pilot.click("#table", offset=(x, 1))
+        await pilot.pause(0.25)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, ValueFilterScreen)
+        _click_at(app, x, 20, chain=2)
+        await pilot.pause()
+        assert not isinstance(app.screen, (ValueFilterScreen, HeaderEditScreen))
+
+
+@pytest.mark.asyncio
+async def test_double_click_header_cancels_pending_value_scan():
+    """大文件: 第一击起的值扫描还在跑, 第二击到来时取消它, 值面板不会再压到改名框上。"""
+    from dtflow.cli.view.app import HeaderEditScreen, ValueFilterScreen
+
+    app = _chat_app(10)
+    async with app.run_test(size=(120, 30)) as pilot:
+        x = _header_x(app, "source")
+        await pilot.click("#table", offset=(x, 1))
+        await pilot.pause(0.2)  # 定时器已触发, 扫描起了 (worker 未必已完成)
+        if isinstance(app.screen, ValueFilterScreen):
+            _click_at(app, x, 1, chain=2)
+        else:
+            await pilot.click("#table", offset=(x, 1), times=2)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert isinstance(app.screen, HeaderEditScreen)
+        assert app._scan_cancel is None
 
 
 @pytest.mark.asyncio

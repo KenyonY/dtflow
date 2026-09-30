@@ -389,3 +389,71 @@ class TestQaRegressions:
         run(str(cfg), output="-")
         assert _stdout_rows(capsys) == [ROWS[0]]
         assert not (tmp_path / "-").exists() and not (tmp_path / "o.jsonl").exists()
+
+
+def test_save_rows_permissions_and_symlink(tmp_path):
+    """-o 新文件按 umask 给普通权限 (不是 mkstemp 的 0600); -i 覆盖沿用原权限; 软链写到真实文件。"""
+    import os
+    import stat
+    import subprocess
+    import sys
+
+    src = tmp_path / "in.jsonl"
+    src.write_text('{"a":1}\n{"a":2}\n')
+    old = os.umask(0o022)
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "dtflow",
+                "filter",
+                str(src),
+                "True",
+                "-o",
+                str(tmp_path / "out.jsonl"),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        assert stat.S_IMODE((tmp_path / "out.jsonl").stat().st_mode) == 0o644
+        real = tmp_path / "real.jsonl"
+        real.write_text('{"a":1}\n')
+        real.chmod(0o600)
+        link = tmp_path / "link.jsonl"
+        link.symlink_to(real)
+        subprocess.run(
+            [sys.executable, "-m", "dtflow", "clean", str(link), "--rename", "a:b", "-i"],
+            check=True,
+            capture_output=True,
+        )
+        assert link.is_symlink() and real.read_text() == '{"b":1}\n'
+        assert stat.S_IMODE(real.stat().st_mode) == 0o600
+        assert not list(tmp_path.glob(".tmp_*"))
+    finally:
+        os.umask(old)
+
+
+def test_clean_rename_refuses_to_overwrite_existing_field(tmp_path):
+    import subprocess
+    import sys
+
+    src = tmp_path / "in.jsonl"
+    src.write_text('{"a":1,"b":2}\n')
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "dtflow",
+            "clean",
+            str(src),
+            "--rename",
+            "a:b",
+            "-o",
+            str(tmp_path / "o.jsonl"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0 and "'b'" in r.stderr
+    assert not (tmp_path / "o.jsonl").exists()

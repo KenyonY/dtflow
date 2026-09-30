@@ -40,7 +40,7 @@ dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memor
 | `S` | Column snapshot: `n·min·max·mean·non-null rate` of one column over the current sequence (full distributions: `dt stats`) |
 | `c` | Choose columns (a tick panel that applies to both table columns and detail fields) |
 | Drag a header `│` | **Resize columns** (Excel style): the `│` to the right of every header (last column included) is a handle, it turns into `┃` under the mouse with a status-bar hint, drag to resize; double-click restores auto width. Widths are remembered per column name across windows, filters and column sets |
-| Double-click a header | **Rename the column**: a prompt pre-filled with the current name; the header, the detail pane and the column picker update at once, the file is untouched until you quit (see below). Derived columns and `#` can't be renamed |
+| Double-click a header | **Rename the column**: an input box appears over the header cell, pre-filled with the current name (Enter confirms, Esc cancels); the header, the detail pane and the column picker update at once, the file is untouched until you quit (see below). Derived columns and `#` can't be renamed |
 | `y` `v` | Copy the current sample as JSON · `v` multi-select then `y` copies several |
 | `i` | **View the sample's images** full-size in a popup (`←/→` switch, `Esc` closes); clicking the `imgs` cell or a `🖼` line in detail opens it too (see [Images](#images-vlm-data)) |
 | Drag in detail + `Ctrl+c` | **Select any text with the mouse**: hold the left button and drag (what you see is what you select, wrapped lines stay aligned), `Ctrl+c` copies and clears. Multi-click widens the selection: double-click a word (hyphens and underscores count as word characters), triple-click a line, four clicks a field block, five clicks the whole detail pane; a single click or `Esc` clears. Copying uses OSC52 plus local `wl-copy`/`xclip`/`xsel`, so it reaches your local clipboard over SSH and inside tmux. Dragging in the table means something else (resize / select rows); use `y` for whole samples |
@@ -76,7 +76,7 @@ any('keyword' in m.content for m in x.messages)   # whole conversation
 
 ## Renaming columns
 
-Double-click a column header, type the new name, Enter. The rename is applied to what you see (header, detail pane, `c` column picker) and to what `w` exports; filters, sorts and the `C` command keep using the on-disk names because the file has not changed. The status bar shows `renamed ×N · q to save`.
+Double-click a column header: an input box opens over the header cell; type the new name, Enter. The rename is applied to what you see (header, detail pane, `c` column picker) and to what `w` exports; filters, sorts and the `C` command keep using the on-disk names because the file has not changed. The status bar shows `renamed ×N · q to save`.
 
 Pressing `q` with pending renames asks:
 
@@ -84,7 +84,7 @@ Pressing `q` with pending renames asks:
 - **Discard** exits without touching the file.
 - **Cancel** (Esc) returns to the browser.
 
-Write-back is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.15 s to tell it apart from a double-click.
+Write-back is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.15 s; a slower second click on the same header while the picker is up also counts as a double-click.
 
 ## Closing the loop
 

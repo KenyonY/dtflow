@@ -437,7 +437,15 @@ def _get_value_len(value: Any) -> int:
 
 
 def _rename_item(item: Row, rename_map: Dict[str, str]) -> Row:
-    """重命名字段，保持字段顺序"""
+    """重命名字段, 保持字段顺序。目标名已是该行的另一个字段时报错: 静默覆盖等于丢数据。"""
+    for old, new in rename_map.items():
+        if old in item and new in item and old != new:
+            raise ValueError(
+                t(
+                    f"rename {old!r} -> {new!r}: the row already has a field {new!r}",
+                    f"重命名 {old!r} -> {new!r}: 该行已有字段 {new!r}",
+                )
+            )
     return {rename_map.get(k, k): v for k, v in item.items()}
 
 
@@ -550,7 +558,7 @@ def clean_rows(
             lambda item: {k: v for k, v in item.items() if k not in drop_fields_set}, raw=True
         )
     if rename_map is not None:
-        st = st.transform(lambda item: _rename_item(item, rename_map), raw=True)
+        st = st.transform(lambda item: _rename_item(item, rename_map), raw=True, on_error="raise")
     if add_field_map is not None:
         st = st.transform(lambda item: _add_fields(item, add_field_map), raw=True)
     if fill_map is not None:

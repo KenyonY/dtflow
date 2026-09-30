@@ -23,7 +23,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.errors import NoWidget
-from textual.geometry import Offset, Size
+from textual.geometry import Offset, Region, Size
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.selection import Selection as TextSelection  # 与勾选面板的 Selection 同名
@@ -805,20 +805,38 @@ class ColumnPicker(ModalScreen):
         self.dismiss(None)
 
 
-def _rename_checked(row: Dict, renames: Dict[str, str]) -> Dict:
-    """改名, 但目标键已存在于该行时中止: 列目录只认已加载窗口, 窗口外的行可能有同名字段,
-    静默覆盖等于丢数据。"""
-    for old, new in renames.items():
-        if old in row and new in row:
-            raise ValueError(
-                t(
-                    f"a row already has a field {new!r}; renaming {old!r} would overwrite it",
-                    f"有行已含字段 {new!r}, 把 {old!r} 改名会覆盖它",
-                )
-            )
-    from ...ops import _rename_item
+class HeaderEditScreen(ModalScreen):
+    """列头原地改名: 一个输入框盖在被双击的列头格上, 背景不压暗。Enter 提交, Esc/点别处取消。"""
 
-    return _rename_item(row, renames)
+    BINDINGS = [Binding("escape", "cancel", t("Cancel", "取消"), show=False)]
+
+    def __init__(self, value: str, cell: Region):
+        super().__init__()
+        self._value = value
+        self._cell = cell  # 列头格的屏幕区域
+
+    def compose(self) -> ComposeResult:
+        yield Input(value=self._value, id="hdr-edit")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#hdr-edit", Input)
+        width = max(self._cell.width, 16)  # 短列名也留出打字的余地
+        x = max(0, min(self._cell.x, self.app.size.width - width))
+        inp.styles.offset = (x, self._cell.y)
+        inp.styles.width = width
+        inp.focus()
+        inp.action_end()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_click(self, event: events.Click) -> None:
+        if event.screen_offset not in self.query_one("#hdr-edit", Input).region:
+            self.dismiss(None)
+            event.stop()
 
 
 def _append_lineage(path: str, op_type: str, params: Dict, count: int) -> None:
@@ -920,10 +938,20 @@ class ValueFilterScreen(ModalScreen):
         Binding("n", "none", t("None", "全不选")),
     ]
 
-    def __init__(self, col: str, items: List, total: int, prior=None, anchor=None, label: str = ""):
+    def __init__(
+        self,
+        col: str,
+        items: List,
+        total: int,
+        prior=None,
+        anchor=None,
+        label: str = "",
+        header: Optional[Region] = None,
+    ):
         super().__init__()
         self._col = col
         self._label = label or col  # 标题给人看: 列改名后显示新名, 约束仍按原名
+        self._header = header  # 被点列头格的屏幕区域: 落在这里的第二击 = 双击 → 转重命名
         self._items = items  # [(value, count), ...] 按频次降序
         self._total = total
         self._prior = prior  # 上次保留值集 (None=未筛→默认全不选)
@@ -967,10 +995,18 @@ class ValueFilterScreen(ModalScreen):
             box.styles.offset = (x, y)
 
     def on_click(self, event: events.Click) -> None:
-        """点击值筛选卡片外的模态背景时按“取消”语义关闭。"""
-        if event.screen_offset not in self.query_one("#vf-box", Vertical).region:
+        """点击值筛选卡片外的模态背景时按“取消”语义关闭。
+
+        单击列头开本面板只延后 0.15s, 人手双击常慢于这个间隔, 第二击就落到了本面板上:
+        它落在同一列头格里且 textual 判为连击 (0.5s 内同位置) 时, 按双击处理 → 交回 app 改名。
+        """
+        if event.screen_offset in self.query_one("#vf-box", Vertical).region:
+            return
+        if event.chain >= 2 and self._header is not None and event.screen_offset in self._header:
+            self.dismiss("rename")
+        else:
             self.dismiss(None)
-            event.stop()
+        event.stop()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._sync()  # 先把当前列表的勾选并回 _checked, 再按新词重建
@@ -1144,6 +1180,8 @@ class ViewApp(App):
     #save-box { width: 72; max-width: 100%; height: auto; max-height: 100%;
                 border: round $warning; background: $surface; padding: 1 2; }
     #save-box Static { width: 1fr; }
+    HeaderEditScreen { background: transparent; align: left top; }
+    #hdr-edit { border: none; height: 1; padding: 0; background: $boost; }
     ValueFilterScreen { align: center middle; }
     #vf-box { width: 56; max-width: 100%; height: auto; max-height: 100%;
               border: round $primary;
@@ -1323,7 +1361,7 @@ class ViewApp(App):
         self._edge_hint = False  # 鼠标压在列分隔线上: 状态栏说明这条线能干什么
         # 列重命名 {原始列名: 新名}: 只改显示, 文件到退出时按用户选择才写回 (见 action_quit)
         self._renames: Dict[str, str] = {}
-        self._rename_target: Optional[str] = None  # 重命名提示框对应的原始列名
+        self._value_scan_gen = -1  # 单击列头起的值扫描代次: 双击到来时只取消它, 不误伤别的扫描
         self._header_timer = None  # 单击列头延后 0.15s 开值面板, 双击到来则取消
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
@@ -1637,6 +1675,7 @@ class ViewApp(App):
         import shutil
         import tempfile
 
+        from ...ops import clean_rows
         from ...streaming import open_stream
 
         real = os.path.realpath(self.filepath)  # 符号链接: 改真实文件, 不把链接替换成普通文件
@@ -1646,9 +1685,8 @@ class ViewApp(App):
         try:
             fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
             os.close(fd)
-            st = open_stream(real).transform(
-                lambda row: _rename_checked(row, renames), raw=True, on_error="raise"
-            )
+            # clean_rows 的 --rename 同款: 目标名已是某行的字段 (列目录只认已加载窗口) 即报错中止
+            st = clean_rows(open_stream(real), rename_map=renames)
             n = st.save(tmp, show_progress=False)
             shutil.copymode(real, tmp)  # mkstemp 建的是 0600, 保留原文件权限
             os.replace(tmp, real)
@@ -2519,14 +2557,21 @@ class ViewApp(App):
     def on_fast_data_table_header_double_clicked(
         self, msg: FastDataTable.HeaderDoubleClicked
     ) -> None:
-        """双击列头文字 → 重命名提示框 (预填当前显示名)。"""
+        """双击列头文字 → 在列头格上原地改名。"""
         if self._header_timer is not None:
             self._header_timer.stop()
             self._header_timer = None
+        if self._scan_cancel is not None and self._scan_gen == self._value_scan_gen:
+            # 第一击起的值扫描 (大文件时还在跑) 作废, 否则它算完会把值面板压到编辑框上
+            self._scan_cancel.set()
+            self._scan_gen += 1
+            self._end_scan()
+            self._update_status()
         vis = self._visible_columns()
-        if not 0 <= msg.index < len(vis):
-            return
-        col = vis[msg.index]
+        if 0 <= msg.index < len(vis):
+            self._begin_rename(vis[msg.index])
+
+    def _begin_rename(self, col: str) -> None:
         if col == "#" or col in render.derived_columns(self.fmt):
             self.notify(
                 escape(
@@ -2535,9 +2580,15 @@ class ViewApp(App):
                 severity="error",
             )
             return
-        self._rename_target = col
-        shown = self._shown(col)
-        self._open_prompt("rename", t(f"Rename {shown} to:", f"把 {shown} 重命名为:"), value=shown)
+        cell = self._header_cell(col)
+        if cell is None:
+            return
+
+        def done(value: Optional[str]) -> None:
+            if value is not None:
+                self._rename_column(col, value)
+
+        self.push_screen(HeaderEditScreen(self._shown(col), cell), done)
 
     # ------------------------------------------------------------------ #
     # 动作
@@ -3753,8 +3804,6 @@ class ViewApp(App):
             self._apply_export(text)
         elif mode == "pipe":
             self._apply_pipe(text)
-        elif mode == "rename" and self._rename_target:
-            self._rename_column(self._rename_target, text)
 
     def _apply_search(self, text: str) -> None:
         if self._busy():
@@ -4051,6 +4100,7 @@ class ViewApp(App):
         # 关键: 算该列候选值时应用"除本列外"的其他约束 → 本列自己筛掉的值仍在列表里, 可加回
         spec = self._spec().without_column(col)
         cancel, gen = self._begin_scan()
+        self._value_scan_gen = gen
         self._set_scan_msg(
             t(f"Preparing to scan {col} values (Esc cancels)", f"准备扫描 {col} 值 (Esc 取消)")
         )
@@ -4091,6 +4141,9 @@ class ViewApp(App):
         def apply(selected) -> None:
             if selected is None:  # Esc 取消
                 return
+            if selected == "rename":  # 第二击落在面板外的列头格上 = 双击
+                self._begin_rename(col)
+                return
             if self._busy():
                 return
             snap = self._constraints_snapshot()
@@ -4104,9 +4157,13 @@ class ViewApp(App):
                 return
             self._recompute_subset(snap)
 
-        anchor = self._column_anchor(col)
+        cell = self._header_cell(col)
+        anchor = (cell.x, cell.bottom) if cell is not None else None
         self.push_screen(
-            ValueFilterScreen(col, items, total, prior, anchor, label=self._shown(col)), apply
+            ValueFilterScreen(
+                col, items, total, prior, anchor, label=self._shown(col), header=cell
+            ),
+            apply,
         )
 
     def _apply_value_rows(self, col: str, spec: ScanSpec, value_rows, picked) -> bool:
@@ -4134,16 +4191,16 @@ class ViewApp(App):
         )
         return True
 
-    def _column_anchor(self, col: str):
-        """被点列头正下方的屏幕坐标 (x, y), 供值面板贴着该列弹出; 拿不到则 None (居中)。"""
+    def _header_cell(self, col: str) -> Optional[Region]:
+        """列头格的屏幕区域 (含左右 padding): 值面板贴它下方弹出, 改名框盖在它上面; 拿不到则 None。"""
         try:
             table = self.query_one("#table", DataTable)
             vis = self._visible_columns()
             ci = vis.index(col)
             region = table._get_column_region(ci)
-            x = table.content_region.x + region.x - table.scroll_offset.x
-            y = table.content_region.y + (table.header_height if table.show_header else 0)
-            return (max(0, x), y)
+            x = table.content_region.x + region.x - table.scroll_offset.x - table.cell_padding
+            y = table.content_region.y
+            return Region(max(0, x), y, region.width + 2 * table.cell_padding, 1)
         except Exception:  # noqa: BLE001  定位失败退回居中, 不影响功能
             return None
 

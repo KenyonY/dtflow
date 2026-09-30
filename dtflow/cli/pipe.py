@@ -255,11 +255,23 @@ def check_output_path(output: str) -> None:
         )
 
 
+def _restore_mode(tmp: str, output: str) -> None:
+    """mkstemp 建的文件是 0600; 覆盖已有文件就沿用它的权限, 新文件按 umask 给普通权限。"""
+    if os.path.exists(output):
+        shutil.copymode(output, tmp)
+    else:
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)
+
+
 def save_rows(st: StreamingTransformer, output: str) -> int:
     """落盘: 一律先写同目录临时文件, 成功后原子替换 —— 中途失败不留半截文件,
     输出与输入同一文件时也因此可以流式读写。只有 OSError 才是 io_error, 其它异常原样抛给调用方定性。"""
     from ..storage.io import _detect_format
 
+    # 软链: 写到它指向的真实文件, 而不是把链接本身换成普通文件
+    output = os.path.realpath(output) if os.path.islink(output) else output
     out = Path(output)
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -276,6 +288,7 @@ def save_rows(st: StreamingTransformer, output: str) -> int:
     try:
         # 进度条只在 stderr 是终端时画: 重定向到文件时那行 "⠋ 处理中" 会混进结构化错误前面
         n = st.save(tmp, show_progress=is_stderr_tty())
+        _restore_mode(tmp, output)
         shutil.move(tmp, output)
         return n
     except OSError as e:
