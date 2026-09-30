@@ -30,11 +30,14 @@ from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets._data_table import RowRenderables
 from textual.widgets.selection_list import Selection
+from textual.worker import WorkerState
 
 from ...i18n import t
 from ...utils import clipboard
 from . import render, scan
+from .pipe import error_message, run_pipe, shell_form
 from .scan import ScanSpec, compile_search
+from .source import _MemorySource
 
 
 def _fmt_num(x: float) -> str:
@@ -321,6 +324,11 @@ _HELP = t(
   C            copy a dt view command that reproduces this view (with filter/search/sort)
   P            copy the processing-chain form: dt filter FILE '…' | dt sort - --by '…'
                  (same conditions; append -o FILE or more pipes to process the subset)
+  |            run a shell pipe over the WHOLE file and browse its output, e.g.
+                 dt filter - "turns(x)>=6" | dt sort - --by "chars(x)" --desc | dt head - 200
+                 NDJSON in and out (dt, jq, grep … all work); every run starts from the
+                 original file and replaces the previous result; r returns to the file;
+                 C / P / w carry the pipe (dt view --pipe '…' restores it)
   s            full sort (enter a column name, prefix - to reverse; scans the whole file,
                  holds across windows)
   S            column snapshot (n·min·max·mean·non-empty rate of a column over the current
@@ -357,7 +365,7 @@ _HELP = t(
                  restores the default 65:35
   c            choose columns (checkbox panel, applies to both table and detail)
   r            clear all filters/search/sort and browse the full file again (also scrolls
-                 back to the left)
+                 back to the left; after | it also leaves the pipe result)
                after a filter/search the horizontal position stays; if the current sample
                still matches, the cursor stays on it
   ?            help      q  quit""",
@@ -382,6 +390,10 @@ _HELP = t(
   C            复制"复现当前视图"的 dt view 命令到剪贴板 (筛选/搜索/排序全带上)
   P            复制"处理链"形式: dt filter FILE '…' | dt sort - --by '…'
                  (同一套条件; 接 -o FILE 或继续管道即可处理这个子集)
+  |            对**整个文件**跑一段 shell 管道, 浏览它的输出, 如
+                 dt filter - "turns(x)>=6" | dt sort - --by "chars(x)" --desc | dt head - 200
+                 进出都是 NDJSON (dt、jq、grep 都行); 每次都从原文件重跑并替换上一次的结果;
+                 r 回到原文件; C / P / w 都会带上管道 (dt view --pipe '…' 可还原)
   s            全量排序 (输入列名, 加 - 反向; 扫全文件, 跨窗口有效)
   S            列快照 (某列的 n·min·max·mean·非空率, 当前浏览序列; 完整分布用 dt stats)
   /            全量搜索 (整条记录的每个值, 含 assistant 回复; 不分大小写, re: 前缀走正则)
@@ -409,7 +421,7 @@ _HELP = t(
   拖两区分界   表格与详情之间那两行(横排时是两列)边框即分界, 鼠标压上去边框变亮,
                  按住拖到哪分界就到哪; 双击恢复默认 65:35
   c            选列 (勾选面板, 同时作用于表格和详情)
-  r            清除全部筛选/搜索/排序, 回到全量浏览 (横向也回最左)
+  r            清除全部筛选/搜索/排序, 回到全量浏览 (横向也回最左; | 之后也退出管道结果)
                筛选/搜索应用后横向位置保持不动; 原来那条样本还在命中里就继续停在它上面
   ?            帮助      q  退出
 
@@ -1055,6 +1067,8 @@ class ViewApp(App):
         Binding("w", "export", t("Export", "导出"), show=False),
         Binding("C", "copy_command", t("Copy command", "复制命令"), show=False),
         Binding("P", "copy_pipeline", t("Copy pipeline", "复制处理链"), show=False),
+        # |: 在 view 里跑一段 shell 管道 (dt … | dt …), 结果替换浏览数据
+        Binding("vertical_line", "pipe", t("Pipe", "管道"), show=False),
     ]
 
     def __init__(
@@ -1071,9 +1085,18 @@ class ViewApp(App):
         filepath: Optional[str] = None,
         follow: bool = False,
         start_at_end: bool = False,
+        pipe: Optional[str] = None,
+        format_hint: Optional[str] = None,
     ):
         super().__init__()
         self.source = source  # RowSource: 随机窗口访问, 内存 O(窗口)
+        # | 管道: 结果替换 source; 原文件留着给 r 回退和下一次管道 (输入永远是原文件)
+        self._origin_source = source
+        self._origin_fmt = fmt
+        self._format_hint = format_hint  # 用户 --format 强制的格式, 换数据后仍尊重
+        self._pipe: Optional[str] = None  # 当前生效的管道原句, None = 在看原文件
+        self._init_pipe = pipe
+        self._after_worker: Optional[Tuple[object, Callable[[], None]]] = None
         self.cap = cap  # 单窗口行数
         self.win_offset = win_offset  # 当前窗口在"当前浏览序列"中的起始位置 (0-based)
         self.all_rows = window  # 当前窗口已 parse 的行
@@ -1218,7 +1241,7 @@ class ViewApp(App):
         self._scan_msg = ""
         self._index_navigation = False
 
-    def _run_scan(self, body: Callable, gen: int) -> None:
+    def _run_scan(self, body: Callable, gen: int):
         """起扫描 worker: body 只负责算, 算完把 (回调, 参数) 交回来, 由这里投递。
 
         兜底的意义: 数据源迭代自己会抛 (JSONL 夹一条坏行 → JSONDecodeError), 裸 worker
@@ -1238,7 +1261,7 @@ class ViewApp(App):
                 callback, args = delivery
                 self.call_from_thread(callback, *args)
 
-        self.run_worker(guarded, thread=True, exclusive=True, group="scan")
+        return self.run_worker(guarded, thread=True, exclusive=True, group="scan")
 
     def _on_scan_crashed(self, msg: str, gen: int) -> None:
         if self._scan_superseded(gen):
@@ -1321,7 +1344,11 @@ class ViewApp(App):
         # 详情滚动时同步当前字段并刷新状态栏 (拖动/翻页均触发)
         self.watch(self.query_one("#detail", VerticalScroll), "scroll_y", self._on_detail_scroll)
         table.focus()
-        self._apply_initial_constraints()
+        if self._init_pipe:
+            # 管道先跑, where/search/sort 作用在它的结果上 (在 _on_pipe_done 里接着调)
+            self._apply_pipe(self._init_pipe, after=self._apply_initial_constraints)
+        else:
+            self._apply_initial_constraints()
         if self._follow:
             self.set_interval(0.5, self._poll_follow)
 
@@ -1506,15 +1533,19 @@ class ViewApp(App):
         if not self._renames:
             self.exit()
             return
-        can_write = self.filepath is not None and not self._follow
-        why_not = (
-            ""
-            if can_write
-            else t(
+        can_write = self.filepath is not None and not self._follow and self._pipe is None
+        if can_write:
+            why_not = ""
+        elif self._pipe is not None:
+            why_not = t(
+                "a pipe result can't be written back to the source file; press r first, or w to export",
+                "管道结果不能写回原文件; 先按 r 回到原文件, 或用 w 导出",
+            )
+        else:
+            why_not = t(
                 "stdin / follow mode can't write back; use w to export with the new names",
                 "stdin / follow 模式不能写回原文件; 用 w 导出即得到新列名",
             )
-        )
 
         def done(choice: Optional[str]) -> None:
             if choice == "discard":
@@ -2159,7 +2190,11 @@ class ViewApp(App):
             detail = self.query_one("#detail", VerticalScroll)
         except NoMatches:
             return
-        table.border_title = Text(f"{self.filename} · {self.fmt}")
+        title = f"{self.filename} · {self.fmt}"
+        if self._pipe is not None:
+            short = self._pipe if len(self._pipe) <= 48 else self._pipe[:47] + "…"
+            title = f"{self.filename} | {short} · {self.fmt}"
+        table.border_title = Text(title)
         if self.view_indices:
             pos = self.win_offset + table.cursor_row + 1
             total = f"{self._seq_total():,}" if self.source.total_known else "?"
@@ -2580,21 +2615,16 @@ class ViewApp(App):
         筛选原样复活)。
         """
         was_filtered = self._subset is not None
+        was_piped = self._pipe is not None
         if self._scan_cancel is not None:
             self._scan_cancel.set()  # 通知 worker 收摊
         self._scan_gen += 1  # 它的结果就此作废
         self._end_scan()
-        self._scan_rollback = None  # 已经清空到底, 无需回滚
-        self._applied_spec = None
-        self._row_ok = None
-        self._col_value_filters = {}
-        self._wheres = []
-        self._search_text = None
-        self._search_re = None
-        self._sort_spec = None
-        self._subset = None
-        self._filter_label = None
-        self._follow_sort_snapshot = False
+        if was_piped:  # 管道态的 r = 回到原文件 (约束一并清空)
+            self._replace_source(self._origin_source, None, self._origin_fmt)
+            self.notify(t("Reset (left the pipe)", "已重置 (退出管道)"))
+            return
+        self._clear_constraints()
         if self._follow:
             self._follow_pinned = True
             self._follow_pending = 0
@@ -2780,6 +2810,8 @@ class ViewApp(App):
             parts.append(str(-self.cap))
         if self._follow:
             parts.append("--follow")
+        if self._pipe is not None:
+            parts.append(f"--pipe={shlex.quote(self._pipe)}")
         for w in wheres:
             parts.append(f"--where={shlex.quote(w)}")
         if self._search_text:
@@ -2813,9 +2845,11 @@ class ViewApp(App):
             wheres.append(f"search(x, {self._search_text!r})")
         stages: List[str] = []
         src = shlex.quote(self.filepath)
+        if self._pipe is not None:  # 先是管道本身 (对源文件重跑), 再接当前约束
+            stages.append(shell_form(self._pipe, self.filepath))
         if wheres:
             expr = " and ".join(f"({w})" for w in wheres) if len(wheres) > 1 else wheres[0]
-            stages.append(f"dt filter {src} {shlex.quote(expr)}")
+            stages.append(f"dt filter {'-' if stages else src} {shlex.quote(expr)}")
         if self._sort_spec:
             name, desc = self._sort_spec
             key = self._sort_key_expr(name)
@@ -3015,15 +3049,23 @@ class ViewApp(App):
             "scope": self._export_scope()[0],
             "command": cmd,
             "pipeline_command": self._build_pipeline_command()[0],
-            "source_snapshot": self.source.snapshot_info(),
+            "source_snapshot": self._origin_source.snapshot_info(),
         }
+        if self._pipe is not None:
+            params["pipe"] = self._pipe
+            params["pipe_rows"] = self.source.total
+            if self.filepath:
+                params["pipe_command"] = shell_form(self._pipe, self.filepath)
         if skipped:
             params["command_incomplete"] = skipped
         if self._renames:
             params["renames"] = dict(self._renames)
         tracker = LineageTracker(self.filepath)
         tracker.record(
-            "view_export", params=params, input_count=self.source.total, output_count=written
+            "view_export",
+            params=params,
+            input_count=self._origin_source.total,
+            output_count=written,
         )
         return tracker.save(str(out), written)
 
@@ -3057,6 +3099,147 @@ class ViewApp(App):
             ),
             timeout=10,
         )
+
+    # ------------------------------------------------------------------ #
+    # |: 在 view 里跑一段 shell 管道, 结果替换浏览数据。输入永远是原文件的全部行
+    # (不是当前子集), 每次都从原文件重跑; r 回到原文件。这是 P 的反方向: P 把 view 的
+    # 条件交给 CLI, | 把 CLI 的结果拿回 view, 两边都在同一个界面里闭环。
+    # ------------------------------------------------------------------ #
+    _PIPE_PLACEHOLDER = t(
+        "shell pipe over the whole file, NDJSON in/out, e.g. "
+        'dt filter - "turns(x)>=6" | dt sort - --by "chars(x)" --desc',
+        "对全文件跑 shell 管道 (进出都是 NDJSON), 如 "
+        'dt filter - "turns(x)>=6" | dt sort - --by "chars(x)" --desc',
+    )
+
+    def action_pipe(self) -> None:
+        if self._follow:
+            self.notify(
+                t("follow mode can't run a pipe", "实时追尾模式不能跑管道"), severity="warning"
+            )
+            return
+        if self._busy():
+            return
+        self._open_prompt("pipe", self._PIPE_PLACEHOLDER, value=self._pipe or "")
+
+    def _apply_pipe(self, text: str, after: Optional[Callable[[], None]] = None) -> None:
+        """对原文件跑 text 这条管道; 完成后 after() (启动参数的 where/search/sort 靠它排在管道后)。"""
+        text = text.strip()
+        if not text or self._busy():
+            return
+        cancel, gen = self._begin_scan()
+        self._set_scan_msg(t(f"pipe: {text} (Esc cancels)", f"管道: {text} (Esc 取消)"))
+
+        def progress(n: int) -> None:
+            self.call_from_thread(
+                self._set_scan_msg,
+                t(f"pipe: fed {n} rows (Esc cancels)", f"管道: 已喂入 {n} 行 (Esc 取消)"),
+            )
+
+        def worker():
+            try:
+                if not self._prepare_full_scan(cancel, source=self._origin_source):
+                    return self._on_pipe_done, (text, None, None, gen)
+                result = run_pipe(text, self._origin_source.iter_all(), cancel, progress)
+            except Exception as e:  # noqa: BLE001  如 sh 不存在: 变提示, 不是崩溃
+                return self._on_pipe_done, (text, None, f"{type(e).__name__}: {e}", gen)
+            return self._on_pipe_done, (text, result, None, gen)
+
+        w = self._run_scan(worker, gen)
+        if after is not None:
+            # after 会起新的 exclusive worker; 必须等这个 worker 真正结束 (StateChanged),
+            # 在它的回调里直接起会把它自己判成被取消
+            self._after_worker = (w, after)
+
+    def on_worker_state_changed(self, event) -> None:
+        pending = self._after_worker
+        if pending is None or event.worker is not pending[0]:
+            return
+        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            self._after_worker = None
+            pending[1]()
+
+    def _on_pipe_done(self, text: str, result, error: Optional[str], gen: int) -> None:
+        if self._scan_superseded(gen):
+            return
+        self._end_scan()
+        self._update_status()
+        if result is None or (error is None and result.rows is None):
+            # 取消先于成败: kill 掉的子进程返回码也非 0, 但那不是失败
+            self.notify(t("pipe cancelled", "已取消管道"))
+            return
+        if error is not None or result.returncode != 0:
+            msg = error if error is not None else error_message(result.stderr_tail)
+            self.notify(
+                escape(t(f"pipe failed: {msg}", f"管道失败: {msg}")),
+                severity="error",
+                timeout=10,
+            )
+            return
+        rows = result.rows
+        self._replace_source(_MemorySource(rows), text)
+        n = len(rows)
+        if n == 0:
+            msg = t("pipe: 0 rows (r returns to the file)", "管道: 0 行 (r 回到原文件)")
+            sev = "warning"
+        else:
+            msg = t(f"pipe: {n} rows", f"管道: {n} 行")
+            sev = "information"
+            if n > 200_000:
+                msg += t(
+                    " (held in memory; consider filter/head before sort)",
+                    " (全在内存里; 大结果建议先 filter/head 再 sort)",
+                )
+                sev = "warning"
+        # dt 在 stderr 上的汇总 (如 "N 行求值失败") 值得看一眼: 附在通知里
+        summary = "\n".join(ln for ln in result.stderr_tail.strip().splitlines()[-2:] if ln.strip())
+        if summary:
+            msg += "\n" + summary
+        self.notify(escape(msg), severity=sev, timeout=10)
+
+    def _clear_constraints(self) -> None:
+        """清空全部约束状态 (搜索/where/列值/排序/子集), 不动数据源与窗口。"""
+        self._scan_rollback = None
+        self._applied_spec = None
+        self._row_ok = None
+        self._col_value_filters = {}
+        self._wheres = []
+        self._search_text = None
+        self._search_re = None
+        self._sort_spec = None
+        self._subset = None
+        self._filter_label = None
+        self._follow_sort_snapshot = False
+        self._visual_anchor = None
+
+    def _replace_source(self, source, pipe_text: Optional[str], fmt: Optional[str] = None) -> None:
+        """换数据源并整体重建: 约束清空、格式重检、列目录重建、回到第一窗口。
+
+        列的手动宽度按列名保留 (换回原文件时列还在); 隐藏列与自定义列集清掉, 因为它们
+        描述的是上一份数据的列目录。
+        """
+        self.source = source
+        self._pipe = pipe_text
+        self._clear_constraints()
+        window = source.window(0, self.cap)
+        self.fmt = fmt or self._format_hint or render.detect_format(window)
+        self._format_auto_empty = not window and self.fmt == "generic"
+        self.columns = render.build_columns(window, self.fmt)
+        default_visible = set(render.default_visible_columns(self.columns, self.fmt))
+        self._auto_hidden = set(self.columns) - default_visible
+        self._hidden = set()
+        self._columns_customized = False
+        if not window:  # _load_window 遇空窗口直接返回, 空结果要自己清屏
+            self.win_offset = 0
+            self.all_rows = []
+            self._global_nos = []
+            self.view_indices = []
+            self._rebuild_columns()
+        else:
+            self._load_window(0, rebuild_columns=True)
+        table = self.query_one("#table", DataTable)
+        table.scroll_x = table.scroll_target_x = 0
+        self._update_status()
 
     # ------------------------------------------------------------------ #
     # 大文件窗口翻页 (偏移索引 → 任意位置秒开, 内存 O(窗口))
@@ -3384,6 +3567,8 @@ class ViewApp(App):
             self._apply_jump(text)
         elif mode == "export":
             self._apply_export(text)
+        elif mode == "pipe":
+            self._apply_pipe(text)
         elif mode == "rename" and self._rename_target:
             self._rename_column(self._rename_target, text)
 
@@ -3500,9 +3685,15 @@ class ViewApp(App):
         self._scan_msg = msg
         self._update_status()
 
-    def _prepare_full_scan(self, cancel, label: str = t("Indexing rows:", "补全行索引")) -> bool:
-        """全量操作的统一高水位入口；首窗和尾窗源均在此补全索引。"""
-        if self.source.fully_indexed:
+    def _prepare_full_scan(
+        self, cancel, label: str = t("Indexing rows:", "补全行索引"), source=None
+    ) -> bool:
+        """全量操作的统一高水位入口；首窗和尾窗源均在此补全索引。
+
+        source: 管道对原文件跑, 而 self.source 此时可能已是上一次的管道结果。
+        """
+        source = self.source if source is None else source
+        if source.fully_indexed:
             return True
 
         self.call_from_thread(
@@ -3514,7 +3705,7 @@ class ViewApp(App):
                 self._set_scan_msg, t(f"{label} {n} (Esc cancels)", f"{label} {n} 行 (Esc 取消)")
             )
 
-        return self.source.ensure_index(progress_cb=progress, cancel=cancel)
+        return source.ensure_index(progress_cb=progress, cancel=cancel)
 
     def _on_subset_scan_done(
         self,

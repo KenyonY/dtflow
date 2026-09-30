@@ -468,7 +468,8 @@ def tail(
         "    dt view data.jsonl -S -chars             # sort by length, descending (-S=--sort)\n"
         '    dt view data.jsonl -w "turns(x)>=6" -w "x.source==\'alpaca\'"   # multiple filters are ANDed\n'
         "    dt view data.jsonl -s error              # search everything, highlight hits (-s=--search)\n"
-        "    dt sample data.jsonl 500 | dt view -     # pipe: inspect sampled/filtered results",
+        "    dt sample data.jsonl 500 | dt view -     # pipe: inspect sampled/filtered results\n"
+        "    dt view data.jsonl --pipe 'dt filter - \"turns(x)>=6\" | dt head - 200'   # run a pipe first (| inside the TUI)",
         "交互式浏览数据（表格 + 详情联动，Textual TUI）\n\n"
         "表格扫视 + 详情按格式渲染（对话气泡/dpo对比/alpaca分段），无需逐层展开。\n"
         "大文件靠偏移索引窗口化浏览：只 parse 当前窗口，TUI 内按 ] / [ 翻窗口、: 跳行。\n"
@@ -491,7 +492,8 @@ def tail(
         "    dt view data.jsonl -S -chars             # 按长度降序 (-S=--sort)\n"
         '    dt view data.jsonl -w "turns(x)>=6" -w "x.source==\'alpaca\'"   # 多条为与关系\n'
         "    dt view data.jsonl -s 报错               # 全量搜索并高亮 (-s=--search)\n"
-        "    dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果",
+        "    dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果\n"
+        "    dt view data.jsonl --pipe 'dt filter - \"turns(x)>=6\" | dt head - 200'   # 先跑一段管道 (TUI 内按 | 同义)",
     ),
 )
 def view(
@@ -570,10 +572,27 @@ def view(
             "实时追踪 JSONL/NDJSON 追加与日志轮转，从最新尾窗开始",
         ),
     ),
+    pipe: Optional[str] = typer.Option(
+        None,
+        "--pipe",
+        help=t(
+            "Run this shell pipe over the whole file first (NDJSON in/out) and browse its output; same as pressing | inside",
+            "先对全文件跑这段 shell 管道 (进出 NDJSON), 浏览它的输出; 等同于在 TUI 内按 |",
+        ),
+    ),
 ):
     from pathlib import Path
 
     from .cli.output import die_usage
+
+    if follow and pipe:
+        die_usage(
+            t("--follow cannot be used with --pipe", "--follow 不能与 --pipe 同时使用"),
+            suggestion=t(
+                "Run the pipe in the shell and follow its output file",
+                "在 shell 里跑管道, 再 follow 它的输出文件",
+            ),
+        )
 
     actual_cap = abs(num_arg) if num_arg is not None else cap
     tail = bool(num_arg is not None and num_arg < 0)
@@ -630,6 +649,7 @@ def view(
         sort=sort,
         tail=tail,
         follow=follow,
+        pipe=pipe,
     )
 
 

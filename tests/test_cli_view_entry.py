@@ -170,6 +170,7 @@ def test_follow_uses_num_as_tail_capacity(monkeypatch, tmp_path):
         (["d.jsonl", "--follow", "--sort=-i"], "--follow 不能与启动排序"),
         (["d.csv", "--follow"], "--follow 仅支持 JSONL/NDJSON"),
         (["-", "--follow"], "--follow 不支持 stdin"),
+        (["d.jsonl", "--follow", "--pipe", "dt head - 5"], "--follow 不能与 --pipe"),
     ],
 )
 def test_view_tail_and_follow_conflicts_are_usage_errors(args, message):
@@ -198,3 +199,17 @@ def test_view_opens_only_through_requested_window(monkeypatch, tmp_path, offset)
     assert app.source.fully_indexed == (offset + 3 >= 20)
     start = min(offset, 19)
     assert app.all_rows == [{"i": i} for i in range(start, min(start + 3, 20))]
+
+
+def test_view_pipe_is_passed_through(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from dtflow import __main__ as cli
+
+    p = tmp_path / "d.jsonl"
+    p.write_text('{"i": 1}\n')
+    called = {}
+    monkeypatch.setattr(cli, "_view", lambda filename, **kw: called.update(kw))
+    result = CliRunner().invoke(cli.app, ["view", str(p), "--pipe", "dt head - 1"])
+    assert result.exit_code == 0, result.output
+    assert called["pipe"] == "dt head - 1"

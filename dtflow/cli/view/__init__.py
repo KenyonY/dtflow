@@ -33,6 +33,7 @@ def _run_tui(
     filepath: Optional[str] = None,
     follow: bool = False,
     start_at_end: bool = False,
+    pipe: Optional[str] = None,
 ) -> None:
     """公共 TUI 启动: 取首窗口 → 检测格式 → 起 ViewApp。"""
     if source.total == 0 and not follow:
@@ -61,6 +62,8 @@ def _run_tui(
         filepath=filepath,
         follow=follow,
         start_at_end=start_at_end,
+        pipe=pipe,
+        format_hint=format_hint,
     ).run()
 
 
@@ -71,6 +74,7 @@ def _view_stdin(
     search: Optional[str] = None,
     sort: Optional[str] = None,
     tail: bool = False,
+    pipe: Optional[str] = None,
 ) -> None:
     """dt view -: 先读完 stdin 数据, 再把 fd 0 重定向到 /dev/tty 供 TUI 读键盘。
 
@@ -112,6 +116,7 @@ def _view_stdin(
         search=search,
         sort=sort,
         start_at_end=tail,
+        pipe=pipe,
     )
 
 
@@ -125,6 +130,7 @@ def view(
     sort: Optional[str] = None,
     tail: bool = False,
     follow: bool = False,
+    pipe: Optional[str] = None,
 ) -> None:
     """启动 dt view TUI。filename 为 - 时从 stdin 读 (管道模式)。
 
@@ -139,6 +145,7 @@ def view(
             search=search,
             sort=sort,
             tail=tail,
+            pipe=pipe,
         )
         return
 
@@ -191,4 +198,5 @@ def view(
         filepath=filename,
         follow=follow,
         start_at_end=tail or follow,
+        pipe=pipe,
     )

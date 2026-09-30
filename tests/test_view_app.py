@@ -3807,3 +3807,161 @@ async def test_search_highlights_data_columns_named_like_derived():
             cell = row[vis.index(col)]
             assert (cell.renderable if isinstance(cell, Padding) else cell).spans, col
         assert not row[vis.index("#")].renderable.spans  # 行号仍不画
+
+
+# --------------------------------------------------------------------------- #
+# |: 在 view 里跑 shell 管道, 结果替换浏览数据; r 回到原文件; C/P/w 带上管道
+# --------------------------------------------------------------------------- #
+async def _pipe(app, pilot, text):
+    app._apply_pipe(text)
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_pipe_replaces_source_and_reset_restores():
+    rows = _chat_rows(30)
+    app = _make_app(rows)
+    origin = app.source
+    async with app.run_test() as pilot:
+        notes = []
+        app.notify = lambda msg, **kw: notes.append(str(msg))
+        await _pipe(app, pilot, 'dt select - "id=x.source,n=turns(x)" | dt sort - --by x.n --desc')
+        assert app.source is not origin and app.source.total == 30
+        assert app.fmt == "generic" and app.columns == ["#", "id", "n"]
+        assert app._pipe.startswith("dt select")
+        assert "| dt select" in str(app.query_one("#table").border_title)
+        assert app.all_rows[0] == {"id": "b", "n": 2}
+        assert any("30" in n for n in notes)
+        # 管道结果上再筛选: 作用在结果而不是原文件
+        app._apply_filter("x.id == 'a'")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app._seq_total() == 15
+        # r: 回到原文件, 格式/列/约束全部恢复
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.source is origin and app._pipe is None and app.fmt == "openai_chat"
+        assert app.columns[:3] == ["#", "turns", "roles"] and app._subset is None
+        assert app.source.total == 30 and len(app.all_rows) == 30
+
+
+@pytest.mark.asyncio
+async def test_pipe_failure_keeps_data_and_zero_rows_clears_view():
+    app = _make_app(_chat_rows(10))
+    origin = app.source
+    async with app.run_test() as pilot:
+        notes = []
+        app.notify = lambda msg, **kw: notes.append((str(msg), kw.get("severity")))
+        await _pipe(app, pilot, 'dt filter - "x.a >"')  # 语法错误 → dt 退出码 2
+        assert app.source is origin and app._pipe is None
+        assert notes[-1][1] == "error" and "x.a >" in notes[-1][0]
+        await _pipe(app, pilot, 'dt filter - "False"')  # 0 行: 切到空结果并提示
+        assert app.source is not origin and app.source.total == 0
+        assert app.all_rows == [] and app.query_one("#table").row_count == 0
+        assert notes[-1][1] == "warning" and "0" in notes[-1][0]
+        await pilot.press("r")
+        await pilot.pause()
+        assert app.source is origin and len(app.all_rows) == 10
+
+
+@pytest.mark.asyncio
+async def test_pipe_always_reads_the_original_file():
+    app = _make_app(_chat_rows(20))
+    async with app.run_test() as pilot:
+        await _pipe(app, pilot, "dt head - 5")
+        assert app.source.total == 5
+        await _pipe(app, pilot, "dt head - 7")  # 第二次仍从原文件 (20 行) 跑, 不是从 5 行
+        assert app.source.total == 7
+
+
+@pytest.mark.asyncio
+async def test_pipe_rejected_in_follow_mode():
+    src = _ListSource(_chat_rows(3))
+    app = ViewApp(src, src.window(0, 3), 0, 3, "openai_chat", "t.jsonl", follow=True)
+    async with app.run_test() as pilot:
+        notes = []
+        app.notify = lambda msg, **kw: notes.append(kw.get("severity"))
+        await pilot.press("vertical_line")
+        await pilot.pause()
+        assert notes == ["warning"] and app._prompt_mode is None
+
+
+@pytest.mark.asyncio
+async def test_pipe_cancel_via_escape():
+    app = _slow_app(3000)  # 喂入慢, 有足够的时间窗按 Esc
+    origin = app.source
+    async with app.run_test() as pilot:
+        notes = []
+        app.notify = lambda msg, **kw: notes.append(str(msg))
+        app._apply_pipe("cat")
+        await pilot.pause(0.1)
+        assert app._scan_cancel is not None
+        await pilot.press("escape")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.source is origin and app._pipe is None
+        assert any("取消" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_build_command_and_pipeline_with_pipe(tmp_path):
+    import orjson
+
+    app = _make_app(_chat_rows(10))
+    app.filepath = "data.jsonl"
+    async with app.run_test() as pilot:
+        await _pipe(app, pilot, 'dt select - "id=x.source,n=turns(x)"')
+        app._apply_filter("x.n >= 2")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        app._sort_spec = ("n", True)
+        cmd, _ = app._build_command()
+        assert cmd == (
+            "dt view data.jsonl --pipe='dt select - \"id=x.source,n=turns(x)\"'"
+            " --where='x.n >= 2' --sort=-n"
+        )
+        pcmd, skipped = app._build_pipeline_command()
+        assert not skipped
+        assert pcmd == (
+            "dt select data.jsonl \"id=x.source,n=turns(x)\" | dt filter - 'x.n >= 2'"
+            " | dt sort - --by 'x.get('\"'\"'n'\"'\"')' --desc"
+        )
+        # w 导出: 血缘记下管道与对源文件重跑的命令
+        app.filepath = str(tmp_path / "src.jsonl")
+        out = tmp_path / "out.jsonl"
+        app._apply_export(str(out))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rec = orjson.loads((tmp_path / "out.jsonl.lineage.json").read_bytes())
+        op = rec["operations"][0]
+        assert op["params"]["pipe"].startswith("dt select") and op["params"]["pipe_rows"] == 10
+        assert op["params"]["pipe_command"].startswith(f"dt select {tmp_path}/src.jsonl")
+        assert op["input_count"] == 10 and op["output_count"] == 10
+        # 管道态不能写回原文件
+        app._renames = {"n": "turns_n"}
+        assert app._pipe is not None
+
+
+@pytest.mark.asyncio
+async def test_init_pipe_then_initial_constraints():
+    src = _ListSource(_chat_rows(20))
+    app = ViewApp(
+        src,
+        src.window(0, 20),
+        0,
+        20,
+        "openai_chat",
+        "t.jsonl",
+        where=["x.n >= 2"],
+        sort="-n",
+        pipe='dt select - "id=x.source,n=turns(x)"',
+    )
+    async with app.run_test() as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await app.workers.wait_for_complete()  # 管道之后的约束扫描
+        await pilot.pause()
+        assert app._pipe is not None and app.fmt == "generic"
+        assert app._wheres == ["x.n >= 2"] and app._sort_spec == ("n", True)
+        assert app._seq_total() == 20
