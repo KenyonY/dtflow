@@ -257,7 +257,9 @@ def _hl(text: Text, highlight: Optional[Pattern]) -> Text:
     return text
 
 
-def _render_content(content: str, highlight: Optional[Pattern] = None) -> List[RenderableType]:
+def _render_content(
+    content: str, highlight: Optional[Pattern] = None, code_bg: Optional[str] = None
+) -> List[RenderableType]:
     """按 ``` 代码块切分, 代码高亮, 普通文本原样。
 
     highlight: 搜索命中的正则, 命中处叠加黄底。代码块 (Syntax) 不叠加 —— Syntax 自带
@@ -272,7 +274,7 @@ def _render_content(content: str, highlight: Optional[Pattern] = None) -> List[R
                 out.append(_hl(Text(pre), highlight))
         lang = m.group(1) or "text"
         code = m.group(2).rstrip("\n")
-        out.append(Syntax(code, lang, theme="ansi_dark", word_wrap=True, padding=(0, 1)))
+        out.append(_syntax(code, lang, code_bg))
         last = m.end()
     tail = content[last:].strip("\n")
     if tail or not out:
@@ -280,7 +282,15 @@ def _render_content(content: str, highlight: Optional[Pattern] = None) -> List[R
     return out
 
 
-def _json_block(raw: str) -> Tuple[Optional[RenderableType], bool]:
+def _syntax(code: str, lang: str, code_bg: Optional[str]) -> Syntax:
+    """代码/JSON 块。code_bg: 块底色 (TUI 按主题传入), 与正文分开; None 不铺底 ——
+    dt head 直接打印到终端, 不知道终端底色, 硬铺一块深色在浅色终端上很扎眼。"""
+    return Syntax(
+        code, lang, theme="ansi_dark", word_wrap=True, padding=(0, 1), background_color=code_bg
+    )
+
+
+def _json_block(raw: str, code_bg: Optional[str] = None) -> Tuple[Optional[RenderableType], bool]:
     """字符串若是合法 JSON 对象/数组, 格式化成 json 高亮块; 否则返回 (None, False)。"""
     try:
         obj = orjson.loads(raw)
@@ -289,11 +299,32 @@ def _json_block(raw: str) -> Tuple[Optional[RenderableType], bool]:
     if not isinstance(obj, (dict, list)):
         return None, True  # 合法 JSON 但只是标量, 原样显示即可
     pretty = json.dumps(obj, ensure_ascii=False, indent=2)
-    return Syntax(pretty, "json", theme="ansi_dark", word_wrap=True, padding=(0, 1)), True
+    return _syntax(pretty, "json", code_bg), True
+
+
+def _badge(label: str, style: str) -> Text:
+    """段标题徽章: 反色色块。长对话一屏十几条消息, 比 ``[role]`` 方括号更快找到换人处。"""
+    color = " ".join(w for w in style.split() if w not in ("bold", "dim"))
+    # 样式挂在这一段上而不是 Text 的底样式: 调用方还要在后面接 → fn / 字数, 不能跟着反色
+    return Text.assemble((f" {label} ", f"bold reverse {color}"))
+
+
+def _turn_title(turn: Turn, style: str) -> Text:
+    """消息标题行: 角色徽章 + 调用/回执 (→ fn / ← call_id) + 暗色字数。"""
+    title = _badge(turn.role, style)
+    if turn.tool_calls:
+        title.append(f" → {', '.join(c.name for c in turn.tool_calls)}", style=style)
+    elif turn.call_id:
+        title.append(f" ← {turn.call_id}", style=style)
+    if turn.content:
+        n = len(turn.content)
+        title.append(t(f"  {n} chars", f"  {n} 字"), style="dim")
+    return title
 
 
 def _turn_header(turn: Turn) -> str:
-    """``[role]``; 发起调用的写成 ``[assistant → fn1, fn2]``, 工具返回写成 ``[tool ← call_id]``。"""
+    """纯文本标题 (命中查找用): ``[role]``; 发起调用的写成 ``[assistant → fn1, fn2]``,
+    工具返回写成 ``[tool ← call_id]``。显示用 _turn_title。"""
     if turn.tool_calls:
         return f"[{turn.role} → {', '.join(c.name for c in turn.tool_calls)}]"
     if turn.call_id:
@@ -301,7 +332,9 @@ def _turn_header(turn: Turn) -> str:
     return f"[{turn.role}]"
 
 
-def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableType:
+def _render_turn(
+    turn: Turn, highlight: Optional[Pattern] = None, code_bg: Optional[str] = None
+) -> RenderableType:
     """单条消息: 标题行 + (思维链) + 正文 + (工具调用块)。
 
     看 agent 数据最要核对的三件事都直接摆出来: arguments 是不是合法 JSON (不合法标红),
@@ -309,16 +342,16 @@ def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableT
     JSON 块用 Syntax 着色, 与代码块一样不叠加搜索高亮。
     """
     style = _ROLE_STYLE.get(turn.role, "bold white")
-    parts: List[RenderableType] = [_hl(Text(_turn_header(turn), style=style), highlight)]
+    parts: List[RenderableType] = [_hl(_turn_title(turn, style), highlight)]
     if turn.reasoning:
         parts.append(Text("(reasoning)", style="dim italic"))
         parts.append(_hl(Text(turn.reasoning, style="dim"), highlight))
     if turn.content:
         if turn.call_id or turn.role in ("tool", "observation", "function"):
-            block, _ = _json_block(turn.content)  # 工具返回常是 JSON, 格式化后才看得清
+            block, _ = _json_block(turn.content, code_bg)  # 工具返回常是 JSON, 格式化后才看得清
             parts.append(block or _hl(Text(turn.content), highlight))
         else:
-            parts.extend(_render_content(turn.content, highlight))
+            parts.extend(_render_content(turn.content, highlight, code_bg))
     for call in turn.tool_calls:
         title = Text(f"⚙ {call.name}", style="bold yellow")
         if call.call_id:
@@ -326,7 +359,7 @@ def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableT
         parts.append(_hl(title, highlight))
         if call.name == "?":
             parts.append(Text(t("⚠ missing function name", "⚠ 缺少函数名"), style="bold red"))
-        block, valid = _json_block(call.arguments)
+        block, valid = _json_block(call.arguments, code_bg)
         if block is not None:
             parts.append(block)
         else:
@@ -361,10 +394,12 @@ def _render_conversation(turns: List[Turn], highlight: Optional[Pattern] = None)
     return Group(*parts)
 
 
-def _labeled(label: str, style: str, text: str, highlight: Optional[Pattern]):
-    """``[label]`` 标题行 + 正文, 并返回配套纯文本 (供命中查找)。"""
+def _labeled(
+    label: str, style: str, text: str, highlight: Optional[Pattern], code_bg: Optional[str]
+):
+    """徽章标题行 + 正文, 并返回配套纯文本 (供命中查找)。"""
     return (
-        Group(Text(f"[{label}]", style=style), *_render_content(text, highlight)),
+        Group(_hl(_badge(label, style), highlight), *_render_content(text, highlight, code_bg)),
         f"[{label}]\n{text}",
     )
 
@@ -375,6 +410,7 @@ def render_detail_sections(
     hidden: Optional[set] = None,
     split_turns: bool = False,
     highlight: Optional[Pattern] = None,
+    code_bg: Optional[str] = None,
 ) -> List[Tuple[str, RenderableType, str]]:
     """把详情拆成 [(字段名, renderable, 纯文本)] 分段, 供锚点定位与命中查找。
 
@@ -387,6 +423,7 @@ def render_detail_sections(
         的角色未必相同, 名字带 role 会对不齐。role 仍显示在段内容的 ``[user]`` 标题行。
         默认 False: dt head/sample 的静态打印走 render_detail, 不该被拆成一堆分隔块。
     highlight: 搜索命中的正则, 命中处叠加黄底。
+    code_bg: 代码/JSON 块底色 (见 _syntax)。
     """
     hidden = hidden or set()
 
@@ -395,7 +432,7 @@ def render_detail_sections(
         secs: List[Tuple[str, RenderableType, str]] = []
         if split_turns:
             for i, turn in enumerate(turns):
-                secs.append((f"msg{i}", _render_turn(turn, highlight), _turn_plain(turn)))
+                secs.append((f"msg{i}", _render_turn(turn, highlight, code_bg), _turn_plain(turn)))
         else:
             plain = "\n".join(_turn_plain(turn) for turn in turns)
             secs.append((t("conversation", "对话"), _render_conversation(turns, highlight), plain))
@@ -408,33 +445,23 @@ def render_detail_sections(
             secs.append((t("metadata", "元数据"), *_render_generic(extra, highlight)))
         return secs
 
+    def labeled(name: str, style: str, value: Any) -> Tuple[str, RenderableType, str]:
+        return (name, *_labeled(name, style, _as_text(value), highlight, code_bg))
+
     if fmt == "dpo":
         secs = []
         if row.get("prompt") and "prompt" not in hidden:
-            secs.append(
-                ("prompt", *_labeled("prompt", "bold cyan", _as_text(row["prompt"]), highlight))
-            )
-        secs.append(
-            (
-                "chosen",
-                *_labeled("chosen", "bold green", _as_text(row.get("chosen", "")), highlight),
-            )
-        )
-        secs.append(
-            (
-                "rejected",
-                *_labeled("rejected", "bold red", _as_text(row.get("rejected", "")), highlight),
-            )
-        )
+            secs.append(labeled("prompt", "bold cyan", row["prompt"]))
+        secs.append(labeled("chosen", "bold green", row.get("chosen", "")))
+        secs.append(labeled("rejected", "bold red", row.get("rejected", "")))
         return secs
 
     if fmt == "alpaca":
         secs = []
         for key in ("instruction", "input"):
             if row.get(key) and key not in hidden:
-                secs.append((key, *_labeled(key, "bold cyan", _as_text(row[key]), highlight)))
-        out = row.get("output") or row.get("response") or ""
-        secs.append(("output", *_labeled("output", "bold green", _as_text(out), highlight)))
+                secs.append(labeled(key, "bold cyan", row[key]))
+        secs.append(labeled("output", "bold green", row.get("output") or row.get("response") or ""))
         return secs
 
     return [(k, *_render_generic({k: v}, highlight)) for k, v in row.items() if k not in hidden]

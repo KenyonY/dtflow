@@ -2788,8 +2788,9 @@ async def test_multi_click_selection_levels():
         assert await click_at("12345", 2) == "12345"
 
         assert await click_at("order_no", 3) == line  # 整行 (自动换行后的渲染行)
-        assert await click_at("order_no", 4) == f"[user]\n{line}"  # 整个字段块
-        assert "[assistant]" in await click_at("order_no", 5)  # 整屏详情
+        block = await click_at("order_no", 4)  # 整个字段块: 徽章标题行 + 正文
+        assert block.startswith(" user ") and block.endswith(f"\n{line}")
+        assert " assistant " in await click_at("order_no", 5)  # 整屏详情
 
 
 @pytest.mark.asyncio

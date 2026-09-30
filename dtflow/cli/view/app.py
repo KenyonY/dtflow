@@ -1833,6 +1833,8 @@ class ViewApp(App):
             hidden={self._shown(c) for c in self._hidden},
             split_turns=True,
             highlight=self._search_re,
+            # 代码/JSON 块底色随主题取, 比详情底 ($background) 亮一档, 与正文分开
+            code_bg=self.get_css_variables()["surface-lighten-1"],
         )
         self._fields = [(name, rend) for name, rend, _ in sections]
         self._field_texts = [plain for _, _, plain in sections]

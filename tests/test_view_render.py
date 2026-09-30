@@ -137,12 +137,12 @@ def test_tool_calls_render_detail():
         out.print(R.render_detail(row, "openai_chat"))
     text = cap.get()
     assert "None" not in text  # 回归: content=null 曾显示为 None
-    assert "[assistant → get_weather, search]" in text
+    assert "assistant  → get_weather, search" in text  # 徽章 + 调用的函数名
     assert "(reasoning)" in text and "先查工具" in text
     assert "⚙ get_weather" in text and "call_1" in text
     assert '"city": "北京"' in text  # 合法参数格式化展示
     assert "⚠ arguments 不是合法 JSON" in text  # 坏参数标出来
-    assert "[tool ← call_1]" in text
+    assert "tool  ← call_1" in text
     # 纯文本与渲染同源: 函数名/参数可被 * 命中定位
     secs = R.render_detail_sections(row, "openai_chat", split_turns=True)
     assert "get_weather" in secs[1][2] and "{bad" in secs[1][2]
@@ -170,7 +170,7 @@ def test_sharegpt_function_call_and_observation():
     out = Console(width=60)
     with out.capture() as cap:
         out.print(R.render_detail(row, "sharegpt"))
-    assert "[function_call → get_weather]" in cap.get() and '"city": "上海"' in cap.get()
+    assert "function_call  → get_weather" in cap.get() and '"city": "上海"' in cap.get()
 
 
 def test_multimodal_content_flattened():
@@ -297,7 +297,7 @@ def test_render_detail_output_unchanged_for_head():
     with out.capture() as cap:
         out.print(R.render_detail(row, "openai_chat"))
     text = cap.get()
-    assert "[user]" in text and "[assistant]" in text
+    assert " user " in text and " assistant " in text  # 角色徽章
     assert "─" not in text  # 段间 Rule: 只有一段, 不该出现
 
 
@@ -408,3 +408,31 @@ def test_roles_text_colors_by_role():
     assert styles["u"] == "cyan" and styles["a"] == "green" and styles["t"] == "yellow"
     assert styles["→"] == "dim"
     assert "xyz" not in styles
+
+
+def test_code_block_background_only_when_given():
+    # TUI 传 code_bg 时代码/JSON 块铺底与正文分开; dt head 打印不传, 不铺底 (终端底色未知)
+    from rich.syntax import Syntax
+
+    row = {"messages": [{"role": "assistant", "content": "看:\n```python\nx = 1\n```"}]}
+
+    def syntaxes(**kw):
+        (_, rend, _), *_ = R.render_detail_sections(row, "openai_chat", split_turns=True, **kw)
+        return [r for r in rend.renderables if isinstance(r, Syntax)]
+
+    [plain] = syntaxes()
+    assert plain.background_color is None
+    [shaded] = syntaxes(code_bg="#2D2D2D")
+    assert shaded.background_color == "#2D2D2D"
+
+
+def test_turn_title_badge_and_char_count():
+    # 标题行: 反色徽章只罩角色名, 后接暗色字数 (无正文的纯调用消息不显示字数)
+    from dtflow.rowfn import Turn
+
+    title = R._turn_title(Turn(role="user", content="hello"), "bold cyan")
+    assert title.plain == " user   5 字"
+    assert str(title.spans[0].style) == "bold reverse cyan"
+    assert title.plain[title.spans[0].start : title.spans[0].end] == " user "
+    call = R._turn_title(Turn(role="assistant", content=""), "bold green")
+    assert call.plain == " assistant "
