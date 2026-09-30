@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.3] - 2026-09-30
+
+### Bug Fixes
+
+- **deps**: Textual-image 放宽到 >=0.12.0, 恢复 Python 3.10/3.11 可安装
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.10.2...v0.10.3
+
+
 ## [0.10.2] - 2026-09-30
 
 ### Bug Fixes
