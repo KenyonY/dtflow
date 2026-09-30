@@ -5,6 +5,7 @@ dt view 的 Textual TUI: 表格 + 详情 master-detail 联动浏览器。
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 
@@ -33,8 +34,9 @@ from textual.widgets.selection_list import Selection
 from textual.worker import WorkerState
 
 from ...i18n import t
+from ...rowfn import _normalize_turns
 from ...utils import clipboard
-from . import render, scan
+from . import image, render, scan
 from .pipe import dt_error, error_message, run_pipe, shell_form
 from .scan import ScanSpec, compile_search
 from .source import _MemorySource
@@ -109,6 +111,13 @@ class FastDataTable(DataTable):
     # 表头上常驻的列分隔线: 不画出来用户根本看不到"有条线可以拖"; 鼠标压上去换成粗体高亮,
     # 这是终端里唯一能表达"此处可拖"的手段 (改不了鼠标指针形状)。
     DIVIDER, DIVIDER_HOT = "│", "┃"
+
+    class CellClicked(Message):
+        """单击数据单元格; app 按列名决定是否响应 (点 imgs 列开图片弹窗)。"""
+
+        def __init__(self, row: int, column: int) -> None:
+            super().__init__()
+            self.row, self.column = row, column
 
     class HeaderDoubleClicked(Message):
         """双击列头文字 (不是分隔线) → 重命名该列。"""
@@ -288,6 +297,9 @@ class FastDataTable(DataTable):
             return
         # guard 只在刚拖/刚按过分隔线时为真, 所以双击分隔线必定命中这里
         if not self._drag_guard:
+            if event.chain == 1 and meta.get("row", -1) >= 0 and "column" in meta:
+                # 不拦截: 原生 _on_click 照常移光标, app 只是额外收到"点了哪一格"
+                self.post_message(self.CellClicked(meta["row"], meta["column"]))
             return
         self._drag_guard = False
         if event.chain >= 2:
@@ -312,6 +324,8 @@ _HELP = t(
                  clicking a field selects it too)
   *            jump to the next search hit in detail (hits are highlighted in yellow)
   y            copy the current sample's JSON to the clipboard
+  i            view the sample's images full-size (←/→ switch, Esc closes); clicking the
+                 imgs cell or a 🖼 line in detail opens it too
   mouse drag   drag with the left button in detail to select text (what you see is what
                  you get, even across soft wraps), then Ctrl+c to copy; more clicks select
                  more: double = word (ids/values; - and _ count as word chars) · triple =
@@ -380,6 +394,8 @@ _HELP = t(
   n / N        详情下/上一字段 (对话按条走: msg0/msg1…; 亦可鼠标点击选中)
   *            跳到详情中下一处搜索命中 (命中处画黄底)
   y            复制当前样本 JSON 到剪贴板
+  i            大图查看当前样本的图片 (←/→ 切换, Esc 关闭); 点 imgs 单元格或详情里的
+                 🖼 行也能打开
   鼠标拖选     详情区按住左键拖选文本 (所见即所选, 自动换行处不错位), 再按 Ctrl+c 复制;
                  连击逐级放大: 双击取词 (id/字段值, 连字符下划线算词内) · 三击整行 ·
                  四击整个字段块 · 五击整屏详情; Esc 或点一下清除选区
@@ -500,6 +516,10 @@ class _FieldStatic(Static):
             self.select_container.text_select_all()
         elif chain == 4:
             self.text_select_all()
+        elif chain == 1:
+            k = self._image_line_at(event)
+            if k is not None:
+                self.app.open_detail_image(self._field_name, k)
         elif chain in (2, 3):
             offset = self._click_offset(event)
             if offset is not None:
@@ -510,6 +530,20 @@ class _FieldStatic(Static):
                 self.screen.selections = {self: span}
         event.stop()
         await self.broker_event("click", event)
+
+    def _image_line_at(self, event: events.Click) -> Optional[int]:
+        """点在第 k 个 🖼 行上则返回 k (本字段内序号), 否则 None。拖选结束时的那次
+        click 不算 —— 用户是在选路径文本, 不是要看图。"""
+        sel = self.screen.selections.get(self)
+        if sel is not None and sel.start != sel.end:
+            return None
+        offset = self._click_offset(event)
+        if offset is None:
+            return None
+        lines = [ln.lstrip() for ln in self._plain_lines()]
+        if offset.y >= len(lines) or not lines[offset.y].startswith(render.IMAGE_LINE_PREFIX):
+            return None
+        return sum(ln.startswith(render.IMAGE_LINE_PREFIX) for ln in lines[: offset.y])
 
     def _click_offset(self, event: events.Click) -> Optional[Offset]:
         """点击位置的内容坐标 (字符索引, 渲染行); 借 compositor 换算, 与拖选同一套坐标。"""
@@ -603,6 +637,110 @@ class HelpScreen(ModalScreen):
 
     def on_mount(self) -> None:
         self.query_one("#help-box", VerticalScroll).focus()  # 矮终端下可用 ↑↓ 滚动
+
+
+class ImageScreen(ModalScreen):
+    """一条样本里的图片逐张大图显示: ←/→ 切换, Esc/q/i 或点框外关闭。
+
+    放弹窗而不是详情里: 弹窗能用满整屏分辨率, 也不牵动详情的分批挂载与锚点定位。
+    读图 (可能要下载) 在线程 worker 里, 结果按代次作废, 快速翻页不会串图。
+    图由 textual-image 画 (kitty 图形协议 / sixel / 半块字符, 启动时探测终端决定)。
+    """
+
+    BINDINGS = [
+        Binding("escape,q,i", "dismiss", t("Close", "关闭")),
+        Binding("left,h", "go(-1)", t("Prev", "上一张")),
+        Binding("right,l", "go(1)", t("Next", "下一张")),
+    ]
+
+    def __init__(self, items: List[Tuple[str, str]], start: int, root: str):
+        super().__init__()
+        self._items = items  # [(出处如 msg0 user, 引用)]
+        self._i = start
+        self._root = root
+        self._gen = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="img-box"):
+            yield Static(id="img-title")
+            yield Vertical(id="img-view")
+            yield Static(
+                t("←/→ switch · Esc close", "←/→ 切换 · Esc 关闭"), id="img-hint", markup=False
+            )
+
+    def on_mount(self) -> None:
+        self._show()
+
+    def dismiss(self, result=None):
+        # 关闭的各条路 (Esc/q/i/点框外) 都走这里; 卸载时子 widget 已先没了, 等不到那会儿
+        self._release()
+        return super().dismiss(result)
+
+    def action_go(self, step: int) -> None:
+        self._i = (self._i + step) % len(self._items)
+        self._show()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.screen_offset not in self.query_one("#img-box", Vertical).region:
+            self.dismiss()
+            event.stop()
+
+    def _title(self, extra: str) -> Text:
+        where, ref = self._items[self._i]
+        title = Text(f"{self._i + 1}/{len(self._items)} · {where} · ", style="bold")
+        title.append(render.image_label(ref))
+        title.append(f"  {extra}", style="dim")
+        return title
+
+    def _release(self) -> None:
+        """让 textual-image 把图从终端里删掉: kitty 协议传过去的图不随界面重绘消失。"""
+        for w in self.query("#img-view .img"):
+            w.image = None
+
+    def _clear(self) -> None:
+        self._release()
+        self.query_one("#img-view", Vertical).remove_children()
+
+    def _show(self) -> None:
+        self._gen += 1
+        gen, (_, ref) = self._gen, self._items[self._i]
+        self.query_one("#img-title", Static).update(self._title(t("loading…", "加载中…")))
+        self._clear()
+
+        def load() -> None:
+            try:
+                got = image.load(ref, self._root)
+            except image.ImageError as e:
+                self.app.call_from_thread(self._loaded, gen, None, str(e))
+            else:
+                self.app.call_from_thread(self._loaded, gen, got, "")
+
+        self.run_worker(load, thread=True, exclusive=True, group="image")
+
+    def _loaded(self, gen: int, got, error: str) -> None:
+        if gen != self._gen or not self.is_attached:
+            return  # 已翻到别的图 / 已关闭
+        view = self.query_one("#img-view", Vertical)
+        if got is None:
+            self.query_one("#img-title", Static).update(self._title(""))
+            view.mount(Static(Text(f"⚠ {error}", style="bold red"), classes="img-msg"))
+            return
+        self.query_one("#img-title", Static).update(self._title(got.describe()))
+        # 终端图形能力只能在 Textual 接管 stdin 前探测 (_run_tui 里按格式做了);
+        # 没探测过就 import 会在运行中抢读 stdin, 所以此处只认已加载的模块
+        widgets = sys.modules.get("textual_image.widget")
+        if widgets is None:
+            view.mount(
+                Static(
+                    t(
+                        "Image preview needs the terminal probe at startup (chat formats only)",
+                        "图片预览需在启动时探测终端 (仅对话格式)",
+                    ),
+                    classes="img-msg",
+                )
+            )
+            return
+        view.mount(widgets.Image(got.image, classes="img"))
 
 
 class ColumnPicker(ModalScreen):
@@ -990,6 +1128,14 @@ class ViewApp(App):
     #help-box { padding: 1 2; border: round $primary; background: $surface;
                 width: 98; max-width: 100%; height: auto; max-height: 100%; }
     #help-box Static { width: auto; }
+    ImageScreen { align: center middle; }
+    #img-box { width: 100%; height: 100%; border: round $primary; background: $surface;
+               padding: 0 1; }
+    #img-title { height: auto; }
+    #img-view { height: 1fr; align: center middle; }
+    #img-view .img { width: auto; height: auto; }
+    #img-view .img-msg { width: auto; }
+    #img-hint { height: 1; color: $text-muted; text-align: center; width: 1fr; }
     ColumnPicker { align: center middle; }
     #picker-box { width: 56; max-width: 100%; height: auto; max-height: 100%;
               border: round $primary;
@@ -1062,6 +1208,7 @@ class ViewApp(App):
             "ctrl+c", "copy_selection", t("Copy selection", "复制选区"), show=False, priority=True
         ),
         Binding("y", "yank", t("Copy", "复制"), show=False),
+        Binding("i", "images", t("Images", "看图"), show=False),
         Binding("v", "visual", t("Multi-select", "多选"), show=False),
         # 落地: w 导出当前子集到文件, C 复制可复现当前视图的命令
         Binding("w", "export", t("Export", "导出"), show=False),
@@ -1087,8 +1234,10 @@ class ViewApp(App):
         start_at_end: bool = False,
         pipe: Optional[str] = None,
         format_hint: Optional[str] = None,
+        image_root: str = ".",
     ):
         super().__init__()
+        self._image_root = image_root  # 图片相对路径的基准目录 (--image-root, 默认数据文件所在目录)
         self.source = source  # RowSource: 随机窗口访问, 内存 O(窗口)
         # | 管道: 结果替换 source; 原文件留着给 r 回退和下一次管道 (输入永远是原文件)
         self._origin_source = source
@@ -2713,6 +2862,37 @@ class ViewApp(App):
                 f"已复制 {len(lines)} 条样本到剪贴板",
             )
         )
+
+    # ------------------------------------------------------------------ #
+    # 图片弹窗 (i 键 / 点 imgs 单元格 / 点详情 🖼 行)
+    # ------------------------------------------------------------------ #
+    def action_images(self) -> None:
+        self.open_images(self.query_one("#table", DataTable).cursor_row)
+
+    def open_detail_image(self, field: str, k: int) -> None:
+        """详情里点了字段 field (msgN) 的第 k 个 🖼 行: 从那张图开始看。"""
+        self.open_images(self.query_one("#table", DataTable).cursor_row, field, k)
+
+    def open_images(self, cursor_row: int, field: Optional[str] = None, k: int = 0) -> None:
+        """打开 cursor_row 处样本的图片弹窗; 全样本的图按消息顺序排, 可 ←/→ 翻。"""
+        if not 0 <= cursor_row < len(self.view_indices):
+            return
+        row = self._apply_renames(self.all_rows[self.view_indices[cursor_row]])
+        items: List[Tuple[str, str]] = []
+        start = 0
+        for i, turn in enumerate(_normalize_turns(row)):
+            if f"msg{i}" == field:
+                start = len(items) + k
+            items.extend((f"msg{i} {turn.role}", ref) for ref in turn.images)
+        if not items:
+            self.notify(t("No images in this sample", "这条样本没有图片"))
+            return
+        self.push_screen(ImageScreen(items, min(start, len(items) - 1), self._image_root))
+
+    def on_fast_data_table_cell_clicked(self, msg: FastDataTable.CellClicked) -> None:
+        vis = self._visible_columns()
+        if 0 <= msg.column < len(vis) and vis[msg.column] == "imgs":
+            self.open_images(msg.row)
 
     def action_yank(self) -> None:
         table = self.query_one("#table", DataTable)

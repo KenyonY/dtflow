@@ -182,3 +182,109 @@ def test_load_url_404(http_root):
     base, _ = http_root
     with pytest.raises(vimg.ImageError, match="HTTP 404"):
         vimg.load(f"{base}/nope.png", ".")
+
+
+# --------------------------------------------------------------------------- #
+# 弹窗 (Textual pilot)
+# --------------------------------------------------------------------------- #
+def _vlm_app(tmp_path):
+    import textual_image.widget  # noqa: F401  (非 TTY 下探测直接给默认值, 走 unicode 渲染)
+
+    from dtflow.cli.view.app import ViewApp
+    from dtflow.cli.view.source import RowSource
+
+    (tmp_path / "a.png").write_bytes(_png(40, 30))
+    rows = [
+        {
+            "images": ["a.png", "missing.png"],
+            "messages": [
+                {"role": "user", "content": "<image>这是什么"},
+                {"role": "assistant", "content": "红块"},
+                {"role": "user", "content": "那这张 <image>"},
+            ],
+        },
+        {"messages": [{"role": "user", "content": "纯文本"}]},
+    ]
+
+    class Src(RowSource):
+        total = len(rows)
+
+        def window(self, offset, size):
+            return rows[offset : offset + size]
+
+    src = Src()
+    return ViewApp(src, src.window(0, 2), 0, 2, "openai_chat", "t.jsonl", image_root=str(tmp_path))
+
+
+async def _settle(app, pilot):
+    await pilot.pause()
+    await app.workers.wait_for_complete()  # 读图 worker (弹窗的 worker 也挂在 app 上)
+    await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_popup_by_key_switches_and_reports_errors(tmp_path):
+    from dtflow.cli.view.app import ImageScreen
+
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("i")
+        await _settle(app, pilot)
+        scr = app.screen
+        assert isinstance(scr, ImageScreen)
+        title = str(scr.query_one("#img-title").render())
+        assert "1/2 · msg0 user · a.png" in title and "40×30 PNG" in title
+        assert scr.query("#img-view .img")  # 图片 widget 已挂上
+
+        await pilot.press("right")
+        await _settle(app, pilot)
+        assert "2/2 · msg2 user · missing.png" in str(scr.query_one("#img-title").render())
+        assert "文件不存在" in str(scr.query_one("#img-view .img-msg").render())
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, ImageScreen)
+
+
+@pytest.mark.asyncio
+async def test_popup_by_imgs_cell_and_detail_line(tmp_path):
+    from dtflow.cli.view import render as R
+    from dtflow.cli.view.app import ImageScreen
+
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#table")
+        vis = app._visible_columns()
+        widths = app._column_widths(vis)
+        ci = vis.index("imgs")
+        x = sum(widths[j] + 2 * table.cell_padding for j in range(ci)) + table.cell_padding
+        await pilot.click("#table", offset=(x + 1, 2))  # y=2: 表头下第一行数据
+        await _settle(app, pilot)
+        assert isinstance(app.screen, ImageScreen) and app.screen._i == 0
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # 详情里 msg2 的 🖼 行 → 从第 2 张图开始
+        w = next(f for f in app._field_widgets if f._field_name == "msg2")
+        y = next(
+            i
+            for i, ln in enumerate(w._plain_lines())
+            if ln.lstrip().startswith(R.IMAGE_LINE_PREFIX)
+        )
+        await pilot.click(offset=(w.content_region.x + 1, w.content_region.y + y))
+        await _settle(app, pilot)
+        assert isinstance(app.screen, ImageScreen) and app.screen._i == 1
+
+
+@pytest.mark.asyncio
+async def test_popup_without_images_just_notifies(tmp_path):
+    from dtflow.cli.view.app import ImageScreen
+
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("down")
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert not isinstance(app.screen, ImageScreen)

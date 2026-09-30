@@ -580,6 +580,14 @@ def view(
             "先对全文件跑这段 shell 管道 (进出 NDJSON), 浏览它的输出; 等同于在 TUI 内按 |",
         ),
     ),
+    image_root: Optional[str] = typer.Option(
+        None,
+        "--image-root",
+        help=t(
+            "Base directory for relative image paths (default: the data file's directory; i opens images)",
+            "图片相对路径的基准目录 (默认数据文件所在目录; TUI 内按 i 看图)",
+        ),
+    ),
 ):
     from pathlib import Path
 
@@ -650,6 +658,7 @@ def view(
         tail=tail,
         follow=follow,
         pipe=pipe,
+        image_root=image_root,
     )
 
 

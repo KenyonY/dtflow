@@ -34,6 +34,7 @@ def _run_tui(
     follow: bool = False,
     start_at_end: bool = False,
     pipe: Optional[str] = None,
+    image_root: Optional[str] = None,
 ) -> None:
     """公共 TUI 启动: 取首窗口 → 检测格式 → 起 ViewApp。"""
     if source.total == 0 and not follow:
@@ -46,6 +47,10 @@ def _run_tui(
     from .render import detect_format
 
     fmt = format_hint or detect_format(window)
+    if fmt in ("openai_chat", "sharegpt"):
+        # 图片弹窗要知道终端支持哪种图形协议, 只能在 Textual 接管 stdin 之前问 (import 即探测,
+        # 一次往返); 只有对话格式会有图, 其余格式不付这笔启动成本
+        import textual_image.widget  # noqa: F401
 
     from .app import ViewApp
 
@@ -64,6 +69,8 @@ def _run_tui(
         start_at_end=start_at_end,
         pipe=pipe,
         format_hint=format_hint,
+        # 图片相对路径的基准: 默认数据文件所在目录 (LLaMA-Factory 等也按数据集目录解析), stdin 为 cwd
+        image_root=image_root or str(Path(filepath).resolve().parent if filepath else Path.cwd()),
     ).run()
 
 
@@ -75,6 +82,7 @@ def _view_stdin(
     sort: Optional[str] = None,
     tail: bool = False,
     pipe: Optional[str] = None,
+    image_root: Optional[str] = None,
 ) -> None:
     """dt view -: 先读完 stdin 数据, 再把 fd 0 重定向到 /dev/tty 供 TUI 读键盘。
 
@@ -117,6 +125,7 @@ def _view_stdin(
         sort=sort,
         start_at_end=tail,
         pipe=pipe,
+        image_root=image_root,
     )
 
 
@@ -131,6 +140,7 @@ def view(
     tail: bool = False,
     follow: bool = False,
     pipe: Optional[str] = None,
+    image_root: Optional[str] = None,
 ) -> None:
     """启动 dt view TUI。filename 为 - 时从 stdin 读 (管道模式)。
 
@@ -146,6 +156,7 @@ def view(
             sort=sort,
             tail=tail,
             pipe=pipe,
+            image_root=image_root,
         )
         return
 
@@ -199,4 +210,5 @@ def view(
         follow=follow,
         start_at_end=tail or follow,
         pipe=pipe,
+        image_root=image_root,
     )
