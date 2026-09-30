@@ -59,7 +59,7 @@ dependencies = [
     "rich>=10.0.0",
     "tiktoken>=0.5.0",
     "textual>=8.0.0",
-    "textual-image>=0.14.0",  # dt view 看图弹窗 (kitty 图形协议/sixel/半块字符), 带 pillow
+    "textual-image>=0.12.0",  # dt view 看图弹窗 (kitty 图形协议/sixel/半块字符), 带 pillow
     # 文件格式后端：CLI 各命令的 --help 均声明支持 csv/excel/parquet/arrow，
     # 因此这些后端属于核心能力而非可选项
     "pyarrow>=10.0.0",      # parquet / arrow(feather) 流式读写

@@ -680,6 +680,12 @@ def _sixel_once_class():
     class _OnceImpl(sixel._ImageSixelImpl):
         _painted: Optional[tuple] = None  # 已发给终端的那次: (尺寸, 屏幕上的可见区域, 屏幕栈代次)
 
+        def _blank_style(self) -> Style:
+            # 用背景色铺空白; 自己从 Textual 取, 不调 textual-image 的私有 _get_clear_style
+            # (0.13 起才有, 而 0.13+ 要求 Python>=3.12)
+            _, color = self.background_colors
+            return Style(bgcolor=color.rich_color)
+
         def _paint_key(self) -> Optional[tuple]:
             try:
                 where = self.screen.find_widget(self).visible_region
@@ -692,7 +698,7 @@ def _sixel_once_class():
             if getattr(self.app, "images_hold", False) and not self.screen.is_modal:
                 # 滚动中: 画空白不发图, 停下后再发一次 (翻页动画每帧都发会又慢又闪)
                 self._painted = None
-                blank = Segment(" " * crop.width, style=self._get_clear_style())
+                blank = Segment(" " * crop.width, style=self._blank_style())
                 return [Strip([blank], cell_length=crop.width)] * crop.height
             key = self._paint_key()
             if key is not None and key == self._painted:
