@@ -371,5 +371,6 @@ def test_clean_step_rejects_duplicate_keys(tmp_path):
             f"version: '1.0'\ninput: {src}\noutput: {tmp_path}/out.jsonl\n"
             f"steps:\n  - type: clean\n    {key}: '{spec}'\n"
         )
-        with pytest.raises(ValueError, match="twice|两次"):
+        with pytest.raises(ValueError, match="twice|两次") as e:
             run_pipeline(str(cfg))
+        assert str(e.value).startswith(key)  # 报错写出是哪一项 (YAML 键名)

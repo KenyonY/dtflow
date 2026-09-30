@@ -439,7 +439,8 @@ def _get_value_len(value: Any) -> int:
 def parse_pairs(spec: str, option: str, need_value: bool = False) -> Dict[str, str]:
     """``"a:b,c:d"`` → ``{"a": "b", "c": "d"}``。CLI 的 --rename/--add-field/--fill 与 pipeline
     的同名参数共用这一个解析, 行为不会漂移。同一个 key 出现两次报错 (否则静默取后者);
-    need_value: 冒号后不能为空 (rename 的新名)。"""
+    need_value: 冒号后不能为空 (rename 的新名)。option 原样出现在报错里 (CLI 传 ``--rename``,
+    pipeline 传 YAML 键名 ``fill``), 用户一眼知道是哪一项。"""
     out: Dict[str, str] = {}
     for pair in str(spec).split(","):
         pair = pair.strip()
@@ -448,22 +449,22 @@ def parse_pairs(spec: str, option: str, need_value: bool = False) -> Dict[str, s
         if not sep:
             raise ValueError(
                 t(
-                    f"Invalid --{option} spec: {pair!r}, expected 'key:value'",
-                    f"--{option} 参数格式错误: {pair!r}，应为 'key:value'",
+                    f"Invalid {option} spec: {pair!r}, expected 'key:value'",
+                    f"{option} 参数格式错误: {pair!r}，应为 'key:value'",
                 )
             )
         if not key or (need_value and not value):
             raise ValueError(
                 t(
-                    f"Invalid --{option} spec: {pair!r}, names must not be empty",
-                    f"--{option} 参数格式错误: {pair!r}，名字不能为空",
+                    f"Invalid {option} spec: {pair!r}, names must not be empty",
+                    f"{option} 参数格式错误: {pair!r}，名字不能为空",
                 )
             )
         if key in out:
             raise ValueError(
                 t(
-                    f"Invalid --{option} spec: {key!r} appears twice",
-                    f"--{option} 参数格式错误: {key!r} 出现了两次",
+                    f"Invalid {option} spec: {key!r} appears twice",
+                    f"{option} 参数格式错误: {key!r} 出现了两次",
                 )
             )
         out[key] = value

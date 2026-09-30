@@ -218,10 +218,10 @@ def clean(
         max_tokens_field, max_tokens_value = (
             _parse_len_param(max_tokens) if max_tokens else (None, None)
         )
-        rename_map = parse_pairs(rename, "rename", need_value=True) if rename else None
+        rename_map = parse_pairs(rename, "--rename", need_value=True) if rename else None
         promote_list = _parse_promote_param(promote) if promote else None
-        add_field_map = parse_pairs(add_field, "add-field") if add_field else None
-        fill_map = parse_pairs(fill, "fill") if fill else None
+        add_field_map = parse_pairs(add_field, "--add-field") if add_field else None
+        fill_map = parse_pairs(fill, "--fill") if fill else None
     except ValueError as e:
         die_usage(str(e))
 

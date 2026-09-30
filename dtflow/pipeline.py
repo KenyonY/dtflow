@@ -222,9 +222,11 @@ def _s_clean(st, step):
         add_field_map=(
             step.get("add_field")
             if isinstance(step.get("add_field"), dict)
-            else _kv(step.get("add_field"))
+            else _kv(step.get("add_field"), "add_field")
         ),
-        fill_map=step.get("fill") if isinstance(step.get("fill"), dict) else _kv(step.get("fill")),
+        fill_map=step.get("fill")
+        if isinstance(step.get("fill"), dict)
+        else _kv(step.get("fill"), "fill"),
         reorder_fields=_csv(step.get("reorder")),
         min_tokens_field=min_tok_f,
         min_tokens_value=min_tok_v,
@@ -234,9 +236,9 @@ def _s_clean(st, step):
     )
 
 
-def _kv(v: Any) -> Optional[Dict[str, str]]:
-    """ "a:b,c:d" → {"a": "b", "c": "d"}, 与 CLI 同一解析 (重复 key 报错)。"""
-    return None if v is None else ops.parse_pairs(v, "key:value")
+def _kv(v: Any, key: str) -> Optional[Dict[str, str]]:
+    """ "a:b,c:d" → {"a": "b", "c": "d"}, 与 CLI 同一解析 (重复 key 报错); key 是 YAML 里的参数名, 进报错。"""
+    return None if v is None else ops.parse_pairs(v, key)
 
 
 def _promote(v: Any) -> Optional[List[tuple]]:
