@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.10.1] - 2026-09-30
+
+### Bug Fixes
+
+- **view**: QA 修复 —— 管道用 bash -o pipefail 且 stderr 出现 dt 错误即判失败; 取消时杀整个进程组; 非对象 JSON 行成占位行; 错误对象不在 stderr 末尾也能取到
+- **view**: QA 修复 —— 空视图清副标题, 算出来的文本不画搜索命中, roles 着色缓存
+- **view**: 列头重命名写回的 QA 修复 —— 只读目录不崩, 沿用旧血缘链, 与窗口外字段重名时中止, 保留权限/软链, 值面板标题显示新名, --help 补说明
+
+### Documentation
+
+- **view**: | 管道与 --pipe 写进 view.md/cli.md/README/SKILL
+- **view**: 详情徽章/代码块底色/边框标题/分批渲染写进 view 文档与 SKILL
+- **view**: 重新生成展示截图与 GIF (新表格/详情样式与边框标题)
+
+### Features
+
+- **view**: 多模态图片引用 —— 抽取 image_url/image 片段与样本级 images, 详情显示 🖼 行, <image> 数量不匹配标红, imgs 列与行函数, image.py 读图 (路径/URL/data URI)
+- **view**: | 在 view 内跑 shell 管道, 结果替换浏览数据; r 回到原文件; C/P/血缘带上管道; --pipe 启动选项
+- **view**: Pipe.py —— 子进程跑 shell 管道 (stdin/stdout NDJSON, 取消即 kill, stderr 尾巴取 dt 的 JSON message)
+- **view**: 双击列头重命名, 界面即时生效, 退出时询问写回/丢弃
+
+### Performance
+
+- **view**: 单元格样式推迟到渲染可见行时再套, 派生列按当前格式判断
+- **view**: 详情面板合并渲染 + 长样本分批挂载, 分隔线改边框
+
+### Styling
+
+- **view**: 身份信息挂到两区边框标题, 状态栏只留会变的状态
+- **view**: 详情角色标题改反色徽章并附字数, 代码/JSON 块铺底
+- **view**: 表格数值列右对齐, 截断加省略号, roles 按角色着色, 滚动条降噪
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.10.0...v0.10.1
+
+
 ## [0.10.0] - 2026-09-30
 
 ### Bug Fixes
