@@ -196,9 +196,15 @@ dt install-skill --target codex          # Codex
 
 ## 设计
 
+dtflow 建立在几条决定之上，其余都是它们的推论。
+
+- **单位是一条训练样本，不是一行。** 样本是一段对话、一对偏好、一条指令；格式靠识别，不靠声明。这份"知道什么是样本"的知识只存在一处——行函数 `turns(x)` / `roles(x)` / `calls(x)` / `search(x, …)`——viewer 的列、CLI 的筛选、pipeline 的步骤都从这里读。
+- **一种语言。** 条件、键、派生字段都是 Python，当前行叫 `x`。没有要学的 DSL，也没有第二种方言：viewer 编译的和 `dt filter` 编译的是同一个字符串，浏览时敲的就是脚本里粘的。
+- **看与处理是一个闭环。** viewer 的任何状态都能翻译成命令（`C` 复现视图，`P` 复现成 `dt filter … | dt sort …`），任何命令的输出都能再拿回来看（`dt … | dt view -`，或在 viewer 里按 `|`）。导出带血缘，文件永远说得清自己从哪来。
+- **严格遵守 Unix 契约。** stdout 只放数据、stderr 只放消息、退出码有含义、`-` 是 stdin、不给 `-o` 就写 stdout、输出格式跟扩展名走。三十来个小命令能随意拼接靠的是它，agent 能驱动它们也靠的是它：`dt schema`、结构化 JSON 错误、`--dry-run`。
+- **能流式就流式。** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` 从不整文件加载；viewer 只解析一个窗口，其余并行扫描。只有 `sort`、`shuffle`、`group --agg` 和 `join` 的右表会物化，文档里明说。
+- **不给静默的错误答案。** 裸字段名、坏正则、不存在的行函数都在编译期报错，而不是退出码 0 的空结果。运行时失败的行计数并汇总；`--strict` 让第一条失败就退出。
 - **函数式优于类继承。** `dt.to(lambda x: {...})` 而不是 `class MyFormatter(BaseFormatter)`；预设是便利层，不是核心抽象。
-- **一种表达式语言。** Python 本身就是 DSL，viewer、CLI、pipeline 用同一个引擎编译同一个字符串。
-- **一套契约。** 内存用 `DataTransformer`，装不下用 `StreamingTransformer`；CLI 契约（stdout=数据、stderr=消息、退出码有含义）从不妥协。
 
 ## License
 

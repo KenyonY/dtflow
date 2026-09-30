@@ -46,7 +46,7 @@ Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every 
 
 ## Why dtflow
 
-- **It knows what a training sample is.** Generic table tools show `messages` as `{3}` or a truncated string. `dt view` detects `openai_chat` / `sharegpt` / `dpo` / `alpaca` and renders one complete sample per screen: turns colored by role, code highlighted, `tool_calls` and `reasoning_content` unpacked, malformed tool arguments flagged.
+- **It knows what a training sample is.** Generic table tools show `messages` as `{3}` or a truncated string. `dt view` detects `openai_chat` / `sharegpt` / `dpo` / `alpaca` and renders one complete sample per screen: turns colored by role, code highlighted, `tool_calls` and `reasoning_content` unpacked, malformed tool arguments flagged, images of VLM samples one key away (`i`) with `<image>` count mismatches flagged.
 - **Conditions are Python, not a DSL.** `x.score > 0.8 and 'wiki' in x.meta.source`, `any('refund' in m.content for m in x.messages)`, plus row helpers that know what a conversation is: `turns(x)`, `roles(x)`, `calls(x)`, `search(x, 'refund')`. One expression language across `filter`, `select`, `map`, `sort`, `group`, `join`, the viewer and YAML pipelines.
 - **Built for agents as much as humans.** stdout carries only data, stderr carries messages, exit codes are contractual, `dt schema` prints the machine-readable command tree, and `dt install-skill` teaches Claude Code or Codex the whole tool in one command.
 - **Streams by default.** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` never load the file; the viewer opens a 910k-row JSONL at ~90 MB RSS with parallel full-file scans.
@@ -194,9 +194,15 @@ After installing, `/dtflow` in Claude Code or `$dtflow` in Codex gives the agent
 
 ## Design
 
+dtflow is built on a few decisions that everything else follows from.
+
+- **The unit is a training sample, not a row.** A sample is a conversation, a preference pair or an instruction; formats are detected, not declared. That one piece of knowledge lives in a single place, the row helpers `turns(x)` / `roles(x)` / `calls(x)` / `search(x, …)`, and the viewer's columns, the CLI's filters and the pipeline's steps all read from it.
+- **One language.** Conditions, keys and derived fields are Python with the current row as `x`. There is no DSL to learn and no second dialect: the viewer compiles the same string as `dt filter`, so what you typed while browsing is what you paste into a script.
+- **Looking and processing are one loop.** Every viewer state translates into a command (`C` reproduces the view, `P` reproduces it as `dt filter … | dt sort …`), and every command's output can be viewed again (`dt … | dt view -`, or `|` inside the viewer). Exports carry lineage, so a file can always say where it came from.
+- **The Unix contract, kept strictly.** stdout is data, stderr is messages, exit codes mean things, `-` is stdin, no `-o` means stdout, output format follows the extension. That is what lets 30 small commands compose, and what lets an agent drive them: `dt schema`, structured JSON errors, `--dry-run`.
+- **Stream unless the operation cannot.** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` never load the file; the viewer parses one window and scans the rest in parallel. Only `sort`, `shuffle`, `group --agg` and the right side of `join` materialize, and the docs say so.
+- **No silent wrong answers.** A bare field name, a bad regex or an unknown helper is a compile-time error, not an empty result with exit code 0. Rows that fail at runtime are counted and summarized; `--strict` turns the first one into a failure.
 - **Functions over class hierarchies.** `dt.to(lambda x: {...})` instead of `class MyFormatter(BaseFormatter)`. Presets are conveniences, not the core abstraction.
-- **One expression language.** Python is already the DSL. The viewer, the CLI and the pipeline compile the same string with the same engine.
-- **One contract.** `DataTransformer` in memory, `StreamingTransformer` for everything that shouldn't fit, and a CLI contract (stdout = data, stderr = messages, exit codes mean things) that never bends.
 
 ## License
 
