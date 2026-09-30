@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 
 import orjson
+from rich.console import RenderableType
 from rich.markup import escape
-from rich.rule import Rule
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -930,6 +930,9 @@ class ViewApp(App):
     #detail { height: 3fr; border: round $secondary; padding: 0 1; }
     #main.horizontal #detail { width: 1fr; height: 1fr; }
     #detail.zoomed { height: 1fr; }
+    /* Field separator as a border, not a widget of its own: halves the widget count on long chats */
+    .detail-field { border-top: solid $foreground 20%; }
+    .detail-field:first-child { border-top: none; }
     /* Mouse over the split line: light up the border along it to show it can be dragged */
     #table.split-hot { border: round $accent; }
     #detail.split-hot { border: round $accent; }
@@ -1096,12 +1099,18 @@ class ViewApp(App):
         self._split = 65  # 表格占比 (%), 默认 65:35; 键盘 +/- 走 5% 档, 鼠标拖分界是连续的
         self._split_drag = False  # 正在拖两区分界
         self._split_hint = False  # 鼠标压在分界上: 状态栏说明这条线能拖
-        # 详情每字段一个 Static widget (真实布局, 无测量误差); 锚点 {字段名: 起始行} 由布局算出
+        # 详情每字段一个 Static widget (真实布局, 无测量误差); 锚点 {字段名: 起始行} 由布局算出。
+        # _fields 是当前样本的全部字段, _field_widgets 是已挂上的前缀 (长样本分批挂, 见
+        # _refresh_detail); 字段序号 _field_i 始终按 _fields 算。
+        self._fields: List[Tuple[str, RenderableType]] = []
         self._field_widgets: List[Static] = []
+        self._mount_gen = 0  # 分批挂载代次: 换样本即作废上一样本还没挂完的批次
         self._cur_anchors: Dict[str, int] = {}
         self._field_i = 0  # 当前字段索引 (滚动时同步顶部字段, n/N/点击 精确接管)
         # 详情渲染代次: 渲染收尾回调比按键晚一帧, 靠它判断"这次回调是否已被取代"
         self._detail_gen = 0
+        # 光标高亮代次: 按键排队 (长按 j) 时只渲染最后一次高亮的样本, 中间的全跳过
+        self._highlight_gen = 0
         self._nav_lock = False  # 导航/定位期间抑制 scroll_y watch 回退当前字段
         self._visual_anchor: Optional[int] = (
             None  # visual 多选起点 (view_indices 位置); None=非选择态
@@ -1684,24 +1693,23 @@ class ViewApp(App):
                 self.query_one("#detail", VerticalScroll).remove_children()
             except NoMatches:
                 pass
+            self._fields = []
             self._field_widgets = []
             self._field_texts = []
             self._cur_anchors = {}
+            self._mount_gen += 1
         self._restore_scroll_x(table, scroll_x)
 
     def _field_names(self) -> List[str]:
-        return [w._field_name for w in self._field_widgets]
+        return [name for name, _ in self._fields]
 
     def _recompute_anchors(self) -> int:
-        """从真实布局高度累加每字段起始行 (widget.size.height, 无测量误差)。返回总高度。"""
-        detail = self.query_one("#detail", VerticalScroll)
+        """从真实布局高度累加每字段起始行 (widget.outer_size, 无测量误差)。返回总高度。"""
         anchors: Dict[str, int] = {}
         y = 0
-        for w in detail.children:
-            name = getattr(w, "_field_name", None)
-            if name is not None:
-                anchors[name] = y
-            y += w.size.height  # 含字段间分隔 widget 的高度
+        for w in self._field_widgets:
+            anchors[w._field_name] = y
+            y += w.outer_size.height  # size 只是内容区, outer_size 才含顶边分隔线
         self._cur_anchors = anchors
         return y
 
@@ -1746,6 +1754,8 @@ class ViewApp(App):
             detail = self.query_one("#detail", VerticalScroll)
         except NoMatches:
             return  # DataTable 高亮事件可能在 teardown 后触发
+        if not detail.is_attached:
+            return  # 帧后回调落在退出过程中: DOM 还在但已卸载, mount 会抛 MountError
         idx = self.view_indices[cursor_row]
         prev_field = self._current_field()  # 切样本前当前字段, 新样本对齐同名字段
         # 整个切样本+定位期间抑制 scroll 反查, 避免 mount/布局微调把当前字段冲成顶部字段
@@ -1760,21 +1770,75 @@ class ViewApp(App):
             split_turns=True,
             highlight=self._search_re,
         )
+        self._fields = [(name, rend) for name, rend, _ in sections]
+        self._field_texts = [plain for _, _, plain in sections]
         self._field_widgets = []
-        self._field_texts = []
-        to_mount: List[Static] = []
-        for i, (name, rend, plain) in enumerate(sections):
-            if i:
-                to_mount.append(Static(Rule(style="dim"), classes="detail-sep"))
-            w = _FieldStatic(rend, name)  # 字段块自处理点击
-            self._field_widgets.append(w)
-            self._field_texts.append(plain)
-            to_mount.append(w)
-        if to_mount:
-            detail.mount(*to_mount)
+        # 分批挂载: Textual 布局要给每个字段折行求高, 耗时与样本总长成正比 (几百条消息的
+        # agent 轨迹要一秒)。首批只挂够填满两屏的字段, 余下在帧后逐批追加 (_mount_more),
+        # 期间照常响应按键; 跳到还没挂的字段时由 _scroll_to_field_i 当场补挂。
+        self._mount_gen += 1
+        self._mount_upto(self._batch_end(0, self._first_batch_chars()))
         # 布局完成后 (widget.size 才确定): 算真实锚点 → 定位到绑定字段 → 刷新状态栏
         self._detail_gen += 1
         self.call_after_refresh(self._after_detail_render, prev_field, self._detail_gen)
+
+    def _first_batch_chars(self) -> int:
+        """首批字符预算: 约两屏 (按终端尺寸粗估, 足够盖住详情视口)。"""
+        return max(4000, self.size.width * self.size.height * 2)
+
+    _MORE_BATCH_CHARS = 20000  # 后续每批字符预算: 布局约几十毫秒, 批间让出给按键
+
+    def _batch_end(self, start: int, budget: int) -> int:
+        """从 start 起按纯文本长度累加到 budget, 返回批次终点 (至少含一个字段)。"""
+        end, used = start, 0
+        while end < len(self._fields) and (end == start or used < budget):
+            used += len(self._field_texts[end])
+            end += 1
+        return end
+
+    def _mount_upto(self, n: int) -> bool:
+        """挂上前 n 个字段 (已挂的跳过)。返回是否新挂了 widget。"""
+        start = len(self._field_widgets)
+        if n <= start:
+            return False
+        new = [_FieldStatic(rend, name) for name, rend in self._fields[start:n]]
+        self._field_widgets.extend(new)
+        self.query_one("#detail", VerticalScroll).mount(*new)
+        return True
+
+    def _mount_more(self, gen: int) -> None:
+        """帧后追加下一批字段, 布局完成后再接着挂, 直到挂完或样本已换。"""
+        if gen != self._mount_gen or not self.is_running:
+            return
+        try:
+            detail = self.query_one("#detail", VerticalScroll)
+        except NoMatches:
+            return
+        if not detail.is_attached:
+            return
+        start = len(self._field_widgets)
+        if start >= len(self._fields):
+            return
+        self._mount_upto(self._batch_end(start, self._MORE_BATCH_CHARS))
+        self.call_after_refresh(self._after_mount_more, gen)
+
+    def _after_mount_more(self, gen: int) -> None:
+        if gen != self._mount_gen or not self.is_running:
+            return
+        if self._field_widgets and self._field_widgets[-1].size.height == 0:
+            self.call_after_refresh(self._after_mount_more, gen)  # 布局还没轮到, 再等一帧
+            return
+        self._recompute_anchors()
+        self._mount_more(gen)
+
+    def _refresh_detail_latest(self, gen: int) -> None:
+        if gen != self._highlight_gen:
+            return
+        try:
+            row = self.query_one("#table", DataTable).cursor_row
+        except NoMatches:
+            return  # 帧后回调可能落在 teardown 之后
+        self._refresh_detail(row)
 
     def _after_detail_render(self, prev_field: Optional[str], gen: int) -> None:
         if not self.is_running or not self.screen_stack:
@@ -1794,13 +1858,27 @@ class ViewApp(App):
         self._update_status()
         # 定位稳定后一帧再解锁 (期间的布局微调 scroll 不冲当前字段)
         self.call_after_refresh(self._unlock_nav)
+        self.call_after_refresh(self._mount_more, self._mount_gen)
 
-    def _scroll_to_field_i(self) -> None:
-        """把当前字段 widget 顶部对齐视口顶 (底部字段自动 clamp 可见)。"""
-        if not self._field_widgets:
+    def _scroll_to_field_i(self, tries: int = 3) -> None:
+        """把当前字段 widget 顶部对齐视口顶 (底部字段自动 clamp 可见)。
+
+        目标字段还没挂 (分批挂载) 就当场挂到它为止, 等它布局出高度再滚 —— 没布局的
+        widget 区域为空, 这时滚过去会落到顶部。
+        """
+        target = self._field_i
+        if not 0 <= target < len(self._fields):
+            return  # 等布局期间样本已换 (字段变少)
+        if self._mount_upto(target + 1) or (
+            tries > 0 and self._field_widgets[target].size.height == 0
+        ):
+            self._nav_lock = True
+            self.call_after_refresh(self._scroll_to_field_i, tries - 1)
             return
+        self._recompute_anchors()
         detail = self.query_one("#detail", VerticalScroll)
-        detail.scroll_to_widget(self._field_widgets[self._field_i], top=True, animate=False)
+        detail.scroll_to_widget(self._field_widgets[target], top=True, animate=False)
+        self.call_after_refresh(self._unlock_nav)
 
     def action_next_field(self) -> None:
         self._goto_field(self._field_i + 1)
@@ -1832,10 +1910,10 @@ class ViewApp(App):
 
         推进 _detail_gen: 用户显式导航后, 上一次渲染排队中的"对齐回原字段"作废。
         """
-        if not self._field_widgets:
+        if not self._fields:
             return
         self._detail_gen += 1
-        self._field_i = max(0, min(i, len(self._field_widgets) - 1))
+        self._field_i = max(0, min(i, len(self._fields) - 1))
         self._nav_lock = True  # 抑制本次滚动触发的反查回退当前字段
         self._scroll_to_field_i()
         self._update_status()
@@ -2112,7 +2190,10 @@ class ViewApp(App):
         self.call_after_refresh(self._unlock_follow_move)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self._refresh_detail(event.cursor_row)
+        # 详情渲染挪到下一帧: 长对话一次渲染几百毫秒, 长按 j 时按键排队, 逐个同步渲染会
+        # 让光标卡在后面慢慢追。这里只记代次, 帧后回调发现已被更新的高亮取代就不画。
+        self._highlight_gen += 1
+        self.call_after_refresh(self._refresh_detail_latest, self._highlight_gen)
         if (
             self._follow
             and self._follow_pinned

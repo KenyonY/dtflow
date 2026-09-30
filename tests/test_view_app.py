@@ -528,8 +528,10 @@ async def test_detail_scroll_keeps_field_across_samples():
     async with app.run_test(size=(80, 12)) as pilot:
         detail = app.query_one("#detail")
         await pilot.pause()
-        # 锚点测量与 Textual 实际渲染高度一致
-        assert app._cur_anchors["f19"] + 1 == detail.virtual_size.height
+        # 锚点测量与 Textual 实际渲染高度一致 (末字段 = 顶边分隔线 1 行 + 内容 1 行)
+        last = app._field_widgets[-1]
+        assert last.outer_size.height == 2
+        assert app._cur_anchors["f19"] + last.outer_size.height == detail.virtual_size.height
         # 滚到字段 f12
         detail.scroll_to(y=app._cur_anchors["f12"], animate=False)
         await pilot.pause()
@@ -3616,3 +3618,97 @@ async def test_value_filter_title_shows_renamed_column():
         title = str(app.screen.query_one("#picker-title").render())
         assert "src" in title and app.screen._col == "source"
         await pilot.press("escape")
+
+
+def _long_chat_rows():
+    """第 0 行是几百条长消息的 agent 轨迹 (远超两屏, 触发分批挂载), 其后是短样本。"""
+    long_msgs = [
+        {"role": "user" if k % 2 == 0 else "assistant", "content": f"m{k} " + "x" * 400}
+        for k in range(300)
+    ]
+    short = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}]
+    return [{"messages": long_msgs}] + [{"messages": short} for _ in range(5)]
+
+
+async def _wait_all_mounted(pilot, app):
+    for _ in range(400):
+        if len(app._field_widgets) == len(app._fields):
+            return
+        await pilot.pause(0.01)
+    raise AssertionError("detail fields never finished mounting")
+
+
+@pytest.mark.asyncio
+async def test_detail_mounts_long_sample_in_batches(monkeypatch):
+    # 长样本首批只挂够两屏的字段, 余下由 _mount_more 帧后逐批补齐, 锚点最终覆盖全部字段
+    monkeypatch.setattr(ViewApp, "_mount_more", lambda self, gen: None)  # 先冻住后台批次
+    app = _make_app(_long_chat_rows())
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert len(app._fields) == 300
+        assert 0 < len(app._field_widgets) < 300
+        monkeypatch.undo()  # 放开后台批次, 链式补齐
+        app._mount_more(app._mount_gen)
+        await _wait_all_mounted(pilot, app)
+        await pilot.pause()
+        assert list(app._cur_anchors) == app._field_names()
+
+
+@pytest.mark.asyncio
+async def test_goto_unmounted_field_mounts_and_scrolls(monkeypatch):
+    # 跳到还没挂上的字段: 当场补挂到它为止, 布局后对齐到视口顶
+    monkeypatch.setattr(ViewApp, "_mount_more", lambda self, gen: None)
+    app = _make_app(_long_chat_rows())
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        target = 150
+        assert len(app._field_widgets) <= target
+        app._goto_field(target)
+        for _ in range(5):
+            await pilot.pause()
+        assert len(app._field_widgets) == target + 1
+        name = app._field_names()[target]
+        assert app._current_field() == name
+        detail = app.query_one("#detail")
+        assert app._top_field(app._cur_anchors, detail.scroll_offset.y) == name
+
+
+@pytest.mark.asyncio
+async def test_switching_sample_cancels_pending_batches(monkeypatch):
+    # 长样本还没挂完就换到短样本: 旧代次的批次作废, 详情只剩短样本的字段
+    mount_more = ViewApp._mount_more
+    monkeypatch.setattr(ViewApp, "_mount_more", lambda self, gen: None)
+    app = _make_app(_long_chat_rows())
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        old_gen = app._mount_gen
+        app.query_one("#table").move_cursor(row=1)
+        for _ in range(3):
+            await pilot.pause()
+        mount_more(app, old_gen)  # 迟到的旧批次
+        await pilot.pause()
+        assert len(app._fields) == 2
+        assert len(app._field_widgets) == 2
+        assert len(app.query_one("#detail").children) == 2
+
+
+@pytest.mark.asyncio
+async def test_queued_cursor_moves_render_detail_once(monkeypatch):
+    # 长按 j 时按键排队: 表格光标逐行走, 详情只按最后一行渲染一次
+    from textual import events
+
+    app = _chat_app(30)
+    calls = []
+    orig = ViewApp._refresh_detail
+    monkeypatch.setattr(
+        ViewApp, "_refresh_detail", lambda self, r: (calls.append(r), orig(self, r))
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        calls.clear()
+        for _ in range(10):
+            app.post_message(events.Key("j", "j"))
+        for _ in range(10):
+            await pilot.pause()
+        assert app.query_one("#table").cursor_row == 10
+        assert calls == [10]
