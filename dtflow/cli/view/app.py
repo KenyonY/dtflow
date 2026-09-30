@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 
@@ -643,12 +644,48 @@ class HelpScreen(ModalScreen):
         self.query_one("#help-box", VerticalScroll).focus()  # 矮终端下可用 ↑↓ 滚动
 
 
+@lru_cache(maxsize=None)
+def _sixel_once_class():
+    """textual-image 的 sixel widget, 改成"同样尺寸的图只往终端发一次"。
+
+    原实现每次重画都先用空格铺满图的区域再整张重发 sixel; 而 Textual 弹出一个屏幕就会
+    连续整屏重画好几次。tmux 收到写在图上的空格会删掉整张图, 于是每重画一次就闪一次, 经 SSH
+    还要多传几 MB。这里图一旦完整发过, 之后的重画只输出"光标右移"跳过这片区域 (不写字符,
+    终端上的图原样保留); 尺寸变了 (终端缩放) 才重发。get_style_at 为取鼠标处样式也会调
+    render_lines, 同样走跳过分支, 不再每次移动鼠标都重新编码一行 sixel。
+    """
+    from rich.segment import ControlType
+    from textual_image.widget import sixel
+
+    class _OnceImpl(sixel._ImageSixelImpl):
+        _painted: Optional[Size] = None  # 已完整发给终端的那张图的内容尺寸
+
+        def render_lines(self, crop: Region) -> List[Strip]:
+            if self._painted == self.content_size:
+                skip = Segment(f"\x1b[{crop.width}C", control=((ControlType.CURSOR_FORWARD, 0),))
+                return [Strip([skip], cell_length=crop.width)] * crop.height
+            lines = super().render_lines(crop)
+            if lines and crop == Region(0, 0, *self.content_size):
+                self._painted = self.content_size
+            return lines
+
+    class OnceSixelImage(sixel.Image, Renderable=sixel._NoopRenderable):
+        def compose(self) -> ComposeResult:
+            yield _OnceImpl(self.image, self._sixel_options)
+
+    return OnceSixelImage
+
+
 class ImageScreen(ModalScreen):
     """一条样本里的图片逐张大图显示: ←/→ 切换, Esc/q/i 关闭 (弹窗占满全屏, 没有"框外")。
 
     放弹窗而不是详情里: 弹窗能用满整屏分辨率, 也不牵动详情的分批挂载与锚点定位。
-    读图 (可能要下载) 在线程 worker 里, 结果按代次作废, 快速翻页不会串图。
     图由 textual-image 画 (kitty 图形协议 / sixel / 半块字符, 启动时探测终端决定)。
+
+    图先由 ViewApp.show_image 在线程里读好, 再带着结果建弹窗 —— 从第一帧起就完整。
+    若先开空弹窗、读完再挂图片, 挂载后的重新布局会让 sixel 整张重发好几遍 (textual-image
+    每次重画都先清空区域再发图), 经 tmux/SSH 就是明显的闪烁; 翻页同理, 读好下一张后
+    整屏替换, 旧图留到新图就绪。
     """
 
     BINDINGS = [
@@ -657,91 +694,74 @@ class ImageScreen(ModalScreen):
         Binding("right,l", "go(1)", t("Next", "下一张")),
     ]
 
-    def __init__(self, items: List[Tuple[str, str]], start: int, root: str):
+    def __init__(self, items: List[Tuple[str, str]], i: int, loaded, error: str):
         super().__init__()
         self._items = items  # [(出处如 msg0 user, 引用)]
-        self._i = start
-        self._root = root
-        self._gen = 0
+        self._i = i
+        self._loaded = loaded  # image.Loaded; None 表示读图失败, 原因在 error
+        self._error = error
 
     def compose(self) -> ComposeResult:
         with Vertical(id="img-box"):
-            yield Static(id="img-title")
-            yield Vertical(id="img-view")
+            yield Static(self._title(), id="img-title")
+            with Vertical(id="img-view"):
+                yield self._body()
             yield Static(
                 t("←/→ switch · Esc close", "←/→ 切换 · Esc 关闭"), id="img-hint", markup=False
             )
 
-    def on_mount(self) -> None:
-        self._show()
-
-    def dismiss(self, result=None):
-        # 关闭的各条路 (Esc/q/i) 都走这里; 卸载时子 widget 已先没了, 等不到那会儿
-        self._release()
-        return super().dismiss(result)
-
-    def action_go(self, step: int) -> None:
-        self._i = (self._i + step) % len(self._items)
-        self._show()
-
-    def _title(self, extra: str) -> Text:
+    def _title(self) -> Text:
         where, ref = self._items[self._i]
         title = Text(f"{self._i + 1}/{len(self._items)} · {where} · ", style="bold")
         title.append(render.image_label(ref))
-        if extra:
-            title.append(f" · {extra}", style="dim")
+        if self._loaded is not None:
+            title.append(f" · {self._loaded.describe()}", style="dim")
         return title
 
-    def _release(self) -> None:
-        """让 textual-image 把图从终端里删掉: kitty 协议传过去的图不随界面重绘消失。"""
-        for w in self.query("#img-view .img"):
-            w.image = None
-
-    def _clear(self) -> None:
-        self._release()
-        self.query_one("#img-view", Vertical).remove_children()
-
-    def _show(self) -> None:
-        self._gen += 1
-        gen, (_, ref) = self._gen, self._items[self._i]
-        self.query_one("#img-title", Static).update(self._title(t("loading…", "加载中…")))
-        self._clear()
-
-        def load() -> None:
-            try:
-                got = image.load(ref, self._root)
-            except image.ImageError as e:
-                self.app.call_from_thread(self._loaded, gen, None, str(e))
-            else:
-                self.app.call_from_thread(self._loaded, gen, got, "")
-
-        self.run_worker(load, thread=True, exclusive=True, group="image")
-
-    def _loaded(self, gen: int, got, error: str) -> None:
-        if gen != self._gen or not self.is_attached:
-            return  # 已翻到别的图 / 已关闭
-        view = self.query_one("#img-view", Vertical)
-        if got is None:
-            self.query_one("#img-title", Static).update(self._title(""))
-            view.mount(Static(Text(f"⚠ {error}", style="bold red"), classes="img-msg"))
-            return
-        self.query_one("#img-title", Static).update(self._title(got.describe()))
-        # 终端图形能力只能在 Textual 接管 stdin 前探测 (_run_tui 里按格式做了);
+    def _body(self):
+        if self._loaded is None:
+            return Static(Text(f"⚠ {self._error}", style="bold red"), classes="img-msg")
+        # 终端图形能力只能在 Textual 接管 stdin 前探测 (见 _probe_graphics);
         # 没探测过就 import 会在运行中抢读 stdin, 所以此处只认已加载的模块
         widgets = sys.modules.get("textual_image.widget")
         if widgets is None:
-            view.mount(
-                Static(
-                    t(
-                        "No preview: the terminal graphics probe runs at startup only when the "
-                        "first window has images, and it did not run or failed",
-                        "无法预览: 终端图形探测只在首窗口有图时于启动时进行, 这次没有进行或失败了",
-                    ),
-                    classes="img-msg",
-                )
+            return Static(
+                t(
+                    "No preview: the terminal graphics probe runs at startup only when the "
+                    "first window has images, and it did not run or failed",
+                    "无法预览: 终端图形探测只在首窗口有图时于启动时进行, 这次没有进行或失败了",
+                ),
+                classes="img-msg",
             )
-            return
-        view.mount(widgets.Image(got.image, classes="img"))
+        cls = _sixel_once_class() if widgets.Image is widgets.SixelImage else widgets.Image
+        return cls(self._loaded.image, classes="img")
+
+    def release(self) -> None:
+        """离开这张图 (翻页/关闭) 前让终端丢掉它, 否则会留下幽灵图:
+
+        - kitty 协议: 图存在终端显存里, 不随界面重绘消失, 由 textual-image 发删除指令;
+        - sixel 经 tmux: tmux 把图存在 pane 里, 普通写字符不会删它 (只有清行/清屏/滚动会)。
+          翻页时新图画在旧图原处, 旧图不会被删, 每次整 pane 重画都连同旧图一起重发 (实测
+          翻一次多发一张, 越翻越闪)。这里清一次屏让 tmux 释放, 紧接着的整屏重画 (换屏必然
+          发生) 把界面画回来。走 Textual 自己的输出通道, 与界面输出同序。
+        """
+        sixel = False
+        for w in self.query("#img-view .img"):
+            sixel = sixel or isinstance(w, _sixel_once_class())
+            w.image = None
+        if sixel:
+            self.app._driver.write("\x1b[2J")
+            self.app.refresh(repaint=True)
+
+    def dismiss(self, result=None):
+        # 关闭的各条路 (Esc/q/i) 都走这里; 卸载时子 widget 已先没了, 等不到那会儿
+        self.release()
+        return super().dismiss(result)
+
+    def action_go(self, step: int) -> None:
+        # 从"最后请求的那张"起算而不是当前显示的: 下一张还在读 (如下载) 时连按也能累加
+        want = self.app._image_want
+        self.app.show_image(self._items, (want + step) % len(self._items), replace=True)
 
 
 class ColumnPicker(ModalScreen):
@@ -1315,6 +1335,8 @@ class ViewApp(App):
     ):
         super().__init__()
         self._image_root = image_root  # 图片相对路径的基准目录 (--image-root, 默认数据文件所在目录)
+        self._image_gen = 0  # 读图代次 (show_image)
+        self._image_want = 0  # 最后请求显示的是第几张 (翻页从这里起算)
         self.source = source  # RowSource: 随机窗口访问, 内存 O(窗口)
         # | 管道: 结果替换 source; 原文件留着给 r 回退和下一次管道 (输入永远是原文件)
         self._origin_source = source
@@ -3052,7 +3074,38 @@ class ViewApp(App):
         if not items:
             self.notify(t("No images in this sample", "这条样本没有图片"))
             return
-        self.push_screen(ImageScreen(items, min(start, len(items) - 1), self._image_root))
+        self.show_image(items, min(start, len(items) - 1), replace=False)
+
+    def show_image(self, items: List[Tuple[str, str]], i: int, replace: bool) -> None:
+        """线程里读第 i 张图 (可能要下载), 读好再开弹窗 (replace: 替换当前图片弹窗)。
+
+        按代次作废迟到结果: 连按 → 只显示最后一张; 读图期间关了弹窗 → 不再弹出。
+        """
+        self._image_gen += 1
+        self._image_want = i
+        gen, ref = self._image_gen, items[i][1]
+
+        def load() -> None:
+            try:
+                got, error = image.load(ref, self._image_root), ""
+            except image.ImageError as e:
+                got, error = None, str(e)
+            self.call_from_thread(self._image_ready, gen, items, i, got, error, replace)
+
+        self.run_worker(load, thread=True, exclusive=True, group="image")
+
+    def _image_ready(self, gen: int, items, i: int, got, error: str, replace: bool) -> None:
+        if gen != self._image_gen:
+            return
+        showing = isinstance(self.screen, ImageScreen)
+        if replace != showing:
+            return  # 翻页途中弹窗已关 / 开图途中已被别的弹窗盖住
+        new = ImageScreen(items, i, got, error)
+        if replace:
+            self.screen.release()
+            self.switch_screen(new)
+        else:
+            self.push_screen(new)
 
     def on_fast_data_table_cell_clicked(self, msg: FastDataTable.CellClicked) -> None:
         vis = self._visible_columns()

@@ -288,10 +288,15 @@ async def test_popup_by_key_switches_and_reports_errors(tmp_path):
         assert "1/2 · msg0 user · a.png" in title and "40×30 PNG" in title
         assert scr.query("#img-view .img")  # 图片 widget 已挂上
 
-        await pilot.press("right")
+        await pilot.press("right")  # 翻页是读好下一张后整屏替换, 所以要重新取 screen
         await _settle(app, pilot)
+        scr = app.screen
         assert "2/2 · msg2 user · missing.png" in str(scr.query_one("#img-title").render())
         assert "文件不存在" in str(scr.query_one("#img-view .img-msg").render())
+
+        await pilot.press("right", "right")  # 连按: 按次数累加 (2/2 → 1/2 → 2/2), 不叠屏
+        await _settle(app, pilot)
+        assert app.screen._i == 1 and len(app.screen_stack) == 2
 
         await pilot.press("escape")
         await pilot.pause()
@@ -358,3 +363,30 @@ def test_terminal_probe_only_when_first_window_has_images(tmp_path, has_image, p
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == str(probed)
+
+
+@pytest.mark.asyncio
+async def test_sixel_image_is_sent_once_then_skipped():
+    # 图已发给终端后, 重画只输出"光标右移"跳过该区域: 不重发 sixel, 也不写空格
+    # (tmux 收到写在图上的空格会删图, 每次重画都闪)。尺寸变了才重发。
+    from textual.app import App
+    from textual.geometry import Region
+
+    from dtflow.cli.view.app import _sixel_once_class
+
+    class Demo(App):
+        def compose(self):
+            yield _sixel_once_class()(Image.new("RGB", (40, 20), "red"), id="img")
+
+    app = Demo()
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        impl = app.query_one("#img").children[0]
+        full = Region(0, 0, *impl.content_size)
+        text = lambda lines: "".join(seg.text for line in lines for seg in line)  # noqa: E731
+        impl._painted = None
+        assert "\x1bP" in text(impl.render_lines(full))  # 首次: 发 sixel
+        again = impl.render_lines(full)
+        assert "\x1bP" not in text(again) and " " not in text(again)
+        assert len(again) == full.height and all(line.cell_length == full.width for line in again)
+        assert "\x1bP" not in text(impl.render_lines(Region(0, 1, full.width, 1)))  # 取样式那种单行
