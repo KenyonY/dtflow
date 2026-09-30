@@ -390,3 +390,116 @@ async def test_sixel_image_is_sent_once_then_skipped():
         assert "\x1bP" not in text(again) and " " not in text(again)
         assert len(again) == full.height and all(line.cell_length == full.width for line in again)
         assert "\x1bP" not in text(impl.render_lines(Region(0, 1, full.width, 1)))  # 取样式那种单行
+
+
+# --------------------------------------------------------------------------- #
+# 详情内缩略图
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def graphics(monkeypatch):
+    """假装终端能画真图 (测试进程没有 TTY): 用会渲染成字符的 UnicodeImage 代替。"""
+    from textual_image.widget import UnicodeImage
+
+    from dtflow.cli.view import app as A
+
+    monkeypatch.setattr(A, "_graphics_image_class", lambda: UnicodeImage)
+    return UnicodeImage
+
+
+@pytest.mark.asyncio
+async def test_thumbnails_follow_their_message(tmp_path, graphics):
+    from dtflow.cli.view.app import THUMB_ROWS, ImageScreen, _Thumbs
+
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await _settle(app, pilot)
+        detail = list(app.query_one("#detail").children)
+        names = [getattr(w, "_field_name", None) for w in detail]
+        thumbs = [w for w in detail if isinstance(w, _Thumbs)]
+        # 图挂在引用它的消息后面: msg0 一张, msg2 一张, 没图的 msg1 没有
+        assert [t._field_name for t in thumbs] == ["msg0", "msg2"]
+        assert names.index("msg0") + 1 == detail.index(thumbs[0])
+        assert all(t.outer_size.height == THUMB_ROWS for t in thumbs)
+        assert isinstance(thumbs[0].children[0], graphics)  # 读好后占位换成图
+        assert "文件不存在" in str(thumbs[1].children[0].render())  # 坏图写原因
+        # 锚点把缩略图条高度算进所属消息
+        anchors = app._cur_anchors
+        f0 = app._field_widgets[0]
+        assert anchors["msg1"] == f0.outer_size.height + THUMB_ROWS
+
+        th = thumbs[1]  # 点第二条消息的缩略图 → 从那张开大图
+        await pilot.click(offset=(th.region.x + 1, th.region.y))
+        await _settle(app, pilot)
+        assert isinstance(app.screen, ImageScreen) and app.screen._i == 1
+        await pilot.press("escape")
+        await pilot.pause()
+
+        app.query_one("#table").move_cursor(row=1)  # 换到纯文本样本: 缩略图跟着清掉
+        await _settle(app, pilot)
+        await pilot.pause()
+        assert not app.query(_Thumbs) and not app._thumbs
+
+
+@pytest.mark.asyncio
+async def test_no_thumbnails_without_graphics(tmp_path):
+    from dtflow.cli.view.app import _Thumbs
+
+    app = _vlm_app(tmp_path)  # 测试进程不是 TTY: 探测结果不是 kitty/sixel
+    async with app.run_test(size=(140, 45)) as pilot:
+        await _settle(app, pilot)
+        assert not app.query(_Thumbs)
+        assert R_PREFIX_IN_DETAIL(app)
+
+
+def R_PREFIX_IN_DETAIL(app):  # noqa: N802
+    from dtflow.cli.view import render as R
+
+    return any(R.IMAGE_LINE_PREFIX in t for t in app._field_texts)  # 🖼 路径行照常在
+
+
+@pytest.mark.asyncio
+async def test_sixel_thumbnails_hold_while_scrolling_and_free_in_tmux(tmp_path, monkeypatch):
+    # sixel 缩略图: 滚动开始时每行 ECH 擦 1 格 (tmux 只在擦除时删存着的图, 否则成残影),
+    # 滚动中画空白不发图, 停下 _HOLD_SECONDS 后再发。
+    import re
+
+    from dtflow.cli.view import app as A
+
+    monkeypatch.setattr(A, "_graphics_image_class", lambda: A._sixel_once_class())
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(140, 20)) as pilot:
+        await _settle(app, pilot)
+        await pilot.pause(A.ViewApp._HOLD_SECONDS + 0.2)  # 挂载后的等待期结束
+        assert app._thumbs and not app.images_hold
+        written = []
+        monkeypatch.setattr(app._driver, "write", lambda data: written.append(data))
+        detail = app.query_one("#detail")
+        detail.scroll_to(y=3, animate=False)
+        await pilot.pause()
+        assert app.images_hold  # 滚动中停画
+        ech = [w for w in written if "\x1b[1X" in w]
+        assert ech and len(re.findall(r"\x1b\[1X", ech[0])) == detail.content_region.height
+        await pilot.pause(A.ViewApp._HOLD_SECONDS + 0.2)
+        assert not app.images_hold  # 停下后恢复
+
+
+@pytest.mark.asyncio
+async def test_sixel_blank_while_hold():
+    from textual.app import App
+    from textual.geometry import Region
+
+    from dtflow.cli.view.app import _sixel_once_class
+
+    class Demo(App):
+        images_hold = True
+
+        def compose(self):
+            yield _sixel_once_class()(Image.new("RGB", (40, 20), "red"), id="img")
+
+    app = Demo()
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        impl = app.query_one("#img").children[0]
+        lines = impl.render_lines(Region(0, 0, *impl.content_size))
+        assert "\x1bP" not in "".join(seg.text for line in lines for seg in line)
+        assert impl._painted is None

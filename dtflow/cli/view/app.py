@@ -24,6 +24,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.dom import NoScreen
 from textual.errors import NoWidget
 from textual.geometry import Offset, Region, Size
 from textual.message import Message
@@ -644,6 +645,23 @@ class HelpScreen(ModalScreen):
         self.query_one("#help-box", VerticalScroll).focus()  # 矮终端下可用 ↑↓ 滚动
 
 
+def _graphics_image_class():
+    """终端能画真图 (kitty 图形协议 / sixel) 时返回图片 widget 类, 否则 None。
+
+    启动时没探测 (首窗口没图) 就不 import: 运行中探测会抢读 stdin。半块字符
+    (两个协议都不支持) 也返回 None —— 十来行高的缩略图画成色块认不出内容, 不如不画。
+    """
+    widgets = sys.modules.get("textual_image.widget")
+    if widgets is None:
+        return None
+    if widgets.Image is widgets.SixelImage:
+        return _sixel_once_class()
+    from textual_image.renderable import Image as renderable
+    from textual_image.renderable import TGPImage
+
+    return widgets.Image if renderable is TGPImage else None
+
+
 @lru_cache(maxsize=None)
 def _sixel_once_class():
     """textual-image 的 sixel widget, 改成"同样尺寸的图只往终端发一次"。
@@ -653,20 +671,36 @@ def _sixel_once_class():
     还要多传几 MB。这里图一旦完整发过, 之后的重画只输出"光标右移"跳过这片区域 (不写字符,
     终端上的图原样保留); 尺寸变了 (终端缩放) 才重发。get_style_at 为取鼠标处样式也会调
     render_lines, 同样走跳过分支, 不再每次移动鼠标都重新编码一行 sixel。
+    图在屏幕上的位置变了 (详情滚动) 或中间被别的屏幕盖过, 就重发。
     """
     from rich.segment import ControlType
     from textual_image.widget import sixel
 
     class _OnceImpl(sixel._ImageSixelImpl):
-        _painted: Optional[Size] = None  # 已完整发给终端的那张图的内容尺寸
+        _painted: Optional[tuple] = None  # 已发给终端的那次: (尺寸, 屏幕上的可见区域, 屏幕栈代次)
+
+        def _paint_key(self) -> Optional[tuple]:
+            try:
+                where = self.screen.find_widget(self).visible_region
+            except (NoScreen, NoWidget):
+                return None
+            # 屏幕栈代次: 被别的弹窗盖过 (帮助/值筛选/大图) 再露出来时终端上的图已被覆盖, 要重发
+            return (self.content_size, where, getattr(self.app, "screen_epoch", 0))
 
         def render_lines(self, crop: Region) -> List[Strip]:
-            if self._painted == self.content_size:
+            if getattr(self.app, "images_hold", False):
+                # 滚动中: 画空白不发图, 停下后再发一次 (翻页动画每帧都发会又慢又闪)
+                self._painted = None
+                blank = Segment(" " * crop.width, style=self._get_clear_style())
+                return [Strip([blank], cell_length=crop.width)] * crop.height
+            key = self._paint_key()
+            if key is not None and key == self._painted:
                 skip = Segment(f"\x1b[{crop.width}C", control=((ControlType.CURSOR_FORWARD, 0),))
                 return [Strip([skip], cell_length=crop.width)] * crop.height
             lines = super().render_lines(crop)
-            if lines and crop == Region(0, 0, *self.content_size):
-                self._painted = self.content_size
+            # 只有整块可见区域都画了才算发过 (get_style_at 只取一行, 那次不算)
+            if lines and key is not None and crop.size == key[1].size:
+                self._painted = key
             return lines
 
     class OnceSixelImage(sixel.Image, Renderable=sixel._NoopRenderable):
@@ -674,6 +708,48 @@ def _sixel_once_class():
             yield _OnceImpl(self.image, self._sixel_options)
 
     return OnceSixelImage
+
+
+THUMB_ROWS = 10  # 缩略图条高度 (行): 挂载时就定死, 分批挂载与锚点才不跟着读图结果跳动
+
+
+class _Thumbs(Horizontal):
+    """一条消息的图片缩略图条, 挂在该消息字段块的后面。
+
+    先放占位, 图由 ViewApp 在线程里读好后 fill 进来; 点哪张就从哪张开大图弹窗。
+    """
+
+    def __init__(self, field_name: str, refs, image_cls):
+        super().__init__(classes="thumbs")
+        self.styles.height = THUMB_ROWS
+        self._field_name = field_name
+        self._refs = refs
+        self._image_cls = image_cls
+
+    def compose(self) -> ComposeResult:
+        for ref in self._refs:
+            yield Static(Text(f"⋯ {render.image_label(ref)}", style="dim"), classes="thumb-msg")
+
+    def fill(self, k: int, got, error: str) -> None:
+        """第 k 张读好了 (got=None 表示失败): 占位换成图或原因。"""
+        if k >= len(self.children):  # 读得比挂载快 (本地小图): 占位还没 compose 出来, 下一帧再填
+            self.call_after_refresh(self.fill, k, got, error)
+            return
+        old = self.children[k]
+        if got is None:
+            new = Static(Text(f"⚠ {error}", style="red"), classes="thumb-msg")
+        else:
+            new = self._image_cls(got.image, classes="thumb")
+        self.mount(new, after=old)
+        old.remove()
+
+    def on_click(self, event: events.Click) -> None:
+        w, _ = self.screen.get_widget_at(event.screen_x, event.screen_y)  # 被点中的那张 (或其内部)
+        while w is not None and w.parent is not self:
+            w = w.parent
+        if w is not None:
+            event.stop()
+            self.app.open_detail_image(self._field_name, list(self.children).index(w))
 
 
 class ImageScreen(ModalScreen):
@@ -733,7 +809,8 @@ class ImageScreen(ModalScreen):
                 ),
                 classes="img-msg",
             )
-        cls = _sixel_once_class() if widgets.Image is widgets.SixelImage else widgets.Image
+        # 大图弹窗在半块字符终端上也画: 铺满屏的色块还能看个大概
+        cls = _graphics_image_class() or widgets.Image
         return cls(self._loaded.image, classes="img")
 
     def release(self) -> None:
@@ -1209,6 +1286,9 @@ class ViewApp(App):
     /* Field separator as a border, not a widget of its own: halves the widget count on long chats */
     .detail-field { border-top: solid $foreground 20%; }
     .detail-field:first-child { border-top: none; }
+    .thumbs { width: 1fr; overflow: hidden hidden; }
+    .thumbs .thumb { height: 100%; width: auto; margin-right: 2; }
+    .thumbs .thumb-msg { width: auto; margin-right: 2; }
     /* Mouse over the split line: light up the border along it to show it can be dragged */
     #table.split-hot { border: round $accent; }
     #detail.split-hot { border: round $accent; }
@@ -1408,6 +1488,11 @@ class ViewApp(App):
         # _refresh_detail); 字段序号 _field_i 始终按 _fields 算。
         self._fields: List[Tuple[str, RenderableType]] = []
         self._field_widgets: List[Static] = []
+        self._field_images: Dict[str, Tuple[str, ...]] = {}  # 字段名 (msgN) → 该消息的图片引用
+        self._thumbs: Dict[str, _Thumbs] = {}  # 已挂上的缩略图条, 按所属字段名
+        self.screen_epoch = 0  # 屏幕栈变化次数 (推/弹/换屏各 +1), sixel 图据此判断是否要重发
+        self.images_hold = False  # 详情滚动中: sixel 缩略图先画空白, 停下后再发 (见 _hold_thumbs)
+        self._hold_timer = None
         self._mount_gen = 0  # 分批挂载代次: 换样本即作废上一样本还没挂完的批次
         self._cur_anchors: Dict[str, int] = {}
         self._field_i = 0  # 当前字段索引 (滚动时同步顶部字段, n/N/点击 精确接管)
@@ -2010,7 +2095,17 @@ class ViewApp(App):
             self.screen.release_mouse()
         self.query_one("#table", FastDataTable).cancel_drag()
         self._set_split_hint(False)
+        self._free_thumb_images()  # 弹窗盖住详情: tmux 里存着的缩略图不释放会被重画到弹窗上
+        self.screen_epoch += 1
         return super().push_screen(*args, **kwargs)
+
+    def pop_screen(self):
+        self.screen_epoch += 1  # 见 _sixel_once_class: 露出来的屏幕上的 sixel 图要重发
+        return super().pop_screen()
+
+    def switch_screen(self, screen):
+        self.screen_epoch += 1
+        return super().switch_screen(screen)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if not self._on_split_edge(event.screen_x, event.screen_y):
@@ -2093,6 +2188,7 @@ class ViewApp(App):
             self._fields = []
             self._field_widgets = []
             self._field_texts = []
+            self._thumbs = {}
             self._cur_anchors = {}
             self._mount_gen += 1
         self._update_status()  # 放在清详情之后: 边框副标题的当前字段要读到清空后的状态
@@ -2108,6 +2204,9 @@ class ViewApp(App):
         for w in self._field_widgets:
             anchors[w._field_name] = y
             y += w.outer_size.height  # size 只是内容区, outer_size 才含顶边分隔线
+            th = self._thumbs.get(w._field_name)
+            if th is not None:  # 缩略图条紧跟在字段块后面, 高度归这个字段
+                y += th.outer_size.height
         self._cur_anchors = anchors
         return y
 
@@ -2128,11 +2227,13 @@ class ViewApp(App):
 
     def _on_detail_scroll(self) -> None:
         """详情滚动: 非导航态下把当前字段同步为顶部可见字段, 再刷新状态栏。
+        有 sixel 缩略图时顺带让它们停画, 滚完再发 (_hold_thumbs)。
 
         已经滚到底时不反查: 那里"顶部可见字段"根本区分不了末尾几段 —— 跳到最后一段时
         滚动被 max_scroll_y 夹住, 该段并没有真对齐到视口顶, 顶部仍是前一段, 反查就会
         把刚跳过去的字段拽回来 (n 走到末尾会原地停一次)。到底之后保留显式导航的结果。
         """
+        self._hold_thumbs()
         if not self._nav_lock:
             try:
                 detail = self.query_one("#detail", VerticalScroll)
@@ -2174,6 +2275,18 @@ class ViewApp(App):
         self._fields = [(name, rend) for name, rend, _ in sections]
         self._field_texts = [plain for _, _, plain in sections]
         self._field_widgets = []
+        self._free_thumb_images()
+        self._thumbs = {}
+        # 缩略图只在终端能画真图时挂 (见 _graphics_image_class); 字段名与 split_turns 的 msgN 对齐
+        self._field_images = (
+            {
+                f"msg{i}": turn.images
+                for i, turn in enumerate(_normalize_turns(self._apply_renames(self.all_rows[idx])))
+                if turn.images
+            }
+            if _graphics_image_class() is not None
+            else {}
+        )
         # 分批挂载: Textual 布局要给每个字段折行求高, 耗时与样本总长成正比 (几百条消息的
         # agent 轨迹要一秒)。首批只挂够填满两屏的字段, 余下在帧后逐批追加 (_mount_more),
         # 期间照常响应按键; 跳到还没挂的字段时由 _scroll_to_field_i 当场补挂。
@@ -2213,10 +2326,92 @@ class ViewApp(App):
         start = len(self._field_widgets)
         if n <= start:
             return False
-        new = [_FieldStatic(rend, name) for name, rend in self._fields[start:n]]
-        self._field_widgets.extend(new)
-        self.query_one("#detail", VerticalScroll).mount(*new)
+        fields = [_FieldStatic(rend, name) for name, rend in self._fields[start:n]]
+        self._field_widgets.extend(fields)
+        widgets: List[Static] = []
+        thumbs: List[_Thumbs] = []
+        for f in fields:
+            widgets.append(f)
+            refs = self._field_images.get(f._field_name)
+            if refs:
+                th = _Thumbs(f._field_name, refs, _graphics_image_class())
+                self._thumbs[f._field_name] = th
+                widgets.append(th)
+                thumbs.append(th)
+        self.query_one("#detail", VerticalScroll).mount(*widgets)
+        if thumbs:
+            self._hold_thumbs()  # 刚挂上时布局还会微调 (字段对齐/分隔线), 稳定后再发
+            self._load_thumbs(thumbs)
         return True
+
+    # ------------------------------------------------------------------ #
+    # sixel 缩略图与 tmux: tmux 把 sixel 图存在 pane 里, 之后每次整 pane 重画都重发;
+    # Textual 在旧位置重画文字并不会让 tmux 删图 (实测), 所以图一旦挪走/被盖住, 旧图就成了
+    # 残影, 且越积越多 (翻一页上百张)。能让 tmux 删图的是擦除操作: ECH 会删掉与该行相交
+    # 的所有图。于是: 缩略图将失效 (滚动/切样本/弹窗) 时先在详情每行擦 1 格释放; 滚动中
+    # 不发图, 停下后每张只发一次。擦掉的格子在紧接着的一帧里本来就会被重画。
+    # ------------------------------------------------------------------ #
+    _HOLD_SECONDS = 0.2
+
+    def _sixel_thumbs(self) -> bool:
+        return bool(self._thumbs) and _graphics_image_class() is _sixel_once_class()
+
+    def _free_thumb_images(self) -> None:
+        """让终端 (tmux) 丢掉详情区里的 sixel 缩略图: 每行用 ECH 擦 1 格。"""
+        if not self._sixel_thumbs():
+            return
+        try:
+            r = self.query_one("#detail", VerticalScroll).content_region
+        except NoMatches:
+            return
+        self._driver.write("".join(f"\x1b[{y + 1};{r.x + 1}H\x1b[1X" for y in range(r.y, r.bottom)))
+
+    def _hold_thumbs(self) -> None:
+        """滚动/挂载/填图: 释放旧图并停画; 最后一次变动 _HOLD_SECONDS 后可见缩略图各发一次。
+
+        位置每变一次 tmux 就多存一份旧图, 所以宁可晚 0.2 秒, 也只在稳定的位置发。
+        """
+        if not self._sixel_thumbs():
+            return
+        if not self.images_hold:
+            self._free_thumb_images()
+            self.images_hold = True
+        if self._hold_timer is not None:
+            self._hold_timer.stop()
+        self._hold_timer = self.set_timer(self._HOLD_SECONDS, self._release_thumbs)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._hold_thumbs()  # 终端缩放 (含 tmux 接入时的几次尺寸同步): 缩略图位置会变
+
+    def _release_thumbs(self) -> None:
+        self._hold_timer = None
+        self.images_hold = False
+        for th in self._thumbs.values():
+            for w in th.query("*"):
+                w.refresh()
+
+    def _load_thumbs(self, thumbs: List[_Thumbs]) -> None:
+        """线程里逐张读图 (可能要下载), 读好一张填一张; 已换样本则不再填。"""
+        root = self._image_root
+
+        def load() -> None:
+            for th in thumbs:
+                for k, ref in enumerate(th._refs):
+                    if not th.is_attached:
+                        return  # 已换样本, 后面的也不用读了
+                    try:
+                        got, error = image.load(ref, root), ""
+                    except image.ImageError as e:
+                        got, error = None, str(e)
+                    self.call_from_thread(self._fill_thumb, th, k, got, error)
+
+        # 不设 exclusive: 分批挂载时同一样本会有好几批缩略图在读, 不能互相取消
+        self.run_worker(load, thread=True, group="thumbs")
+
+    def _fill_thumb(self, th: _Thumbs, k: int, got, error: str) -> None:
+        if th.is_attached:
+            self._hold_thumbs()  # 占位换成图会改宽度, 同上等稳定再发
+            th.fill(k, got, error)
 
     def _mount_more(self, gen: int) -> None:
         """帧后追加下一批字段, 布局完成后再接着挂, 直到挂完或样本已换。"""
