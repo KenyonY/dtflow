@@ -111,7 +111,7 @@ VisiData and tabiew are general table tools, jless and fx are JSON tree viewers,
 
 ## The CLI: a Swiss army knife for training data
 
-Every data command follows one contract: `FILE` may be `-` (NDJSON from stdin); without `-o` data goes to stdout while progress and summaries go to stderr. Conditions, derived fields, sort keys, group keys and join keys are **Python expressions with the current row as `x`**.
+Every data command follows one contract: `FILE` may be `-` (NDJSON from stdin), a directory, or a quoted glob; without `-o` data goes to stdout while progress and summaries go to stderr. Conditions, derived fields, sort keys, group keys and join keys are **Python expressions with the current row as `x`**.
 
 ```bash
 # primitives

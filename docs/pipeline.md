@@ -6,7 +6,7 @@ Freeze a chain of commands in YAML and run it reproducibly with `dt run`. **A st
 # pipeline.yaml
 version: "1.0"
 seed: 42
-input: raw_data.jsonl
+input: raw_data.jsonl          # a directory or a glob works too: shards/  or  "shards/*.jsonl"
 output: processed.jsonl
 
 steps:

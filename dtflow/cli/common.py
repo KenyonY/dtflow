@@ -10,24 +10,10 @@ from rich.cells import cell_len, get_character_cell_size
 
 from ..i18n import t
 
-# 支持的文件格式
-# 命令入口的格式门禁：必须与 storage/io.py 实际读得动的格式一致。
-# .tsv 有 _load_tsv、.ndjson 由 _detect_format 落到 jsonl 分支，二者早就能读，
-# 只是漏在这份名单外 —— 门禁比实现窄，等于把能用的文件挡在门外。
-SUPPORTED_FORMATS = {
-    ".csv",
-    ".tsv",
-    ".jsonl",
-    ".ndjson",
-    ".json",
-    ".xlsx",
-    ".xls",
-    ".parquet",
-    ".arrow",
-    ".feather",
-    ".flaxkv",
-    ".kv",
-}
+# 支持的文件格式: 单一来源在 storage/io.INPUT_SUFFIXES (门禁必须与实现读得动的一致)
+from ..storage.io import INPUT_SUFFIXES
+
+SUPPORTED_FORMATS = set(INPUT_SUFFIXES)
 
 # 支持流式处理的格式（与 streaming.py 保持一致）
 STREAMING_FORMATS = {

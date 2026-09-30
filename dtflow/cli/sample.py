@@ -28,7 +28,7 @@ from .output import (
     log,
     resolve_format,
 )
-from .pipe import write_output
+from .pipe import input_files, write_output
 
 
 def _sample_from_list(
@@ -166,6 +166,9 @@ def sample(
                 )
             )
 
+    # 目录 / glob 输入: 没有单个文件可做快速采样, 走流式路径 (与 stdin 相同)
+    multi = not stdin and len(input_files(filename)) > 1
+
     # 处理 where 筛选
     where_conditions = where or []
     filtered_data = None
@@ -212,7 +215,7 @@ def sample(
             if filtered_data is not None:
                 # 已筛选的数据，直接采样
                 sampled = _sample_from_list(filtered_data, num, type, seed)
-            elif stdin:
+            elif stdin or multi:
                 st = open_input(filename)
                 if num <= 0:
                     sampled = st.collect()
@@ -284,7 +287,7 @@ def sample(
         return
 
     # TTY --pretty 或 --format=table: 走 rich 格式感知渲染
-    if stdin:
+    if stdin or multi:
         total_count, file_size = None, None
     elif _is_flaxkv_path(filepath):
         total_count = _get_file_row_count(filepath)
@@ -643,7 +646,7 @@ def slice_data(
             emit_json(item, indent=True)
         return
 
-    if is_stdin(filename) or _is_flaxkv_path(filepath):
+    if is_stdin(filename) or _is_flaxkv_path(filepath) or filepath.is_dir():
         file_size = None
     else:
         file_size = filepath.stat().st_size

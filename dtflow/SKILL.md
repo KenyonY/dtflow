@@ -128,7 +128,7 @@ dt join   train.jsonl test.jsonl --on "first_user(x)" --anti           # 去掉�
 | `join LEFT RIGHT --on EXPR [--inner\|--anti] [--prefix P]` | 左连接（默认）/ 内连接 / 反连接 `--anti`（只留右表无匹配的左行：去测试集污染、找未处理样本）；左表流式，右表入内存，左表字段优先 | 右表 |
 | `stats FILE --schema` | 嵌套 schema 推断 | 前 1000 行 |
 
-所有数据命令：`FILE` 可为 `-`；无 `-o` 写 stdout（终端直出只预览前 50 行）；`clean`/`dedupe` 用 `-i` 原地写回。`.jsonl.gz` 透明读写。
+所有数据命令：`FILE` 可为 `-`，也可为**目录**（其中全部数据文件，按名排序首尾相接）或**加引号的 glob**（`'shards/*.jsonl'`）；无 `-o` 写 stdout（终端直出只预览前 50 行）；`clean`/`dedupe` 用 `-i` 原地写回（需单个文件）。`.jsonl.gz` 透明读写。`dt concat a.jsonl -o a.parquet` 单文件即格式转换。
 
 ## 字段路径语法（指定单个字段的参数用）
 

@@ -8,6 +8,7 @@ dt view: 交互式表格 + 详情浏览器 (Textual TUI)。
 
 from __future__ import annotations
 
+import glob
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -148,6 +149,11 @@ def view(
     # view 此前自己 print+SystemExit 且完全不查格式, 于是 dt view x.md 会一路把
     # markdown 当 jsonl 解析, 最后抛个"第 1 行不是合法 JSON"——答非所问。
     filepath = Path(filename)
+    if filepath.is_dir() or glob.has_magic(filename):
+        die_usage(
+            t("dt view takes a single file", "dt view 只接受单个文件"),
+            suggestion=t("dt concat DIR | dt view -", "dt concat DIR | dt view -"),
+        )
     _require_file_exists(filepath)
     _check_file_format(filepath)
 

@@ -164,14 +164,15 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
     - FlaxList 源：利用 O(1) 随机访问，免加载统计
     """
     from ..streaming import _count_rows_fast, _is_flaxkv_path
+    from .pipe import input_files
 
-    ext = filepath.suffix.lower()
+    files = [Path(f) for f in input_files(str(filepath))]  # 目录 / glob → 逐文件求和
 
     # FlaxList 是目录，不能用 stat().st_size
-    if ext in (".flaxkv", ".kv") or _is_flaxkv_path(filepath):
+    if any(_is_flaxkv_path(f) for f in files):
         file_size = None
     else:
-        file_size = filepath.stat().st_size
+        file_size = sum(f.stat().st_size for f in files)
 
     # 格式化文件大小
     def format_size(size: int) -> str:
@@ -182,7 +183,8 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
         return f"{size:.1f} TB"
 
     # 快速统计行数（_count_rows_fast 覆盖所有支持的格式；None = 文件损坏/无法解析）
-    total = _count_rows_fast(str(filepath))
+    counts = [_count_rows_fast(str(f)) for f in files]
+    total = sum(counts) if all(c is not None for c in counts) else None
 
     # 读取前几条数据推断字段结构: 走与其它命令相同的 open_input (.ndjson/.tsv/.gz 一并覆盖),
     # 惰性取前 5 行, 不因格式各写一套分支

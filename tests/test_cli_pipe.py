@@ -88,6 +88,58 @@ class TestStdinStdout:
             concat("-", "-")
         assert ei.value.exit_code == 2
 
+    def test_concat_single_file_converts_format(self, tmp_path, capsys, not_tty):
+        f = tmp_path / "d.jsonl"
+        f.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))
+        out = tmp_path / "d.parquet"
+        concat(str(f), output=str(out))
+        assert json.loads(capsys.readouterr().out)["stats"]["output_rows"] == 3
+        assert [r["id"] for r in load_data(str(out))] == [1, 2, 2]
+
+    def _shards(self, tmp_path):
+        d = tmp_path / "shards"
+        d.mkdir()
+        for name, rows in (("b.jsonl", ROWS[1:]), ("a.jsonl", ROWS[:1])):
+            (d / name).write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+        (d / "README.md").write_text("ignored")
+        return d
+
+    def test_directory_input_reads_every_data_file_in_name_order(self, tmp_path, capsys, not_tty):
+        d = self._shards(tmp_path)
+        head(str(d), num=0)
+        assert [r["id"] for r in _stdout_rows(capsys)] == [1, 2, 2]
+        concat(str(d))
+        assert [r["id"] for r in _stdout_rows(capsys)] == [1, 2, 2]
+
+    def test_glob_input_action_lists_files(self, tmp_path, capsys, not_tty):
+        from dtflow.cli.ops import filter_cmd
+
+        d = self._shards(tmp_path)
+        out = tmp_path / "o.jsonl"
+        filter_cmd(str(d / "*.jsonl"), "x.id > 1", output=str(out))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["input"] == [str(d / "a.jsonl"), str(d / "b.jsonl")]
+        assert payload["stats"]["output_rows"] == 2
+
+    def test_directory_without_data_files_is_not_found(self, tmp_path, not_tty):
+        (tmp_path / "empty").mkdir()
+        with pytest.raises(typer.Exit) as ei:
+            head(str(tmp_path / "empty"), num=1)
+        assert ei.value.exit_code == 3
+
+    def test_unsupported_file_in_glob_is_usage_error(self, tmp_path, not_tty):
+        (tmp_path / "x.txt").write_text("nope")
+        (tmp_path / "y.txt").write_text("nope")
+        with pytest.raises(typer.Exit) as ei:
+            head(str(tmp_path / "*.txt"), num=1)
+        assert ei.value.exit_code == 2
+
+    def test_in_place_rejects_directory(self, tmp_path, not_tty):
+        d = self._shards(tmp_path)
+        with pytest.raises(typer.Exit) as ei:
+            clean(str(d), strip=True, in_place=True)
+        assert ei.value.exit_code == 2
+
     def test_sample_output_emits_action_json(self, tmp_path, capsys, not_tty):
         f = tmp_path / "d.jsonl"
         f.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))

@@ -111,7 +111,7 @@ VisiData / tabiew 是通用表格工具，jless / fx 是 JSON 树查看器，csv
 
 ## CLI：训练数据的瑞士军刀
 
-所有数据命令遵守同一套约定：`FILE` 写 `-` 从 stdin 读 NDJSON；不加 `-o` 数据写 stdout，进度和摘要只走 stderr。筛选条件、派生字段、排序键、分组键、连接键一律是 **Python 表达式，当前行叫 `x`**。
+所有数据命令遵守同一套约定：`FILE` 写 `-` 从 stdin 读 NDJSON，也可以是目录或加引号的 glob；不加 `-o` 数据写 stdout，进度和摘要只走 stderr。筛选条件、派生字段、排序键、分组键、连接键一律是 **Python 表达式，当前行叫 `x`**。
 
 ```bash
 # 数据原语

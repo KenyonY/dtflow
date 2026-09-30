@@ -5,6 +5,7 @@
 ## Conventions every data command follows
 
 - **`FILE` may be `-`**: read NDJSON from stdin. `.gz` input is detected by magic bytes.
+- **`FILE` may be a directory or a quoted glob**: `dt filter shards/ "…"` reads every supported data file in the directory, `dt head 'data/*.jsonl'` the matches (quote it so the shell does not expand it); files are read one after another in name order, and `-o` summaries list them. `-i` and `dt view` need a single file.
 - **No `-o` → data goes to stdout** as NDJSON (`--format json|csv` for whole documents). Progress, warnings and summaries go to stderr, so stdout is always machine-readable. When stdout is a terminal and no format is forced, the first 50 rows are shown as a **table** with the same columns `dt view` would show (`turns/roles/first_user/chars/calls` for chat data, every top-level field otherwise); `--format table` renders everything, `--format ndjson` restores raw lines.
 - **`-o FILE`** writes the file (atomically, via a temp file in the same directory) and prints an action summary: a panel on stderr in a terminal, a JSON object on stdout otherwise. This holds for `sample`/`head`/`tail`/`slice`/`split` too.
 - **`-o -`** is the same as no `-o`.
@@ -129,7 +130,9 @@ dt split data.jsonl --ratio=0.8 -o /tmp/output
 dt filter data.jsonl "x.ok" | dt split - -o out/ --name clean   # stdin needs a directory and a prefix
 
 dt concat a.jsonl b.jsonl -o merged.jsonl           # no -o -> stdout; at most one - from stdin
+dt concat shards/ -o all.jsonl                      # a directory: every data file in it
 dt concat a.jsonl.gz b.parquet | dt head -
+dt concat a.jsonl -o a.parquet                      # one file: format conversion (output format follows the extension)
 ```
 
 ## Inspecting

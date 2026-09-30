@@ -7,7 +7,14 @@ import tempfile
 
 import pytest
 
-from dtflow.streaming import StreamingTransformer, load_sharded, load_stream, process_shards
+from dtflow.streaming import (
+    StreamingTransformer,
+    expand_inputs,
+    load_sharded,
+    load_stream,
+    open_stream,
+    process_shards,
+)
 
 # flaxkv 后端为可选依赖 (flaxkv2 未必在公共 PyPI); 未安装时跳过相关测试
 requires_flaxkv = pytest.mark.skipif(_ilu.find_spec("flaxkv2") is None, reason="flaxkv2 未安装")
@@ -861,3 +868,58 @@ class TestGzipStreaming:
         n = load_stream(str(p)).transform(lambda x: {"id2": x.id * 2}).save(str(out))
         assert n == 10 and out.read_bytes()[:2] == b"\x1f\x8b"
         assert [r["id2"] for r in load_stream(str(out)).collect()] == list(range(0, 20, 2))
+
+
+class TestExpandInputs:
+    """FILE 参数的目录 / glob 展开 (分片数据集直接当一个输入)。"""
+
+    def _tree(self, tmp_path):
+        d = tmp_path / "data"
+        d.mkdir()
+        (d / "b.jsonl").write_text('{"i": 2}\n')
+        (d / "a.jsonl").write_text('{"i": 1}\n')
+        (d / "c.csv").write_text("i\n3\n")
+        (d / "notes.md").write_text("not data")
+        (d / "sub").mkdir()
+        return d
+
+    def test_directory_lists_supported_files_sorted(self, tmp_path):
+        d = self._tree(tmp_path)
+        assert [os.path.basename(f) for f in expand_inputs(str(d))] == [
+            "a.jsonl",
+            "b.jsonl",
+            "c.csv",
+        ]
+        assert expand_inputs("-") == ["-"]
+        assert expand_inputs(str(d / "a.jsonl")) == [str(d / "a.jsonl")]
+
+    def test_glob_and_errors(self, tmp_path):
+        d = self._tree(tmp_path)
+        assert [os.path.basename(f) for f in expand_inputs(str(d / "*.jsonl"))] == [
+            "a.jsonl",
+            "b.jsonl",
+        ]
+        with pytest.raises(FileNotFoundError):
+            expand_inputs(str(d / "nope*"))
+        with pytest.raises(FileNotFoundError):
+            expand_inputs(str(d / "sub"))  # 目录里没有数据文件
+        # 文件名本身含 glob 字符: 无命中但路径存在 → 当普通文件
+        weird = d / "x[1].jsonl"
+        weird.write_text('{"i": 9}\n')
+        assert expand_inputs(str(weird)) == [str(weird)]
+
+    def test_flaxkv_directory_is_not_a_data_directory(self, tmp_path):
+        pytest.importorskip("flaxkv2")
+        from dtflow.storage.io import save_data
+
+        db = tmp_path / "kvdata"
+        save_data([{"i": 1}], str(db))  # 无后缀 → flaxkv, DB 目录里只有 .mdb
+        assert expand_inputs(str(db)) == [str(db)]
+        assert [r["i"] for r in open_stream(str(db))] == [1]
+
+    def test_open_stream_chains_in_name_order_with_total(self, tmp_path):
+        d = self._tree(tmp_path)
+        st = open_stream(str(d))
+        assert [r["i"] for r in st] == [1, 2, 3]
+        assert open_stream(str(d))._total == 3
+        assert [r["i"] for r in open_stream(str(d / "*.jsonl"))] == [1, 2]

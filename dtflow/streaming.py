@@ -1090,21 +1090,72 @@ def _stdin_bytes():
     return buf
 
 
-def open_stream(filename: str) -> StreamingTransformer:
-    """任意输入 → 数据流: ``-`` 读 stdin NDJSON; 流式格式 load_stream; 其余全量读后包成流。
+def expand_inputs(filename: str) -> List[str]:
+    """一个 FILE 参数 → 实际要读的文件列表 (按名排序)。
 
-    CLI 与 pipeline 共用的唯一入口 (CLI 层在外面加存在/格式校验与结构化报错)。
+    - ``-`` / 普通文件 / flaxkv 路径 → 自身
+    - 目录 → 其中所有受支持后缀的文件 (分片数据集的常态; flaxkv 的 DB 目录里只有 .mdb, 不会命中)
+    - 含 ``* ? [`` 的字符串 → glob (shell 里要加引号); 无命中但路径本身存在 → 当普通文件名
+    没有任何数据文件时抛 FileNotFoundError (调用方按"不存在"报)。
     """
-
-    from dtflow.storage.io import data_suffix, load_data
+    from dtflow.storage.io import INPUT_SUFFIXES, data_suffix
 
     if filename == "-":
-        return StreamingTransformer(_iter_jsonl(_stdin_bytes(), "<stdin>"), None, total=None)
+        return ["-"]
+    path = Path(filename)
+    if path.is_dir():
+        files = sorted(
+            str(f) for f in path.iterdir() if f.is_file() and data_suffix(f) in INPUT_SUFFIXES
+        )
+        if files:
+            return files
+        if any(f.suffix == ".mdb" for f in path.iterdir()):  # flaxkv 的 LMDB 目录
+            return [filename]
+        raise FileNotFoundError(
+            t(
+                f"No supported data files in directory: {filename}",
+                f"目录下没有支持的数据文件: {filename}",
+            )
+        )
+    if glob.has_magic(filename):
+        files = sorted(f for f in glob.glob(filename) if Path(f).is_file())
+        if files:
+            return files
+        if path.exists():  # 文件名本身含 [ 之类的字符
+            return [filename]
+        raise FileNotFoundError(t(f"No files match: {filename}", f"没有文件匹配: {filename}"))
+    return [filename]
+
+
+def _open_one(filename: str) -> StreamingTransformer:
+    from dtflow.storage.io import data_suffix, load_data
+
     path = Path(filename)
     if data_suffix(path) in STREAMING_FORMATS or _is_flaxkv_path(path):
         return load_stream(filename)
     data = load_data(filename)
     return StreamingTransformer(iter(data), filename, total=len(data))
+
+
+def open_stream(filename: str) -> StreamingTransformer:
+    """任意输入 → 数据流: ``-`` 读 stdin NDJSON; 流式格式 load_stream; 其余全量读后包成流;
+    目录 / glob 按 expand_inputs 展开后逐个打开、首尾相接 (惰性, 同一时刻只开一个文件)。
+
+    CLI 与 pipeline 共用的唯一入口 (CLI 层在外面加存在/格式校验与结构化报错)。
+    """
+    if filename == "-":
+        return StreamingTransformer(_iter_jsonl(_stdin_bytes(), "<stdin>"), None, total=None)
+    files = expand_inputs(filename)
+    if len(files) == 1:
+        return _open_one(files[0])
+    counts = [_count_rows_fast(f) for f in files]
+    total = sum(counts) if all(c is not None for c in counts) else None
+
+    def chained():
+        for f in files:
+            yield from _open_one(f)
+
+    return StreamingTransformer(chained(), filename, total=total)
 
 
 def load_sharded(pattern: str, batch_size: int = 10000) -> StreamingTransformer:
@@ -1215,9 +1266,9 @@ def _iter_jsonl(fileobj, name: str) -> Generator[Dict[str, Any], None, None]:
                     use_fallback = True
                     print(
                         t(
-                            f"[Warning] Line {i+1} contains non-standard JSON (e.g. NaN); "
+                            f"[Warning] Line {i + 1} contains non-standard JSON (e.g. NaN); "
                             f"switched to the standard json parser",
-                            f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                            f"[Warning] 第 {i + 1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
                         ),
                         file=sys.stderr,
                     )

@@ -42,20 +42,19 @@ def concat(
 
     Examples:
         dt concat a.jsonl b.jsonl -o merged.jsonl
+        dt concat shards/ -o all.jsonl                 # a directory = every data file in it
         dt concat data1.csv data2.csv data3.csv -o all.jsonl
+        dt concat a.jsonl -o a.parquet                 # one file = format conversion
         dt concat a.jsonl b.jsonl --strict -o merged.jsonl
         dt concat a.jsonl b.jsonl --dry-run -o merged.jsonl
         dt filter a.jsonl "x.ok" | dt concat - b.jsonl | dt head -
     """
     from ..streaming import StreamingTransformer
     from .common import _get_file_row_count
-    from .pipe import input_label, is_stdin, open_input, write_output
+    from .pipe import input_files, input_label, is_stdin, open_input, write_output
 
-    if len(files) < 2:
-        die_usage(
-            t("At least two input files are required", "至少需要两个输入文件"),
-            suggestion="dt concat a.jsonl b.jsonl -o merged.jsonl",
-        )
+    # 目录 / glob 先展开成具体文件, 后面的逐文件字段分析与计数才有对象
+    files = tuple(f for arg in files for f in ([arg] if is_stdin(arg) else input_files(arg)))
     if sum(is_stdin(f) for f in files) > 1:
         die_usage(t("stdin (-) may appear only once", "stdin (-) 只能出现一次"))
 

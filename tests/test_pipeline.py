@@ -340,3 +340,18 @@ def test_validate_rejects_unknown_keys_and_join_conflict(tmp_path):
     assert any("二选一" in e for e in validate_pipeline(str(cfg)))
     cfg.write_text("steps:\n  - type: group\n    by: x.a\n    agg: 'm=mean(r.v for r in g)'\n")
     assert validate_pipeline(str(cfg)) == []
+
+
+def test_run_pipeline_input_directory(tmp_path):
+    from dtflow.pipeline import run_pipeline
+    from dtflow.storage.io import load_data, save_data
+
+    d = tmp_path / "in"
+    d.mkdir()
+    save_data([{"a": 1}], str(d / "x.jsonl"))
+    save_data([{"a": 2}], str(d / "y.jsonl"))
+    cfg = tmp_path / "p.yaml"
+    cfg.write_text(f"input: {d}\nsteps:\n  - type: filter\n    expr: 'x.a > 1'\n")
+    out = tmp_path / "o.jsonl"
+    run_pipeline(str(cfg), output_file=str(out))
+    assert load_data(str(out)) == [{"a": 2}]

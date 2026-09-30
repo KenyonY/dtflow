@@ -97,6 +97,26 @@ def load_data(filepath: str, file_format: Optional[str] = None) -> List[Dict[str
         raise ValueError(f"Unknown file format: {file_format}")
 
 
+# 命令行能读的数据文件后缀 (.gz 透明: 由 data_suffix 剥掉再判断)。
+# 与本模块 load_data 实际读得动的格式一致, 是格式门禁与目录扫描的唯一来源。
+INPUT_SUFFIXES = frozenset(
+    {
+        ".csv",
+        ".tsv",
+        ".jsonl",
+        ".ndjson",
+        ".json",
+        ".xlsx",
+        ".xls",
+        ".parquet",
+        ".arrow",
+        ".feather",
+        ".flaxkv",
+        ".kv",
+    }
+)
+
+
 def data_suffix(filepath: Path) -> str:
     """去掉 .gz 后的数据后缀 (小写): x.jsonl.gz → .jsonl。格式门禁与格式判断都以它为准。"""
     name = filepath.name.lower()
@@ -213,9 +233,9 @@ def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
                         use_fallback = True
                         print(
                             t(
-                                f"[Warning] Line {i+1} contains non-standard JSON (e.g. NaN); "
+                                f"[Warning] Line {i + 1} contains non-standard JSON (e.g. NaN); "
                                 f"switched to the standard json parser",
-                                f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                                f"[Warning] 第 {i + 1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
                             ),
                             file=sys.stderr,
                         )

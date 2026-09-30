@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from ..i18n import t
-from ..streaming import StreamingTransformer, open_stream
+from ..streaming import StreamingTransformer, expand_inputs, open_stream
 from .common import _check_file_format, _require_file_exists
 from .output import (
     die_io_error,
@@ -44,12 +44,24 @@ def input_label(filename: str) -> str:
     return "<stdin>" if is_stdin(filename) else filename
 
 
+def input_files(filename: str) -> List[str]:
+    """FILE 参数实际展开成的文件列表 (目录 / glob), 供校验与 action 摘要用; stdin → ["<stdin>"]。"""
+    if is_stdin(filename):
+        return [input_label(filename)]
+    try:
+        return expand_inputs(filename)
+    except FileNotFoundError as e:
+        die_io_error(e, operation=t("Read", "读取"), path=filename)
+
+
 def open_input(filename: str) -> StreamingTransformer:
-    """``-`` → stdin NDJSON 流; 文件 → 存在/格式校验后, 流式格式 load_stream, 其余全量包成流。"""
+    """``-`` → stdin NDJSON 流; 文件 → 存在/格式校验后, 流式格式 load_stream, 其余全量包成流;
+    目录 / 引号 glob → 逐个校验后首尾相接 (见 streaming.expand_inputs)。"""
     if not is_stdin(filename):
-        path = Path(filename)
-        _require_file_exists(path)
-        _check_file_format(path)
+        for f in input_files(filename):
+            path = Path(f)
+            _require_file_exists(path)
+            _check_file_format(path)
     try:
         return open_stream(filename)
     except Exception as e:
@@ -300,7 +312,7 @@ def write_output(
     log(t(f"💾 Saved: {output}", f"💾 保存结果: {output}"))
     emit_action(
         action,
-        input_files=[input_label(f) for f in inputs],
+        input_files=[lbl for f in inputs for lbl in input_files(f)],
         output=output,
         stats={**(stats or {}), "output_rows": n},
         extra=extra,
@@ -324,6 +336,14 @@ def resolve_output(filename: str, output: Optional[str], in_place: bool) -> Opti
             die_usage(
                 t("Cannot write stdin input in place", "stdin 输入无法原地写回"),
                 suggestion=t("Use -o FILE or pipe the output", "用 -o FILE 或直接接管道"),
+            )
+        if len(input_files(filename)) > 1:
+            die_usage(
+                t(
+                    "A directory / glob input cannot be written in place",
+                    "目录/glob 输入无法原地写回",
+                ),
+                suggestion=t("Use -o FILE to write one file", "用 -o FILE 落到一个文件"),
             )
         return filename
     return None if output == STDIN else output
