@@ -211,7 +211,13 @@ def _s_clean(st, step):
         max_len_value=max_len_v,
         keep_set=set(keep) if keep else None,
         drop_fields_set=set(drop) if drop else None,
-        rename_map=rename if isinstance(rename, dict) else _kv(rename),
+        rename_map=(
+            rename
+            if isinstance(rename, dict)
+            else ops.parse_pairs(rename, "rename", need_value=True)
+            if rename is not None
+            else None
+        ),
         promote_list=_promote(promote),
         add_field_map=(
             step.get("add_field")
@@ -229,18 +235,8 @@ def _s_clean(st, step):
 
 
 def _kv(v: Any) -> Optional[Dict[str, str]]:
-    """ "a:b,c:d" → {"a": "b", "c": "d"}"""
-    if v is None:
-        return None
-    out = {}
-    for pair in str(v).split(","):
-        k, sep, val = pair.partition(":")
-        if not sep or not k.strip():
-            raise ValueError(
-                t(f"Expected key:value, got {pair!r}", f"应为 key:value, 得到 {pair!r}")
-            )
-        out[k.strip()] = val.strip()
-    return out
+    """ "a:b,c:d" → {"a": "b", "c": "d"}, 与 CLI 同一解析 (重复 key 报错)。"""
+    return None if v is None else ops.parse_pairs(v, "key:value")
 
 
 def _promote(v: Any) -> Optional[List[tuple]]:

@@ -19,6 +19,7 @@ from ..ops import (  # noqa: F401  测试与 _clean_data_single_pass 仍按旧�
     clean_rows,
     dedupe_key,
     dedupe_rows,
+    parse_pairs,
 )
 from ..streaming import StreamingTransformer
 from ..utils.field_path import get_field_with_spec
@@ -217,10 +218,10 @@ def clean(
         max_tokens_field, max_tokens_value = (
             _parse_len_param(max_tokens) if max_tokens else (None, None)
         )
-        rename_map = _parse_rename_param(rename) if rename else None
+        rename_map = parse_pairs(rename, "rename", need_value=True) if rename else None
         promote_list = _parse_promote_param(promote) if promote else None
-        add_field_map = _parse_kv_param(add_field, "add-field") if add_field else None
-        fill_map = _parse_kv_param(fill, "fill") if fill else None
+        add_field_map = parse_pairs(add_field, "add-field") if add_field else None
+        fill_map = parse_pairs(fill, "fill") if fill else None
     except ValueError as e:
         die_usage(str(e))
 
@@ -384,38 +385,6 @@ def clean(
     write_output(st, out, action="clean", inputs=[filename])
 
 
-def _parse_rename_param(param: str) -> Dict[str, str]:
-    """解析重命名参数，格式 'old:new' 或 'old1:new1,old2:new2'"""
-    rename_map = {}
-    for pair in param.split(","):
-        pair = pair.strip()
-        if ":" not in pair:
-            raise ValueError(
-                t(
-                    f"Invalid rename spec: {pair}, expected 'old:new'",
-                    f"重命名参数格式错误: {pair}，应为 'old:new'",
-                )
-            )
-        old, new = pair.split(":", 1)
-        old, new = old.strip(), new.strip()
-        if not old or not new:
-            raise ValueError(
-                t(
-                    f"Invalid rename spec: {pair}, field names must not be empty",
-                    f"重命名参数格式错误: {pair}，字段名不能为空",
-                )
-            )
-        if old in rename_map:
-            raise ValueError(
-                t(
-                    f"Invalid rename spec: {old} is renamed twice",
-                    f"重命名参数格式错误: {old} 出现了两次",
-                )
-            )
-        rename_map[old] = new
-    return rename_map
-
-
 def _parse_promote_param(param: str) -> List[tuple]:
     """
     解析提升参数，格式 'path' 或 'path:name'（逗号分隔多个）。
@@ -437,31 +406,6 @@ def _parse_promote_param(param: str) -> List[tuple]:
             raise ValueError(t(f"Invalid promote spec: {item}", f"promote 参数格式错误: {item}"))
         result.append((src, dst))
     return result
-
-
-def _parse_kv_param(param: str, param_name: str) -> Dict[str, str]:
-    """解析 key:value 格式参数（通用），用于 --add-field 和 --fill"""
-    kv_map = {}
-    for pair in param.split(","):
-        pair = pair.strip()
-        if ":" not in pair:
-            raise ValueError(
-                t(
-                    f"Invalid {param_name} spec: {pair}, expected 'key:value'",
-                    f"{param_name} 参数格式错误: {pair}，应为 'key:value'",
-                )
-            )
-        key, value = pair.split(":", 1)
-        key, value = key.strip(), value.strip()
-        if not key:
-            raise ValueError(
-                t(
-                    f"Invalid {param_name} spec: {pair}, key must not be empty",
-                    f"{param_name} 参数格式错误: {pair}，key 不能为空",
-                )
-            )
-        kv_map[key] = value
-    return kv_map
 
 
 def _parse_len_param(param: str) -> tuple:

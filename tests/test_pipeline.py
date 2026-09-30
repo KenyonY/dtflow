@@ -355,3 +355,21 @@ def test_run_pipeline_input_directory(tmp_path):
     out = tmp_path / "o.jsonl"
     run_pipeline(str(cfg), output_file=str(out))
     assert load_data(str(out)) == [{"a": 2}]
+
+
+def test_clean_step_rejects_duplicate_keys(tmp_path):
+    """pipeline 的 clean 步与 dt clean 共用解析: 同一字段出现两次报错, 不静默取后者。"""
+    import pytest
+
+    from dtflow.pipeline import run_pipeline
+
+    src = tmp_path / "in.jsonl"
+    src.write_text('{"a":1,"x":2}\n')
+    for key, spec in (("rename", "a:b,a:c"), ("fill", "a:1,a:2"), ("add_field", "k:1,k:2")):
+        cfg = tmp_path / f"{key}.yaml"
+        cfg.write_text(
+            f"version: '1.0'\ninput: {src}\noutput: {tmp_path}/out.jsonl\n"
+            f"steps:\n  - type: clean\n    {key}: '{spec}'\n"
+        )
+        with pytest.raises(ValueError, match="twice|两次"):
+            run_pipeline(str(cfg))

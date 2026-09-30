@@ -7,13 +7,12 @@ import typer
 
 from dtflow.cli.clean import (
     _clean_data_single_pass,
-    _parse_kv_param,
     _parse_len_param,
     _parse_promote_param,
-    _parse_rename_param,
     clean,
     dedupe,
 )
+from dtflow.ops import parse_pairs
 from dtflow.storage.io import load_data, save_data
 
 # ============== Fixtures ==============
@@ -358,23 +357,23 @@ class TestParamParsing:
 
     def test_parse_rename_single(self):
         """Test parsing single rename parameter."""
-        result = _parse_rename_param("old:new")
+        result = parse_pairs("old:new", "rename", need_value=True)
         assert result == {"old": "new"}
 
     def test_parse_rename_multiple(self):
         """Test parsing multiple rename parameters."""
-        result = _parse_rename_param("a:b,c:d")
+        result = parse_pairs("a:b,c:d", "rename", need_value=True)
         assert result == {"a": "b", "c": "d"}
 
     def test_parse_rename_invalid(self):
         """Test invalid rename parameter."""
         with pytest.raises(ValueError):
-            _parse_rename_param("no_colon")
+            parse_pairs("no_colon", "rename", need_value=True)
 
     def test_parse_rename_empty_name(self):
         """Test rename with empty field name."""
         with pytest.raises(ValueError):
-            _parse_rename_param(":new")
+            parse_pairs(":new", "rename", need_value=True)
 
     def test_parse_promote_default_name(self):
         """Test promote uses last segment as default name."""
@@ -393,18 +392,18 @@ class TestParamParsing:
 
     def test_parse_kv_param(self):
         """Test parsing key:value parameters."""
-        result = _parse_kv_param("source:web,version:1.0", "add-field")
+        result = parse_pairs("source:web,version:1.0", "add-field")
         assert result == {"source": "web", "version": "1.0"}
 
     def test_parse_kv_param_invalid(self):
         """Test invalid key:value parameter."""
         with pytest.raises(ValueError):
-            _parse_kv_param("no_colon", "fill")
+            parse_pairs("no_colon", "fill")
 
     def test_parse_kv_param_empty_key(self):
         """Test key:value with empty key."""
         with pytest.raises(ValueError):
-            _parse_kv_param(":value", "fill")
+            parse_pairs(":value", "fill")
 
 
 # ============== Clean Single Pass Tests ==============
@@ -600,7 +599,10 @@ def test_rename_item_swap_chain_and_merge():
 def test_rename_param_rejects_same_field_twice():
     import pytest
 
-    from dtflow.cli.clean import _parse_rename_param
+    from dtflow.ops import parse_pairs
 
     with pytest.raises(ValueError):
-        _parse_rename_param("a:b,a:c")
+        parse_pairs("a:b,a:c", "rename", need_value=True)
+    with pytest.raises(ValueError):
+        parse_pairs("a:", "rename", need_value=True)
+    assert parse_pairs("a:,b:2", "fill") == {"a": "", "b": "2"}
