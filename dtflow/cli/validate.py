@@ -7,6 +7,7 @@ from typing import Optional
 
 from rich.markup import escape
 
+from ..i18n import t
 from ..schema import alpaca_schema, dpo_schema, openai_chat_schema, sharegpt_schema
 from .output import (
     die,
@@ -69,15 +70,23 @@ def validate(
     # 确定 Schema
     if preset is None:
         die_usage(
-            "必须指定预设 Schema (--preset)",
-            suggestion=f"可用预设: {', '.join(AVAILABLE_PRESETS)}; 例如: dt validate {filename} --preset=openai_chat",
+            t("A preset schema is required (--preset)", "必须指定预设 Schema (--preset)"),
+            suggestion=t(
+                f"Available presets: {', '.join(AVAILABLE_PRESETS)}; "
+                f"e.g. dt validate {filename} --preset=openai_chat",
+                f"可用预设: {', '.join(AVAILABLE_PRESETS)}; "
+                f"例如: dt validate {filename} --preset=openai_chat",
+            ),
         )
 
     preset_lower = preset.lower().replace("-", "_")
     if preset_lower not in PRESET_SCHEMAS:
         die_usage(
-            f"未知的预设 Schema: {preset}",
-            suggestion=f"可用预设: {', '.join(AVAILABLE_PRESETS)}",
+            t(f"Unknown preset schema: {preset}", f"未知的预设 Schema: {preset}"),
+            suggestion=t(
+                f"Available presets: {', '.join(AVAILABLE_PRESETS)}",
+                f"可用预设: {', '.join(AVAILABLE_PRESETS)}",
+            ),
         )
 
     schema = PRESET_SCHEMAS[preset_lower]()
@@ -88,15 +97,18 @@ def validate(
     if not data:
         die(
             "empty_file",
-            "文件为空",
-            suggestion=f"确认输入文件包含有效记录: {filepath}",
+            t("File is empty", "文件为空"),
+            suggestion=t(
+                f"Make sure the input file contains valid records: {filepath}",
+                f"确认输入文件包含有效记录: {filepath}",
+            ),
             exit_code=1,
         )
 
     total = len(data)
-    log(f"[bold]验证文件:[/bold] {filepath.name}")
-    log(f"[bold]预设 Schema:[/bold] {preset}")
-    log(f"[bold]总记录数:[/bold] {total}")
+    log(t(f"[bold]File:[/bold] {filepath.name}", f"[bold]验证文件:[/bold] {filepath.name}"))
+    log(t(f"[bold]Preset schema:[/bold] {preset}", f"[bold]预设 Schema:[/bold] {preset}"))
+    log(t(f"[bold]Total records:[/bold] {total}", f"[bold]总记录数:[/bold] {total}"))
 
     # 验证（使用并行或串行）
     use_parallel = workers != 1 and total >= 1000
@@ -117,7 +129,7 @@ def validate(
 
             with Progress(
                 SpinnerColumn(),
-                TextColumn("[bold blue]验证数据"),
+                TextColumn(t("[bold blue]Validating", "[bold blue]验证数据")),
                 BarColumn(),
                 TaskProgressColumn(),
                 console=_progress_console,
@@ -131,7 +143,7 @@ def validate(
                     data, workers=workers, progress_callback=update_progress
                 )
         except ImportError:
-            log("🔍 验证数据...")
+            log(t("🔍 Validating...", "🔍 验证数据..."))
             valid_data, invalid_results = schema.validate_parallel(data, workers=workers)
 
         invalid_count = len(invalid_results)
@@ -197,7 +209,7 @@ def validate(
 
     # 详细模式：显示 Schema 定义
     if verbose:
-        log("[bold]Schema 定义:[/bold]")
+        log(t("[bold]Schema definition:[/bold]", "[bold]Schema 定义:[/bold]"))
         log(str(schema))
 
 
@@ -209,22 +221,32 @@ def _render_validate_report(report: dict, max_errors: int) -> None:
     ratio_pct = report["valid_ratio"] * 100
 
     if invalid == 0:
-        body = f"[green]✅ 全部通过![/green] {valid}/{total} 条记录有效 (100%)"
+        body = t(
+            f"[green]✅ All passed![/green] {valid}/{total} records valid (100%)",
+            f"[green]✅ 全部通过![/green] {valid}/{total} 条记录有效 (100%)",
+        )
     else:
-        body = (
+        body = t(
+            f"[yellow]⚠ Result:[/yellow] {valid}/{total} valid ({ratio_pct:.1f}%)\n"
+            f"[red]Invalid records:[/red] {invalid}",
             f"[yellow]⚠ 验证结果:[/yellow] {valid}/{total} 条有效 ({ratio_pct:.1f}%)\n"
-            f"[red]无效记录:[/red] {invalid} 条"
+            f"[red]无效记录:[/red] {invalid} 条",
         )
     log_panel(body, title=f"Schema · {report['preset']}")
 
     if invalid > 0 and report["errors"]:
-        log(f"[bold]错误示例 (最多显示 {max_errors} 条):[/bold]")
+        log(
+            t(
+                f"[bold]Sample errors (up to {max_errors}):[/bold]",
+                f"[bold]错误示例 (最多显示 {max_errors} 条):[/bold]",
+            )
+        )
         log("-" * 60)
         for entry in report["errors"]:
-            log(f"[dim]第 {entry['index']} 行:[/dim]")
+            log(t(f"[dim]Row {entry['index']}:[/dim]", f"[dim]第 {entry['index']} 行:[/dim]"))
             errs = entry["errors"]
             for err in errs[:3]:
                 # 错误消息内嵌用户数据值 (got: ...), 转义避免被当 markup 解析
                 log(f"  - {escape(str(err))}")
             if len(errs) > 3:
-                log(f"  ... 还有 {len(errs) - 3} 个错误")
+                log(t(f"  ... {len(errs) - 3} more errors", f"  ... 还有 {len(errs) - 3} 个错误"))

@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import orjson
 
+from .i18n import t
 from .lineage import LineageTracker
 from .storage.io import load_data, save_data
 from .utils.field_path import get_field_with_spec
@@ -39,7 +40,10 @@ class TransformError:
         item_str = str(self.item)
         if len(item_str) > 100:
             item_str = item_str[:100] + "..."
-        return f"第 {self.index} 行转换失败: {self.error}\n  数据: {item_str}"
+        return t(
+            f"Row {self.index} failed to transform: {self.error}\n  Data: {item_str}",
+            f"第 {self.index} 行转换失败: {self.error}\n  数据: {item_str}",
+        )
 
 
 class TransformErrors(Exception):
@@ -53,9 +57,19 @@ class TransformErrors(Exception):
         if len(self.errors) == 1:
             return str(self.errors[0])
         return (
-            f"转换失败 {len(self.errors)} 条记录:\n"
+            t(
+                f"{len(self.errors)} records failed to transform:\n",
+                f"转换失败 {len(self.errors)} 条记录:\n",
+            )
             + "\n".join(f"  [{e.index}] {e.error}" for e in self.errors[:5])
-            + (f"\n  ... 还有 {len(self.errors) - 5} 条错误" if len(self.errors) > 5 else "")
+            + (
+                t(
+                    f"\n  ... and {len(self.errors) - 5} more errors",
+                    f"\n  ... 还有 {len(self.errors) - 5} 条错误",
+                )
+                if len(self.errors) > 5
+                else ""
+            )
         )
 
     def __iter__(self):
@@ -73,7 +87,13 @@ def _print_error_summary(errors: List[TransformError], total: int) -> None:
     success_count = total - error_count
 
     # 简洁的警告信息
-    print(f"⚠ 转换完成: {success_count}/{total} 成功, {error_count} 失败", file=sys.stderr)
+    print(
+        t(
+            f"⚠ Transform done: {success_count}/{total} succeeded, {error_count} failed",
+            f"⚠ 转换完成: {success_count}/{total} 成功, {error_count} 失败",
+        ),
+        file=sys.stderr,
+    )
 
     # 显示前几条错误详情
     show_count = min(3, error_count)
@@ -81,7 +101,13 @@ def _print_error_summary(errors: List[TransformError], total: int) -> None:
         print(f"  [{err.index}] {err.error}", file=sys.stderr)
 
     if error_count > show_count:
-        print(f"  ... 还有 {error_count - show_count} 条错误", file=sys.stderr)
+        print(
+            t(
+                f"  ... and {error_count - show_count} more errors",
+                f"  ... 还有 {error_count - show_count} 条错误",
+            ),
+            file=sys.stderr,
+        )
 
 
 class DataTransformer:
@@ -153,7 +179,10 @@ class DataTransformer:
             lineage_path = self._lineage_tracker.save(filepath, len(self._data))
             import sys
 
-            print(f"📜 血缘记录已保存: {lineage_path}", file=sys.stderr)
+            print(
+                t(f"📜 Lineage saved: {lineage_path}", f"📜 血缘记录已保存: {lineage_path}"),
+                file=sys.stderr,
+            )
 
     # ============ 增量操作 ============
 
@@ -215,7 +244,12 @@ class DataTransformer:
         """
         func = _resolve_func(func, preset, preset_kwargs)
         if on_error not in ("skip", "raise", "null"):
-            raise ValueError(f"on_error 只能是 skip / raise / null, 得到 {on_error!r}")
+            raise ValueError(
+                t(
+                    f"on_error must be skip / raise / null, got {on_error!r}",
+                    f"on_error 只能是 skip / raise / null, 得到 {on_error!r}",
+                )
+            )
         results = []
         errors = []
 
@@ -406,7 +440,11 @@ class DataTransformer:
             try:
                 if not func(wrapper_func(item)):
                     errors.append(
-                        TransformError(index=i, item=item, error=ValueError("验证未通过"))
+                        TransformError(
+                            index=i,
+                            item=item,
+                            error=ValueError(t("validation failed", "验证未通过")),
+                        )
                     )
             except Exception as e:
                 errors.append(TransformError(index=i, item=item, error=e))
@@ -469,15 +507,28 @@ class DataTransformer:
 
                 if on_error == "raise":
                     error_msgs = [str(e) for e in result.errors[:3]]
-                    raise ValueError(f"第 {i} 行验证失败:\n  " + "\n  ".join(error_msgs))
+                    raise ValueError(
+                        t(f"Row {i} failed validation:\n  ", f"第 {i} 行验证失败:\n  ")
+                        + "\n  ".join(error_msgs)
+                    )
 
                 if on_error == "skip" and error_count >= max_errors:
-                    print(f"⚠️ 已达到最大错误数 {max_errors}，停止验证")
+                    print(
+                        t(
+                            f"⚠️ Reached max errors {max_errors}, stopping validation",
+                            f"⚠️ 已达到最大错误数 {max_errors}，停止验证",
+                        )
+                    )
                     break
 
         if on_error == "skip":
             if failed:
-                print(f"⚠️ 验证失败 {len(failed)} 条记录（共 {error_count} 个错误）")
+                print(
+                    t(
+                        f"⚠️ {len(failed)} records failed validation ({error_count} errors in total)",
+                        f"⚠️ 验证失败 {len(failed)} 条记录（共 {error_count} 个错误）",
+                    )
+                )
             return failed
 
         if on_error == "filter":
@@ -569,7 +620,9 @@ class DataTransformer:
             # 自定义函数
             return key(DictWrapper(item))
         else:
-            raise ValueError(f"不支持的 key 类型: {type(key)}")
+            raise ValueError(
+                t(f"Unsupported key type: {type(key)}", f"不支持的 key 类型: {type(key)}")
+            )
 
     def dedupe_similar(
         self,
@@ -598,7 +651,12 @@ class DataTransformer:
         try:
             from datasketch import MinHashLSH
         except ImportError as e:
-            raise ImportError("相似度去重需要 datasketch 库，请安装: pip install datasketch") from e
+            raise ImportError(
+                t(
+                    "Similarity dedupe requires datasketch: pip install datasketch",
+                    "相似度去重需要 datasketch 库，请安装: pip install datasketch",
+                )
+            ) from e
 
         if not self._data:
             return DataTransformer([])
@@ -610,8 +668,12 @@ class DataTransformer:
             import warnings
 
             warnings.warn(
-                f"阈值 {threshold} 过高，已自动调整为 0.99。"
-                f"如需更高精度，建议使用 dedupe() 精确去重。",
+                t(
+                    f"Threshold {threshold} is too high; adjusted to 0.99. "
+                    f"For exact matching, use dedupe().",
+                    f"阈值 {threshold} 过高，已自动调整为 0.99。"
+                    f"如需更高精度，建议使用 dedupe() 精确去重。",
+                ),
                 UserWarning,
                 stacklevel=2,
             )
@@ -680,7 +742,9 @@ class DataTransformer:
         elif callable(key):
             return str(key(DictWrapper(item)))
         else:
-            raise ValueError(f"不支持的 key 类型: {type(key)}")
+            raise ValueError(
+                t(f"Unsupported key type: {type(key)}", f"不支持的 key 类型: {type(key)}")
+            )
 
     def _create_minhash(self, text: str, num_perm: int, ngram: int):
         """创建文本的 MinHash 签名"""
@@ -780,7 +844,12 @@ class DataTransformer:
             elif isinstance(source, DataTransformer):
                 data = source.data
             else:
-                raise TypeError(f"不支持的数据源类型: {type(source)}")
+                raise TypeError(
+                    t(
+                        f"Unsupported data source type: {type(source)}",
+                        f"不支持的数据源类型: {type(source)}",
+                    )
+                )
             all_data.extend(data)
 
         return cls(all_data)
@@ -890,8 +959,12 @@ class DataTransformer:
         except (pickle.PicklingError, AttributeError, TypeError) as e:
             func_name = getattr(func, "__name__", str(func))
             raise TypeError(
-                f"函数 '{func_name}' 无法被 pickle，不能用于并行处理。"
-                f"请使用模块级函数而非 lambda 或闭包。错误: {e}"
+                t(
+                    f"Function '{func_name}' cannot be pickled, so it cannot run in parallel. "
+                    f"Use a module-level function instead of a lambda or closure. Error: {e}",
+                    f"函数 '{func_name}' 无法被 pickle，不能用于并行处理。"
+                    f"请使用模块级函数而非 lambda 或闭包。错误: {e}",
+                )
             ) from e
 
         workers = workers or cpu_count()
@@ -901,9 +974,16 @@ class DataTransformer:
                 async_result = pool.map_async(func, self._data, chunksize=chunksize)
                 results = async_result.get(timeout=timeout)
         except TimeoutError as e:
-            raise RuntimeError(f"并行处理超时（{timeout}秒）") from e
+            raise RuntimeError(
+                t(f"Parallel processing timed out ({timeout}s)", f"并行处理超时（{timeout}秒）")
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
+            raise RuntimeError(
+                t(
+                    f"Parallel processing failed: {type(e).__name__}: {e}",
+                    f"并行处理失败: {type(e).__name__}: {e}",
+                )
+            ) from e
 
         return results
 
@@ -949,8 +1029,12 @@ class DataTransformer:
         except (pickle.PicklingError, AttributeError, TypeError) as e:
             func_name = getattr(func, "__name__", str(func))
             raise TypeError(
-                f"函数 '{func_name}' 无法被 pickle，不能用于并行处理。"
-                f"请使用模块级函数而非 lambda 或闭包。错误: {e}"
+                t(
+                    f"Function '{func_name}' cannot be pickled, so it cannot run in parallel. "
+                    f"Use a module-level function instead of a lambda or closure. Error: {e}",
+                    f"函数 '{func_name}' 无法被 pickle，不能用于并行处理。"
+                    f"请使用模块级函数而非 lambda 或闭包。错误: {e}",
+                )
             ) from e
 
         workers = workers or cpu_count()
@@ -960,9 +1044,16 @@ class DataTransformer:
                 async_result = pool.map_async(func, self._data, chunksize=chunksize)
                 mask = async_result.get(timeout=timeout)
         except TimeoutError as e:
-            raise RuntimeError(f"并行处理超时（{timeout}秒）") from e
+            raise RuntimeError(
+                t(f"Parallel processing timed out ({timeout}s)", f"并行处理超时（{timeout}秒）")
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"并行处理失败: {type(e).__name__}: {e}") from e
+            raise RuntimeError(
+                t(
+                    f"Parallel processing failed: {type(e).__name__}: {e}",
+                    f"并行处理失败: {type(e).__name__}: {e}",
+                )
+            ) from e
 
         filtered = [item for item, keep in zip(self._data, mask, strict=False) if keep]
         return DataTransformer(filtered)
@@ -1044,14 +1135,22 @@ def _resolve_func(func, preset, preset_kwargs):
     """func 与 preset 二选一; preset 走 presets.get_preset"""
     if preset is not None:
         if func is not None:
-            raise ValueError("func 与 preset 只能指定一个")
+            raise ValueError(
+                t("Specify only one of func and preset", "func 与 preset 只能指定一个")
+            )
         from .presets import get_preset
 
         return get_preset(preset, **preset_kwargs)
     if func is None:
-        raise ValueError("需要指定 func 或 preset")
+        raise ValueError(t("Specify func or preset", "需要指定 func 或 preset"))
     if preset_kwargs:
-        raise ValueError(f"未知参数: {', '.join(preset_kwargs)} (只有 preset= 时才接受预设参数)")
+        raise ValueError(
+            t(
+                f"Unknown arguments: {', '.join(preset_kwargs)} "
+                f"(preset arguments are only accepted with preset=)",
+                f"未知参数: {', '.join(preset_kwargs)} (只有 preset= 时才接受预设参数)",
+            )
+        )
     return func
 
 
@@ -1193,7 +1292,7 @@ class DictWrapper:
         key = self._resolve(name)
         if key in data:
             return _wrap(data[key])
-        raise AttributeError(f"字段不存在: {name}")
+        raise AttributeError(t(f"No such field: {name}", f"字段不存在: {name}"))
 
     def __setattr__(self, name: str, value: Any) -> None:
         data = object.__getattribute__(self, "_data")
@@ -1203,7 +1302,7 @@ class DictWrapper:
         data = object.__getattribute__(self, "_data")
         key = self._resolve(name)
         if key not in data:
-            raise AttributeError(f"字段不存在: {name}")
+            raise AttributeError(t(f"No such field: {name}", f"字段不存在: {name}"))
         del data[key]
 
     def __getitem__(self, key: str) -> Any:

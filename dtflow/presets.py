@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dtflow.utils.helpers import get_field_value
 
+from .i18n import t
+
 
 def _row(item: Any) -> Dict[str, Any]:
     """DictWrapper / dict → 原始 dict"""
@@ -170,8 +172,12 @@ def _to_messages(item: Any, user_field: str, assistant_field: str, explicit: boo
     if pair:
         return [{"role": "user", "content": pair[0]}, {"role": "assistant", "content": pair[1]}]
     raise ValueError(
-        f"无法识别输入格式 (需要 messages / conversations / instruction+output / prompt+chosen / "
-        f"{user_field}+{assistant_field}), 字段: {sorted(row)[:8]}"
+        t(
+            f"Unrecognized input format (expected messages / conversations / instruction+output / "
+            f"prompt+chosen / {user_field}+{assistant_field}), fields: {sorted(row)[:8]}",
+            f"无法识别输入格式 (需要 messages / conversations / instruction+output / prompt+chosen / "
+            f"{user_field}+{assistant_field}), 字段: {sorted(row)[:8]}",
+        )
     )
 
 
@@ -225,7 +231,12 @@ def alpaca(
         messages = _to_messages(row, "q", "a", False)
         inst, out = _first(messages, "user"), _first(messages, "assistant")
         if not (inst and out):
-            raise ValueError("样本里没有成对的 user / assistant 内容")
+            raise ValueError(
+                t(
+                    "No paired user / assistant content in sample",
+                    "样本里没有成对的 user / assistant 内容",
+                )
+            )
         return {"instruction": inst, "input": "", "output": out}
 
     return transform
@@ -269,7 +280,9 @@ def dpo_pair(
         }
         missing = [k for k, v in out.items() if not v]
         if missing:
-            raise ValueError(f"缺少字段: {', '.join(missing)}")
+            raise ValueError(
+                t(f"Missing fields: {', '.join(missing)}", f"缺少字段: {', '.join(missing)}")
+            )
         return out
 
     return transform
@@ -283,7 +296,12 @@ def simple_qa(question_field: str = "q", answer_field: str = "a") -> Callable:
         messages = _to_messages(item, question_field, answer_field, explicit)
         q, a = _first(messages, "user"), _first(messages, "assistant")
         if not (q and a):
-            raise ValueError("样本里没有成对的 user / assistant 内容")
+            raise ValueError(
+                t(
+                    "No paired user / assistant content in sample",
+                    "样本里没有成对的 user / assistant 内容",
+                )
+            )
         return {"question": q, "answer": a}
 
     return transform
@@ -303,7 +321,12 @@ def get_preset(name: str, **kwargs) -> Callable:
     """按名字取预设转换函数, kwargs 透传给预设。"""
     if name not in PRESETS:
         available = ", ".join(PRESETS.keys())
-        raise ValueError(f"未知预设: {name}。可用预设: {available}")
+        raise ValueError(
+            t(
+                f"Unknown preset: {name}. Available: {available}",
+                f"未知预设: {name}。可用预设: {available}",
+            )
+        )
     return PRESETS[name](**kwargs)
 
 

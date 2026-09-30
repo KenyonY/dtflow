@@ -29,6 +29,7 @@ dtflow/                    # 核心库
 ├── framework.py          # 训练框架导出 (export_for, check_compatibility)
 ├── streaming.py          # 大文件流式处理 (StreamingTransformer, load_stream, load_sharded)
 ├── lineage.py            # 数据血缘追踪
+├── i18n.py               # 界面语言: t("English", "中文"), dt lang / DT_LANG 切换, 默认 en
 ├── pipeline.py           # Pipeline YAML 执行器 (step = CLI 命令名, 参数 = 选项名, 直接调 ops)
 ├── storage/io.py         # 文件 I/O (JSONL, JSON, CSV, Parquet, Arrow) - 使用 Polars
 ├── cli/                  # CLI 命令实现（模块化）
@@ -132,6 +133,9 @@ dt history processed.jsonl
 1. 在 `dtflow/converters.py` 添加函数
 2. 在 `dtflow/__init__.py` 导出
 3. 在 docs/python-api.md 添加使用示例
+
+### 界面文本
+面向用户的文本 (帮助、报错、提示、dt view) 一律写 `t("English", "中文")`, 含变量时两边各写 f-string; typer 命令帮助写在 `@app.command(help=t(...))`, 不用 docstring。`tests/test_i18n.py` 守卫: 源码里 t() 之外出现中文字符串 (docstring 除外) 即失败, 英文模式下任何 `--help` 含中文即失败。测试进程固定 `DT_LANG=zh` (tests/conftest.py)。
 
 ### 核心类关系
 - `DataTransformer`: 内存模式，数据全部加载

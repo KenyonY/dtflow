@@ -21,6 +21,8 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
 
+from ...i18n import t
+
 # 搜索命中的高亮样式 (表格单元格与详情共用; 黄底黑字在明暗主题下都醒目)
 HIGHLIGHT_STYLE = "black on yellow"
 
@@ -199,8 +201,8 @@ def _calls_sig(turns: List[Turn]) -> str:
     派生列撞名会把它从列目录里挤掉。
     """
     seen: List[str] = []
-    for t in turns:
-        for c in t.tool_calls:
+    for turn in turns:
+        for c in turn.tool_calls:
             if c.name not in seen:
                 seen.append(c.name)
     return ",".join(seen)
@@ -453,14 +455,19 @@ def _render_turn(turn: Turn, highlight: Optional[Pattern] = None) -> RenderableT
             title.append(f"  {call.call_id}", style="dim")
         parts.append(_hl(title, highlight))
         if call.name == "?":
-            parts.append(Text("⚠ 缺少函数名", style="bold red"))
+            parts.append(Text(t("⚠ missing function name", "⚠ 缺少函数名"), style="bold red"))
         block, valid = _json_block(call.arguments)
         if block is not None:
             parts.append(block)
         else:
             parts.append(_hl(Text(call.arguments), highlight))
             if not valid:
-                parts.append(Text("⚠ arguments 不是合法 JSON", style="bold red"))
+                parts.append(
+                    Text(
+                        t("⚠ arguments is not valid JSON", "⚠ arguments 不是合法 JSON"),
+                        style="bold red",
+                    )
+                )
     return Group(*parts)
 
 
@@ -520,15 +527,15 @@ def render_detail_sections(
             for i, turn in enumerate(turns):
                 secs.append((f"msg{i}", _render_turn(turn, highlight), _turn_plain(turn)))
         else:
-            plain = "\n".join(_turn_plain(t) for t in turns)
-            secs.append(("对话", _render_conversation(turns, highlight), plain))
+            plain = "\n".join(_turn_plain(turn) for turn in turns)
+            secs.append((t("conversation", "对话"), _render_conversation(turns, highlight), plain))
         extra = {
             k: v
             for k, v in row.items()
             if k not in ("messages", "conversations") and k not in hidden
         }
         if extra:
-            secs.append(("元数据", *_render_generic(extra, highlight)))
+            secs.append((t("metadata", "元数据"), *_render_generic(extra, highlight)))
         return secs
 
     if fmt == "dpo":

@@ -6,6 +6,8 @@
 
 from typing import Any, Callable, Dict, List, Optional
 
+from .i18n import t
+
 
 def to_hf_dataset(data: List[Dict[str, Any]]):
     """
@@ -24,7 +26,12 @@ def to_hf_dataset(data: List[Dict[str, Any]]):
     try:
         from datasets import Dataset
     except ImportError as e:
-        raise ImportError("需要安装 datasets: pip install datasets") from e
+        raise ImportError(
+            t(
+                "datasets is required: pip install datasets",
+                "需要安装 datasets: pip install datasets",
+            )
+        ) from e
 
     return Dataset.from_list(data)
 
@@ -47,7 +54,12 @@ def from_hf_dataset(dataset, split: Optional[str] = None) -> List[Dict[str, Any]
     try:
         from datasets import load_dataset
     except ImportError as e:
-        raise ImportError("需要安装 datasets: pip install datasets") from e
+        raise ImportError(
+            t(
+                "datasets is required: pip install datasets",
+                "需要安装 datasets: pip install datasets",
+            )
+        ) from e
 
     # 如果是字符串，加载数据集
     if isinstance(dataset, str):
@@ -776,7 +788,12 @@ def messages_to_text(
     }
 
     if template not in templates:
-        raise ValueError(f"不支持的模板: {template}，可选: {list(templates.keys())}")
+        raise ValueError(
+            t(
+                f"Unsupported template: {template}, choose from: {list(templates.keys())}",
+                f"不支持的模板: {template}，可选: {list(templates.keys())}",
+            )
+        )
 
     fmt = templates[template]
 

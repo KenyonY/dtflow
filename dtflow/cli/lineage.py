@@ -5,6 +5,7 @@ CLI 数据血缘追踪命令
 from pathlib import Path
 from typing import Optional
 
+from ..i18n import t
 from ..lineage import format_lineage_report, get_lineage_chain, has_lineage
 from .output import die, emit_json, is_stdout_tty, log, resolve_format
 
@@ -37,10 +38,12 @@ def history(
     if not has_lineage(str(filepath)):
         die(
             "no_lineage",
-            f"文件 {filename} 没有血缘记录",
-            suggestion=(
+            t(f"File {filename} has no lineage record", f"文件 {filename} 没有血缘记录"),
+            suggestion=t(
+                "Load with DataTransformer.load(..., track_lineage=True) "
+                "and save with .save(..., lineage=True)",
                 "加载时使用 DataTransformer.load(..., track_lineage=True)，"
-                "保存时使用 .save(..., lineage=True)"
+                "保存时使用 .save(..., lineage=True)",
             ),
             exit_code=3,
         )

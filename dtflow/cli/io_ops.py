@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import orjson
 from rich.markup import escape
 
+from ..i18n import t
 from ..storage.io import save_data
 from ..utils.field_path import get_field_with_spec
 from .common import _check_file_format, _require_file_exists
@@ -52,11 +53,11 @@ def concat(
 
     if len(files) < 2:
         die_usage(
-            "至少需要两个输入文件",
+            t("At least two input files are required", "至少需要两个输入文件"),
             suggestion="dt concat a.jsonl b.jsonl -o merged.jsonl",
         )
     if sum(is_stdin(f) for f in files) > 1:
-        die_usage("stdin (-) 只能出现一次")
+        die_usage(t("stdin (-) may appear only once", "stdin (-) 只能出现一次"))
 
     # 验证文件 (stdin 跳过)
     file_paths: List[Path] = []
@@ -72,21 +73,31 @@ def concat(
     output_path = Path(output).resolve() if output else None
     reads_output = output_path is not None and output_path in file_paths
     if reads_output and not dry_run:
-        log("[yellow]⚠ 检测到输出文件与输入文件相同，将使用临时文件[/yellow]")
+        log(
+            t(
+                "[yellow]⚠ Output is also an input; writing via a temp file[/yellow]",
+                "[yellow]⚠ 检测到输出文件与输入文件相同，将使用临时文件[/yellow]",
+            )
+        )
 
     # 流式分析字段（只读取每个文件的第一行; stdin 不可预读, 跳过）
-    log("[bold]📊 文件字段分析:[/bold]")
+    log(t("[bold]📊 Fields per file:[/bold]", "[bold]📊 文件字段分析:[/bold]"))
     file_fields: List[tuple] = []  # [(filepath, fields)]
     for filepath in file_paths:
         try:
             first_row = open_input(str(filepath)).head(1).collect()
             fields = set(first_row[0].keys()) if first_row else set()
         except Exception as e:
-            die_io_error(e, operation="读取", path=str(filepath))
+            die_io_error(e, operation=t("Read", "读取"), path=str(filepath))
         if not fields:
-            log(f"[yellow]警告: 文件为空 - {filepath}[/yellow]")
+            log(
+                t(
+                    f"[yellow]Warning: file is empty - {filepath}[/yellow]",
+                    f"[yellow]警告: 文件为空 - {filepath}[/yellow]",
+                )
+            )
         file_fields.append((filepath, fields))
-        fields_str = ", ".join(sorted(fields)) if fields else "(空)"
+        fields_str = ", ".join(sorted(fields)) if fields else t("(empty)", "(空)")
         log(f"   {filepath.name}: {escape(fields_str)}")  # 字段名来自用户数据
 
     # 分析字段差异
@@ -102,8 +113,10 @@ def concat(
         if strict:
             die(
                 "schema_mismatch",
-                "严格模式: 字段不一致",
-                suggestion="去掉 --strict 或预先统一字段",
+                t("Strict mode: fields differ across files", "严格模式: 字段不一致"),
+                suggestion=t(
+                    "Drop --strict or align the fields first", "去掉 --strict 或预先统一字段"
+                ),
                 exit_code=2,
                 context={
                     "common_fields": sorted(common_fields),
@@ -111,7 +124,10 @@ def concat(
                 },
             )
         log(
-            f"[yellow]⚠ 字段差异: {escape(', '.join(sorted(diff_fields)))} 仅在部分文件中存在[/yellow]"
+            t(
+                f"[yellow]⚠ Fields only in some files: {escape(', '.join(sorted(diff_fields)))}[/yellow]",
+                f"[yellow]⚠ 字段差异: {escape(', '.join(sorted(diff_fields)))} 仅在部分文件中存在[/yellow]",
+            )
         )
 
     # 计算总行数（供 dry-run / 摘要使用; stdin 未知计 0）
@@ -136,7 +152,7 @@ def concat(
         )
         return
 
-    log("[bold]🔄 流式拼接...[/bold]")
+    log(t("[bold]🔄 Concatenating (streaming)...[/bold]", "[bold]🔄 流式拼接...[/bold]"))
 
     def generator():
         for f in files:
@@ -176,20 +192,30 @@ def diff(
 
     field_path_arg(key, "--key")
     if is_stdin(file1) and is_stdin(file2):
-        die_usage("stdin (-) 只能出现一次")
+        die_usage(t("stdin (-) may appear only once", "stdin (-) 只能出现一次"))
     path1 = Path(input_label(file1))
     path2 = Path(input_label(file2))
 
     # 加载数据
-    log("[bold]📊 加载数据...[/bold]")
+    log(t("[bold]📊 Loading data...[/bold]", "[bold]📊 加载数据...[/bold]"))
     data1 = load_rows(file1)
     data2 = load_rows(file2)
 
-    log(f"   文件1: {path1.name} ({len(data1)} 条)")
-    log(f"   文件2: {path2.name} ({len(data2)} 条)")
+    log(
+        t(
+            f"   File 1: {path1.name} ({len(data1)} rows)",
+            f"   文件1: {path1.name} ({len(data1)} 条)",
+        )
+    )
+    log(
+        t(
+            f"   File 2: {path2.name} ({len(data2)} rows)",
+            f"   文件2: {path2.name} ({len(data2)} 条)",
+        )
+    )
 
     # 计算差异
-    log("[bold]🔍 计算差异...[/bold]")
+    log(t("[bold]🔍 Computing diff...[/bold]", "[bold]🔍 计算差异...[/bold]"))
     diff_result = _compute_diff(data1, data2, key)
 
     # 输出：TTY table / 非 TTY JSON
@@ -201,11 +227,11 @@ def diff(
 
     # 保存报告
     if output:
-        log(f"[dim]💾 保存报告: {output}[/dim]")
+        log(t(f"[dim]💾 Saving report: {output}[/dim]", f"[dim]💾 保存报告: {output}[/dim]"))
         try:
             save_data([diff_result], output)
         except Exception as e:
-            die_io_error(e, operation="保存报告", path=str(output))
+            die_io_error(e, operation=t("Save report", "保存报告"), path=str(output))
 
 
 def _compute_diff(
@@ -314,21 +340,40 @@ def _print_diff_report(diff_result: Dict[str, Any], name1: str, name2: str) -> N
     summary = diff_result["summary"]
     field_changes = diff_result["field_changes"]
 
-    overview = (
+    overview = t(
+        f"[bold]{name1}:[/bold] {summary['file1_count']:,} rows\n"
+        f"[bold]{name2}:[/bold] {summary['file2_count']:,} rows\n"
+        f"\n"
+        f"[green]+ Added:[/green] {summary['added']:,}\n"
+        f"[red]- Removed:[/red] {summary['removed']:,}\n"
+        f"[yellow]~ Modified:[/yellow] {summary['modified']:,}\n"
+        f"[dim]= Unchanged:[/dim] {summary['unchanged']:,}",
         f"[bold]{name1}:[/bold] {summary['file1_count']:,} 条\n"
         f"[bold]{name2}:[/bold] {summary['file2_count']:,} 条\n"
         f"\n"
         f"[green]+ 新增:[/green] {summary['added']:,} 条\n"
         f"[red]- 删除:[/red] {summary['removed']:,} 条\n"
         f"[yellow]~ 修改:[/yellow] {summary['modified']:,} 条\n"
-        f"[dim]= 未变:[/dim] {summary['unchanged']:,} 条"
+        f"[dim]= 未变:[/dim] {summary['unchanged']:,} 条",
     )
-    log_panel(overview, title="📊 差异概览")
+    log_panel(overview, title=t("📊 Diff summary", "📊 差异概览"))
 
     # 字段变化
     if field_changes["added_fields"] or field_changes["removed_fields"]:
-        log("[bold]📋 字段变化:[/bold]")
+        log(t("[bold]📋 Field changes:[/bold]", "[bold]📋 字段变化:[/bold]"))
         if field_changes["added_fields"]:
-            log(f"  [green]+ 新增字段:[/green] {escape(', '.join(field_changes['added_fields']))}")
+            added = escape(", ".join(field_changes["added_fields"]))
+            log(
+                t(
+                    f"  [green]+ Added fields:[/green] {added}",
+                    f"  [green]+ 新增字段:[/green] {added}",
+                )
+            )
         if field_changes["removed_fields"]:
-            log(f"  [red]- 删除字段:[/red] {escape(', '.join(field_changes['removed_fields']))}")
+            removed = escape(", ".join(field_changes["removed_fields"]))
+            log(
+                t(
+                    f"  [red]- Removed fields:[/red] {removed}",
+                    f"  [red]- 删除字段:[/red] {removed}",
+                )
+            )

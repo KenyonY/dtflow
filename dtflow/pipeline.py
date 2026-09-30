@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 from . import ops
 from .expr import ExprSyntaxError, check_syntax
+from .i18n import t
 from .storage.io import load_data
 from .streaming import StreamingTransformer, open_stream
 
@@ -41,7 +42,9 @@ def _load_yaml(filepath: str) -> Dict[str, Any]:
     try:
         import yaml
     except ImportError:
-        raise ImportError("需要安装 PyYAML: pip install pyyaml") from None
+        raise ImportError(
+            t("PyYAML is required: pip install pyyaml", "需要安装 PyYAML: pip install pyyaml")
+        ) from None
     with open(filepath, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
@@ -50,7 +53,9 @@ def _save_yaml(data: Dict[str, Any], filepath: str) -> None:
     try:
         import yaml
     except ImportError:
-        raise ImportError("需要安装 PyYAML: pip install pyyaml") from None
+        raise ImportError(
+            t("PyYAML is required: pip install pyyaml", "需要安装 PyYAML: pip install pyyaml")
+        ) from None
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -70,7 +75,8 @@ def _norm_step(step: Any) -> Any:
 def _need(step: Dict[str, Any], key: str) -> Any:
     v = step.get(key)
     if v in (None, ""):
-        raise ValueError(f"{step.get('type')} 步骤需要指定 {key}")
+        typ = step.get("type")
+        raise ValueError(t(f"{typ} step requires {key}", f"{typ} 步骤需要指定 {key}"))
     return v
 
 
@@ -107,7 +113,12 @@ def _s_group(st, step):
 def _s_join(st, step):
     right = _need(step, "right")
     if not (step.get("on") or (step.get("left_on") and step.get("right_on"))):
-        raise ValueError("join 步骤需要 on, 或同时给 left_on 与 right_on")
+        raise ValueError(
+            t(
+                "join step requires on, or both left_on and right_on",
+                "join 步骤需要 on, 或同时给 left_on 与 right_on",
+            )
+        )
     st, _dup = ops.join_rows(
         st,
         load_data(right),
@@ -141,7 +152,9 @@ def _s_tail(st, step):
 
 def _s_transform(st, step):
     if not (step.get("preset") or step.get("config")):
-        raise ValueError("transform 步骤需要指定 preset 或 config")
+        raise ValueError(
+            t("transform step requires preset or config", "transform 步骤需要指定 preset 或 config")
+        )
     return ops.transform_rows(
         st,
         step.get("preset"),
@@ -165,7 +178,7 @@ def _field_n(v: Any) -> tuple:
         return None, None
     field, _, n = str(v).partition(":")
     if not n:
-        raise ValueError(f"应为 字段:数量, 得到 {v!r}")
+        raise ValueError(t(f"Expected field:count, got {v!r}", f"应为 字段:数量, 得到 {v!r}"))
     return field.strip(), int(n)
 
 
@@ -196,9 +209,11 @@ def _s_clean(st, step):
         drop_fields_set=set(drop) if drop else None,
         rename_map=rename if isinstance(rename, dict) else _kv(rename),
         promote_list=_promote(promote),
-        add_field_map=step.get("add_field")
-        if isinstance(step.get("add_field"), dict)
-        else _kv(step.get("add_field")),
+        add_field_map=(
+            step.get("add_field")
+            if isinstance(step.get("add_field"), dict)
+            else _kv(step.get("add_field"))
+        ),
         fill_map=step.get("fill") if isinstance(step.get("fill"), dict) else _kv(step.get("fill")),
         reorder_fields=_csv(step.get("reorder")),
         min_tokens_field=min_tok_f,
@@ -217,7 +232,9 @@ def _kv(v: Any) -> Optional[Dict[str, str]]:
     for pair in str(v).split(","):
         k, sep, val = pair.partition(":")
         if not sep or not k.strip():
-            raise ValueError(f"应为 key:value, 得到 {pair!r}")
+            raise ValueError(
+                t(f"Expected key:value, got {pair!r}", f"应为 key:value, 得到 {pair!r}")
+            )
         out[k.strip()] = val.strip()
     return out
 
@@ -260,14 +277,21 @@ TERMINAL_STEPS = {"split"}  # 产出多个文件, 只能在最后
 def _check_steps(steps: List[Dict[str, Any]]) -> None:
     for i, step in enumerate(steps, 1):
         if not isinstance(step, dict) or not step.get("type"):
-            raise ValueError(f"步骤 {i} 未指定 type")
-        t = step["type"]
-        if t in TERMINAL_STEPS:
+            raise ValueError(t(f"Step {i} has no type", f"步骤 {i} 未指定 type"))
+        typ = step["type"]
+        if typ in TERMINAL_STEPS:
             if i != len(steps):
-                raise ValueError(f"步骤 {i}: {t} 只能是最后一步")
-        elif t not in STEP_EXECUTORS:
+                raise ValueError(
+                    t(f"Step {i}: {typ} must be the last step", f"步骤 {i}: {typ} 只能是最后一步")
+                )
+        elif typ not in STEP_EXECUTORS:
             available = ", ".join([*STEP_EXECUTORS, *TERMINAL_STEPS])
-            raise ValueError(f"未知步骤类型: {t}。可用类型: {available}")
+            raise ValueError(
+                t(
+                    f"Unknown step type: {typ}. Available: {available}",
+                    f"未知步骤类型: {typ}。可用类型: {available}",
+                )
+            )
 
 
 def build_pipeline(
@@ -277,13 +301,14 @@ def build_pipeline(
     steps = [_norm_step(s) for s in (config.get("steps", []) or [])]
     _check_steps(steps)
     if verbose:
-        print(f"📂 加载数据: {input_path}")
+        print(t(f"📂 Loading data: {input_path}", f"📂 加载数据: {input_path}"))
     st = open_stream(input_path)
     for i, step in enumerate(steps, 1):
         if step["type"] in TERMINAL_STEPS:
             break
         if verbose:
-            print(f"🔄 步骤 {i}: {_format_step_description(step)}")
+            desc = _format_step_description(step)
+            print(t(f"🔄 Step {i}: {desc}", f"🔄 步骤 {i}: {desc}"))
         st = STEP_EXECUTORS[step["type"]](st, step)
     return st
 
@@ -314,15 +339,28 @@ def run_pipeline(
     config = _load_yaml(config_path)
     version = config.get("version", PIPELINE_VERSION)
     if version != PIPELINE_VERSION and verbose:
-        print(f"⚠ 配置版本 {version} 与当前版本 {PIPELINE_VERSION} 不一致")
+        print(
+            t(
+                f"⚠ Config version {version} differs from current version {PIPELINE_VERSION}",
+                f"⚠ 配置版本 {version} 与当前版本 {PIPELINE_VERSION} 不一致",
+            )
+        )
 
     input_path = input_file or config.get("input")
     if not input_path:
-        raise ValueError("未指定输入文件，请在配置中设置 input 或使用 --input 参数")
+        raise ValueError(
+            t(
+                "No input file: set input in the config or pass --input",
+                "未指定输入文件，请在配置中设置 input 或使用 --input 参数",
+            )
+        )
     output_path = output_file or config.get("output")
     if not output_path or output_path == "-":
         raise ValueError(
-            "未指定输出文件，请在配置中设置 output 或使用 --output 参数 (CLI 下 - 表示 stdout)"
+            t(
+                "No output file: set output in the config or pass --output (- means stdout in the CLI)",
+                "未指定输出文件，请在配置中设置 output 或使用 --output 参数 (CLI 下 - 表示 stdout)",
+            )
         )
 
     st = build_pipeline(config, str(input_path), verbose=verbose)
@@ -338,14 +376,19 @@ def run_pipeline(
             StreamingTransformer(iter(part), None, total=len(part)).save(path, show_progress=False)
             splits.append({"name": name, "path": path, "rows": len(part)})
             if verbose:
-                print(f"💾 {name}: {len(part)} 条 -> {path}")
+                print(
+                    t(
+                        f"💾 {name}: {len(part)} rows -> {path}",
+                        f"💾 {name}: {len(part)} 条 -> {path}",
+                    )
+                )
         return {"splits": splits, "rows": sum(len(p) for p in parts)}
 
     if verbose:
-        print(f"💾 保存结果: {output_path}")
+        print(t(f"💾 Saving to: {output_path}", f"💾 保存结果: {output_path}"))
     n = st.save(str(output_path), show_progress=verbose)
     if verbose:
-        print(f"✅ 完成! 共 {n} 条数据")
+        print(t(f"✅ Done! {n} rows", f"✅ 完成! 共 {n} 条数据"))
     return {"output": str(output_path), "rows": n}
 
 
@@ -366,7 +409,7 @@ def generate_pipeline_template(
     """根据输入数据的字段生成一份可跑的 Pipeline 配置模板。"""
     data = load_data(input_file)
     if not data:
-        raise ValueError("输入文件为空")
+        raise ValueError(t("Input file is empty", "输入文件为空"))
     fields = list(data[0].keys())
 
     config: Dict[str, Any] = {
@@ -449,43 +492,71 @@ def validate_pipeline(config_path: str) -> List[str]:
     try:
         config = _load_yaml(config_path)
     except Exception as e:
-        return [f"无法解析配置文件: {e}"]
+        return [t(f"Cannot parse config file: {e}", f"无法解析配置文件: {e}")]
 
     if "steps" not in config:
-        errors.append("缺少 steps 字段")
+        errors.append(t("Missing steps field", "缺少 steps 字段"))
     steps = [_norm_step(s) for s in (config.get("steps", []) or [])]
     all_types = [*STEP_EXECUTORS, *TERMINAL_STEPS]
     for i, step in enumerate(steps, 1):
         if not isinstance(step, dict) or "type" not in step:
-            errors.append(f"步骤 {i} 缺少 type 字段")
+            errors.append(t(f"Step {i} is missing type", f"步骤 {i} 缺少 type 字段"))
             continue
-        t = step["type"]
-        if t not in all_types:
-            errors.append(f"步骤 {i}: 未知类型 '{t}'，可用: {', '.join(all_types)}")
-            continue
-        if t in TERMINAL_STEPS and i != len(steps):
-            errors.append(f"步骤 {i}: {t} 只能是最后一步")
-        unknown = sorted(str(k) for k in step if k not in _ALLOWED[t] | {"type", "name"})
-        if unknown:
+        typ = step["type"]
+        if typ not in all_types:
             errors.append(
-                f"步骤 {i}: {t} 不认识参数 {', '.join(unknown)}; 可用: {', '.join(sorted(_ALLOWED[t]))}"
+                t(
+                    f"Step {i}: unknown type '{typ}', available: {', '.join(all_types)}",
+                    f"步骤 {i}: 未知类型 '{typ}'，可用: {', '.join(all_types)}",
+                )
             )
-        for key in _REQUIRED.get(t, ()):
+            continue
+        if typ in TERMINAL_STEPS and i != len(steps):
+            errors.append(
+                t(f"Step {i}: {typ} must be the last step", f"步骤 {i}: {typ} 只能是最后一步")
+            )
+        unknown = sorted(str(k) for k in step if k not in _ALLOWED[typ] | {"type", "name"})
+        if unknown:
+            unknown_s, allowed_s = ", ".join(unknown), ", ".join(sorted(_ALLOWED[typ]))
+            errors.append(
+                t(
+                    f"Step {i}: {typ} does not accept {unknown_s}; available: {allowed_s}",
+                    f"步骤 {i}: {typ} 不认识参数 {unknown_s}; 可用: {allowed_s}",
+                )
+            )
+        for key in _REQUIRED.get(typ, ()):
             if step.get(key) in (None, ""):
-                errors.append(f"步骤 {i}: {t} 需要指定 {key}")
-        if t == "transform" and not (step.get("preset") or step.get("config")):
-            errors.append(f"步骤 {i}: transform 需要指定 preset 或 config")
-        if t == "join" and not (step.get("on") or (step.get("left_on") and step.get("right_on"))):
-            errors.append(f"步骤 {i}: join 需要 on, 或同时给 left_on 与 right_on")
-        if t == "join" and step.get("on") and (step.get("left_on") or step.get("right_on")):
-            errors.append(f"步骤 {i}: join 的 on 与 left_on/right_on 只能二选一")
+                errors.append(
+                    t(f"Step {i}: {typ} requires {key}", f"步骤 {i}: {typ} 需要指定 {key}")
+                )
+        if typ == "transform" and not (step.get("preset") or step.get("config")):
+            errors.append(
+                t(
+                    f"Step {i}: transform requires preset or config",
+                    f"步骤 {i}: transform 需要指定 preset 或 config",
+                )
+            )
+        if typ == "join" and not (step.get("on") or (step.get("left_on") and step.get("right_on"))):
+            errors.append(
+                t(
+                    f"Step {i}: join requires on, or both left_on and right_on",
+                    f"步骤 {i}: join 需要 on, 或同时给 left_on 与 right_on",
+                )
+            )
+        if typ == "join" and step.get("on") and (step.get("left_on") or step.get("right_on")):
+            errors.append(
+                t(
+                    f"Step {i}: join takes either on or left_on/right_on, not both",
+                    f"步骤 {i}: join 的 on 与 left_on/right_on 只能二选一",
+                )
+            )
         # 表达式语法
         exprs = []
-        if t in ("filter", "sort", "group") and step.get(_EXPR_KEYS[t]):
-            exprs.append((str(step[_EXPR_KEYS[t]]), "eval"))
-        if t == "map" and step.get("code"):
+        if typ in ("filter", "sort", "group") and step.get(_EXPR_KEYS[typ]):
+            exprs.append((str(step[_EXPR_KEYS[typ]]), "eval"))
+        if typ == "map" and step.get("code"):
             exprs.append((str(step["code"]), "exec"))
-        if t == "join":
+        if typ == "join":
             for k in ("on", "left_on", "right_on"):
                 if step.get(k):
                     exprs.append((str(step[k]), "eval"))
@@ -495,19 +566,20 @@ def validate_pipeline(config_path: str) -> List[str]:
             except ExprSyntaxError as e:
                 import textwrap
 
-                errors.append(f"步骤 {i}: {t} {e}\n{textwrap.indent(e.caret(), '  ')}")
-        if t == "group" and step.get("agg"):
+                caret = textwrap.indent(e.caret(), "  ")
+                errors.append(t(f"Step {i}: {typ} {e}\n{caret}", f"步骤 {i}: {typ} {e}\n{caret}"))
+        if typ == "group" and step.get("agg"):
             try:
                 for _name, e in ops.parse_spec(str(step["agg"])):
                     if e:
                         check_syntax(e, allowed=ops._AGG_ALLOWED)
             except (ValueError, ExprSyntaxError) as e:
-                errors.append(f"步骤 {i}: group agg {e}")
-        if t in ("select",) and step.get("fields"):
+                errors.append(t(f"Step {i}: group agg {e}", f"步骤 {i}: group agg {e}"))
+        if typ in ("select",) and step.get("fields"):
             try:
                 for _name, e in ops.parse_spec(str(step["fields"])):
                     if e:
                         check_syntax(e)
             except (ValueError, ExprSyntaxError) as e:
-                errors.append(f"步骤 {i}: select {e}")
+                errors.append(t(f"Step {i}: select {e}", f"步骤 {i}: select {e}"))
     return errors

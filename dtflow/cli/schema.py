@@ -15,6 +15,7 @@ import typer
 from click.core import Argument as ClickArgument
 from click.core import Option as ClickOption
 
+from ..i18n import t
 from .output import ExitCode, die, emit_json
 
 # 匹配 docstring 中的"示例:"段落标题（中英文均可）
@@ -152,8 +153,11 @@ def schema(
         if command not in commands:
             die(
                 "command_not_found",
-                f"未知命令: {command}",
-                suggestion=f"可用命令: {', '.join(sorted(commands.keys()))}",
+                t(f"Unknown command: {command}", f"未知命令: {command}"),
+                suggestion=t(
+                    f"Available commands: {', '.join(sorted(commands.keys()))}",
+                    f"可用命令: {', '.join(sorted(commands.keys()))}",
+                ),
                 exit_code=ExitCode.NOT_FOUND,
             )
         emit_json(_command_to_dict(command, commands[command]))
@@ -168,11 +172,14 @@ def schema(
     payload = {
         "name": "dt",
         "version": version,
-        "description": "Datatron CLI - Agent 友好的数据转换工具",
+        "description": t(
+            "Datatron CLI - agent-friendly data transformation tool",
+            "Datatron CLI - Agent 友好的数据转换工具",
+        ),
         "exit_codes": ExitCode.as_dict(),
         "output_contract": {
-            "stdout": "数据 (JSON / NDJSON / CSV / Table)",
-            "stderr": "进度 / 警告 / 错误消息",
+            "stdout": t("data (JSON / NDJSON / CSV / Table)", "数据 (JSON / NDJSON / CSV / Table)"),
+            "stderr": t("progress / warnings / error messages", "进度 / 警告 / 错误消息"),
             "default_format_tty": "table",
             "default_format_non_tty": "ndjson",
         },

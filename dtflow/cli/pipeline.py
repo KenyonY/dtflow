@@ -5,6 +5,7 @@ CLI Pipeline 执行命令 (dt run)
 from pathlib import Path
 from typing import Optional
 
+from ..i18n import t
 from ..pipeline import TERMINAL_STEPS, _load_yaml, build_pipeline, run_pipeline, validate_pipeline
 from .output import die, die_usage, emit_action, log
 
@@ -40,16 +41,24 @@ def run(
         die_file_not_found(str(config_path))
     if config_path.suffix.lower() not in (".yaml", ".yml"):
         die_usage(
-            "配置文件必须是 YAML 格式 (.yaml 或 .yml)",
-            suggestion=f"请使用 .yaml/.yml 后缀, 当前: {config_path.suffix}",
+            t(
+                "Config file must be YAML (.yaml or .yml)",
+                "配置文件必须是 YAML 格式 (.yaml 或 .yml)",
+            ),
+            suggestion=t(
+                f"Use a .yaml/.yml suffix (got: {config_path.suffix})",
+                f"请使用 .yaml/.yml 后缀, 当前: {config_path.suffix}",
+            ),
         )
 
     errors = validate_pipeline(config)
     if errors:
         die(
             "pipeline_invalid",
-            "Pipeline 配置文件验证失败",
-            suggestion="根据下方错误修正 YAML 配置",
+            t("Pipeline config validation failed", "Pipeline 配置文件验证失败"),
+            suggestion=t(
+                "Fix the YAML config according to the errors below", "根据下方错误修正 YAML 配置"
+            ),
             exit_code=2,
             context={"errors": errors},
         )
@@ -79,18 +88,35 @@ def run(
         return
 
     if not input_path:
-        die_usage("未指定输入文件", suggestion="在配置中设置 input 或使用 --input (- 为 stdin)")
+        die_usage(
+            t("No input file specified", "未指定输入文件"),
+            suggestion=t(
+                "Set input in the config or pass --input (- for stdin)",
+                "在配置中设置 input 或使用 --input (- 为 stdin)",
+            ),
+        )
 
     terminal = bool(steps) and steps[-1].get("type") in TERMINAL_STEPS
     try:
         if terminal:
             if not output_path:
-                die_usage("以 split 结尾的 pipeline 需要 output 作为派生文件名的基准")
+                die_usage(
+                    t(
+                        "A pipeline ending in split needs output "
+                        "as the base for derived file names",
+                        "以 split 结尾的 pipeline 需要 output 作为派生文件名的基准",
+                    )
+                )
             result = run_pipeline(
                 config, input_file=input_path, output_file=output_path, verbose=False
             )
             for s in result["splits"]:
-                log(f"   {s['name']}: {s['rows']} 条 -> {s['path']}")
+                log(
+                    t(
+                        f"   {s['name']}: {s['rows']} rows -> {s['path']}",
+                        f"   {s['name']}: {s['rows']} 条 -> {s['path']}",
+                    )
+                )
             emit_action(
                 "run",
                 input_files=[input_label(input_path)],
@@ -101,7 +127,13 @@ def run(
         st = build_pipeline(cfg, input_path, verbose=False)
     except ValueError as e:
         die(
-            "pipeline_error", str(e), suggestion="检查 pipeline 步骤定义和输入数据格式", exit_code=1
+            "pipeline_error",
+            str(e),
+            suggestion=t(
+                "Check the pipeline step definitions and the input data format",
+                "检查 pipeline 步骤定义和输入数据格式",
+            ),
+            exit_code=1,
         )
     write_output(
         st, output_path, action="run", inputs=[input_path], stats={"config": str(config_path)}

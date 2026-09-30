@@ -12,6 +12,7 @@
 - **`--dry-run`** on every side-effecting command runs the whole computation, writes nothing, prints the summary and exits with code 10.
 - **Formats**: JSONL/NDJSON (also `.gz`), JSON (also `.gz`), CSV/TSV, Parquet, Arrow/Feather, Excel, FlaxKV. Output format follows the extension. Only `.jsonl.gz` / `.json.gz` support compressed output.
 - **Exit codes**: 0 ok · 1 runtime error · 2 usage error · 3 not found · 4 permission · 5 conflict · 10 dry-run ok. Errors are JSON on stderr (`{error, message, suggestion, exit_code, context}`) when stderr is not a terminal.
+- **Language**: messages, help and `dt view` are in English by default. `dt lang zh` switches everything to Chinese and `dt lang en` switches back. The choice is saved in `~/.config/dtflow/config.json`; the `DT_LANG` environment variable overrides it for one run. Machine-readable output (JSON keys, error codes) is the same in both languages.
 - **Expressions** (`filter`, `select`, `map`, `sort --by`, `group --by`, `join --on`, `--where`) are Python with the row as `x`; **field paths** (`--key`, `--by` for sampling, `--field`, `--drop-empty`, `--min-len`, …) name one field with the `a.b[0].c` syntax. See [expressions.md](expressions.md).
 
 ## Primitives (compose with pipes)

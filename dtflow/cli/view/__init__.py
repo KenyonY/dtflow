@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from ...i18n import t
+
 # 单个窗口默认加载行数; 只 parse 这么多行, 其余靠偏移索引按需翻页。
 # 首屏/翻页耗时随行数线性 (add_row 成本), 主瓶颈的逐格 measure 已由 FastDataTable
 # 消除; 保留 1 万行的浏览窗口，搜索/筛选/排序始终覆盖全文件。
@@ -33,7 +35,7 @@ def _run_tui(
 ) -> None:
     """公共 TUI 启动: 取首窗口 → 检测格式 → 起 ViewApp。"""
     if source.total == 0 and not follow:
-        print("无数据。", file=sys.stderr)
+        print(t("No data.", "无数据。"), file=sys.stderr)
         raise SystemExit(1)
 
     offset = min(max(0, offset), max(0, source.total - 1))
@@ -80,13 +82,19 @@ def _view_stdin(
 
     source = read_stdin_source()  # 此刻 fd 0 仍是管道
     if source.total == 0:
-        print("stdin 无数据。", file=sys.stderr)
+        print(t("No data on stdin.", "stdin 无数据。"), file=sys.stderr)
         raise SystemExit(1)
 
     try:
         tty = open("/dev/tty")  # noqa: SIM115  (需长期持有到 TUI 退出)
     except OSError:
-        print("dt view - 需要交互式终端, 但无法打开 /dev/tty。", file=sys.stderr)
+        print(
+            t(
+                "dt view - needs an interactive terminal, but /dev/tty could not be opened.",
+                "dt view - 需要交互式终端, 但无法打开 /dev/tty。",
+            ),
+            file=sys.stderr,
+        )
         raise SystemExit(2) from None
     os.dup2(tty.fileno(), 0)  # fd 0 → tty, Textual 从此读真实键盘
 
@@ -145,8 +153,11 @@ def view(
 
     if not sys.stdout.isatty():
         die_usage(
-            "dt view 需要交互式终端 (TTY)",
-            suggestion="管道/重定向场景请用 dt head / dt sample / dt slice",
+            t("dt view needs an interactive terminal (TTY)", "dt view 需要交互式终端 (TTY)"),
+            suggestion=t(
+                "For pipes/redirects, use dt head / dt sample / dt slice",
+                "管道/重定向场景请用 dt head / dt sample / dt slice",
+            ),
         )
 
     from .source import open_source

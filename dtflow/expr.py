@@ -25,6 +25,7 @@ from functools import lru_cache
 from typing import Any, Callable, Dict, FrozenSet, Iterable, Optional
 
 from .core import DictWrapper, unwrap
+from .i18n import t
 from .utils.field_path import get_field_with_spec
 
 Row = Dict[str, Any]
@@ -48,7 +49,7 @@ class ExprSyntaxError(ValueError):
         self.expr = expr
         self.msg = msg
         self.offset = max(offset, 1)
-        super().__init__(f"表达式语法错误: {msg}")
+        super().__init__(t(f"Expression syntax error: {msg}", f"表达式语法错误: {msg}"))
 
     def caret(self) -> str:
         """表达式 + 指向出错位置的 ^, 给 stderr 提示用"""
@@ -83,7 +84,7 @@ def _compile(expr: str, mode: str, allowed: FrozenSet[str] = frozenset()):
     """编译 + 名字检查: 除 x / re / json / math / get / 内置名 / allowed 外的裸名字直接报错,
     否则 ``score > 0.5`` 这种漏写 x. 的表达式每行 NameError 却退出码 0, 静默得到 0 命中。"""
     if not expr.strip():
-        raise ExprSyntaxError(expr, "表达式为空", 1)
+        raise ExprSyntaxError(expr, t("empty expression", "表达式为空"), 1)
     try:
         tree = ast.parse(expr, "<expr>", mode)
     except SyntaxError as e:
@@ -94,7 +95,14 @@ def _compile(expr: str, mode: str, allowed: FrozenSet[str] = frozenset()):
     ok = _ALWAYS | _BUILTIN_NAMES | allowed
     for name, col in _free_names(tree).items():
         if name not in ok:
-            raise ExprSyntaxError(expr, f"未知名字 {name!r}: 字段请写 x.{name}", col)
+            raise ExprSyntaxError(
+                expr,
+                t(
+                    f"unknown name {name!r}: write fields as x.{name}",
+                    f"未知名字 {name!r}: 字段请写 x.{name}",
+                ),
+                col,
+            )
     # 整个表达式就是一个内置函数名 (id / type / input …): 十有八九是想写字段
     body = tree.body if mode == "eval" else None
     if (
@@ -102,7 +110,14 @@ def _compile(expr: str, mode: str, allowed: FrozenSet[str] = frozenset()):
         and body.id in _BUILTIN_NAMES
         and body.id not in ok - _BUILTIN_NAMES
     ):
-        raise ExprSyntaxError(expr, f"{body.id!r} 是 Python 内置名: 字段请写 x.{body.id}", 1)
+        raise ExprSyntaxError(
+            expr,
+            t(
+                f"{body.id!r} is a Python builtin: write fields as x.{body.id}",
+                f"{body.id!r} 是 Python 内置名: 字段请写 x.{body.id}",
+            ),
+            1,
+        )
     return compile(tree, "<expr>", mode)
 
 

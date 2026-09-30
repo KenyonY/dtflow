@@ -7,6 +7,7 @@ Token 统计模块
 
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from .i18n import t
 from .utils.field_path import get_field_with_spec
 
 # 延迟导入，避免未安装时报错
@@ -123,7 +124,12 @@ def _get_tiktoken_encoder(model: str):
             else:
                 _tokenizer_cache[model] = tiktoken.encoding_for_model(model)
         except ImportError as e:
-            raise ImportError("需要安装 tiktoken: pip install tiktoken") from e
+            raise ImportError(
+                t(
+                    "tiktoken is required: pip install tiktoken",
+                    "需要安装 tiktoken: pip install tiktoken",
+                )
+            ) from e
     return _tokenizer_cache[model]
 
 
@@ -151,9 +157,14 @@ def _get_hf_tokenizer(model: str):
                 _tokenizer_cache[resolved] = ("transformers", tokenizer)
             except ImportError as e:
                 raise ImportError(
-                    "需要安装 tokenizers 或 transformers:\n"
-                    "  pip install tokenizers huggingface_hub  (推荐，更轻量)\n"
-                    "  pip install transformers"
+                    t(
+                        "tokenizers or transformers is required:\n"
+                        "  pip install tokenizers huggingface_hub  (recommended, lighter)\n"
+                        "  pip install transformers",
+                        "需要安装 tokenizers 或 transformers:\n"
+                        "  pip install tokenizers huggingface_hub  (推荐，更轻量)\n"
+                        "  pip install transformers",
+                    )
                 ) from e
     return _tokenizer_cache[resolved]
 
@@ -197,7 +208,7 @@ def count_tokens(
         tokenizer_info = _get_hf_tokenizer(model)
         return _encode_tokens(tokenizer_info, text)
     else:
-        raise ValueError(f"不支持的 backend: {_backend}")
+        raise ValueError(t(f"Unsupported backend: {_backend}", f"不支持的 backend: {_backend}"))
 
 
 def token_counter(

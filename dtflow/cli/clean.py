@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from rich.markup import escape
 
 from ..core import DataTransformer
+from ..i18n import t
 from ..ops import (  # noqa: F401  测试与 _clean_data_single_pass 仍按旧名引用
     _add_fields,
     _fill_empty,
@@ -67,12 +68,15 @@ def dedupe(
     # 相似度去重模式必须指定 key
     if similar is not None and not key:
         die_usage(
-            "相似度去重需要指定 --key 参数",
-            suggestion="例: dt dedupe data.jsonl --key=text --similar=0.8",
+            t("Similarity dedupe requires --key", "相似度去重需要指定 --key 参数"),
+            suggestion=t(
+                "e.g. dt dedupe data.jsonl --key=text --similar=0.8",
+                "例: dt dedupe data.jsonl --key=text --similar=0.8",
+            ),
         )
 
     if similar is not None and (similar <= 0 or similar > 1):
-        die_usage("--similar 参数必须在 0-1 之间")
+        die_usage(t("--similar must be in (0, 1]", "--similar 参数必须在 0-1 之间"))
 
     field_path_arg(key, "--key")
     out = resolve_output(filename, output, in_place)
@@ -81,20 +85,30 @@ def dedupe(
 
     if similar is not None or dry_run:
         # 相似度去重要全量; dry-run 要精确的 input/removed 计数
-        log(f"📊 加载数据: {input_label(filename)}")
+        log(t(f"📊 Loading: {input_label(filename)}", f"📊 加载数据: {input_label(filename)}"))
         try:
             data = st.collect()
         except Exception as e:
-            die_io_error(e, operation="读取", path=input_label(filename))
-        log(f"   共 {len(data)} 条数据")
+            die_io_error(e, operation=t("Read", "读取"), path=input_label(filename))
+        log(t(f"   {len(data)} rows", f"   共 {len(data)} 条数据"))
         dt = DataTransformer(data)
         if similar is not None:
-            log(f"🔑 相似度去重: 字段={escape(key)}, 阈值={similar}")
+            log(
+                t(
+                    f"🔑 Similarity dedupe: field={escape(key)}, threshold={similar}",
+                    f"🔑 相似度去重: 字段={escape(key)}, 阈值={similar}",
+                )
+            )
             try:
                 result = dt.dedupe_similar(key, threshold=similar).data
             except ImportError as e:
                 die(
-                    "missing_dependency", str(e), suggestion="pip install datasketch 或改用精确去重"
+                    "missing_dependency",
+                    str(e),
+                    suggestion=t(
+                        "pip install datasketch, or use exact dedupe",
+                        "pip install datasketch 或改用精确去重",
+                    ),
                 )
         else:
             result = dt.dedupe(dedupe_key(key)).data
@@ -109,7 +123,11 @@ def dedupe(
         st = StreamingTransformer(iter(result), st._source_path, total=len(result))
     else:
         k = dedupe_key(key)
-        log("🔑 全量精确去重" if k is None else f"🔑 按字段精确去重: {escape(str(k))}")
+        log(
+            t("🔑 Exact dedupe on whole rows", "🔑 全量精确去重")
+            if k is None
+            else t(f"🔑 Exact dedupe by: {escape(str(k))}", f"🔑 按字段精确去重: {escape(str(k))}")
+        )
         if st._total is not None:
             stats["input_rows"] = st._total
         st = dedupe_rows(st, key)
@@ -216,43 +234,86 @@ def clean(
     empty_fields = None
     if drop_empty is not None:
         if drop_empty == "" or drop_empty is True:
-            log("🔄 删除任意字段为空的记录...")
+            log(t("🔄 Dropping rows with any empty field...", "🔄 删除任意字段为空的记录..."))
             empty_fields = []
         else:
             empty_fields = _parse_field_list(drop_empty)
-            log(f"🔄 删除字段为空的记录: {escape(', '.join(empty_fields))}")
+            log(
+                t(
+                    f"🔄 Dropping rows with empty: {escape(', '.join(empty_fields))}",
+                    f"🔄 删除字段为空的记录: {escape(', '.join(empty_fields))}",
+                )
+            )
 
     if strip:
-        log("🔄 去除字符串首尾空白...")
+        log(t("🔄 Stripping leading/trailing whitespace...", "🔄 去除字符串首尾空白..."))
     if min_len_field:
-        log(f"🔄 过滤 {escape(min_len_field)} 长度 < {min_len_value} 的记录...")
+        log(
+            t(
+                f"🔄 Dropping rows with {escape(min_len_field)} length < {min_len_value}...",
+                f"🔄 过滤 {escape(min_len_field)} 长度 < {min_len_value} 的记录...",
+            )
+        )
     if max_len_field:
-        log(f"🔄 过滤 {escape(max_len_field)} 长度 > {max_len_value} 的记录...")
+        log(
+            t(
+                f"🔄 Dropping rows with {escape(max_len_field)} length > {max_len_value}...",
+                f"🔄 过滤 {escape(max_len_field)} 长度 > {max_len_value} 的记录...",
+            )
+        )
     if keep_fields:
-        log(f"🔄 只保留字段: {escape(', '.join(keep_fields))}")
+        log(
+            t(
+                f"🔄 Keeping fields: {escape(', '.join(keep_fields))}",
+                f"🔄 只保留字段: {escape(', '.join(keep_fields))}",
+            )
+        )
     if drop_fields_set:
-        log(f"🔄 删除字段: {escape(', '.join(drop_fields_set))}")
+        log(
+            t(
+                f"🔄 Dropping fields: {escape(', '.join(drop_fields_set))}",
+                f"🔄 删除字段: {escape(', '.join(drop_fields_set))}",
+            )
+        )
     if rename_map:
         rename_desc = ", ".join(f"{k} → {v}" for k, v in rename_map.items())
-        log(f"🔄 重命名字段: {escape(rename_desc)}")
+        log(
+            t(f"🔄 Renaming fields: {escape(rename_desc)}", f"🔄 重命名字段: {escape(rename_desc)}")
+        )
     if promote_list:
         promote_desc = ", ".join(f"{src} → {dst}" for src, dst in promote_list)
-        log(f"🔄 提升字段: {escape(promote_desc)}")
+        log(
+            t(
+                f"🔄 Promoting fields: {escape(promote_desc)}",
+                f"🔄 提升字段: {escape(promote_desc)}",
+            )
+        )
     if add_field_map:
         add_desc = ", ".join(f"{k}={v}" for k, v in add_field_map.items())
-        log(f"🔄 添加字段: {escape(add_desc)}")
+        log(t(f"🔄 Adding fields: {escape(add_desc)}", f"🔄 添加字段: {escape(add_desc)}"))
     if fill_map:
         fill_desc = ", ".join(f"{k}={v}" for k, v in fill_map.items())
-        log(f"🔄 填充空值: {escape(fill_desc)}")
+        log(t(f"🔄 Filling empty values: {escape(fill_desc)}", f"🔄 填充空值: {escape(fill_desc)}"))
     if reorder_fields:
-        log(f"🔄 字段排序: {escape(', '.join(reorder_fields))}")
+        log(
+            t(
+                f"🔄 Reordering fields: {escape(', '.join(reorder_fields))}",
+                f"🔄 字段排序: {escape(', '.join(reorder_fields))}",
+            )
+        )
     if min_tokens_field:
         log(
-            f"🔄 过滤 {escape(min_tokens_field)} tokens < {min_tokens_value} 的记录 (model={token_model})..."
+            t(
+                f"🔄 Dropping rows where {escape(min_tokens_field)} tokens < {min_tokens_value} (model={token_model})...",
+                f"🔄 过滤 {escape(min_tokens_field)} tokens < {min_tokens_value} 的记录 (model={token_model})...",
+            )
         )
     if max_tokens_field:
         log(
-            f"🔄 过滤 {escape(max_tokens_field)} tokens > {max_tokens_value} 的记录 (model={token_model})..."
+            t(
+                f"🔄 Dropping rows where {escape(max_tokens_field)} tokens > {max_tokens_value} (model={token_model})...",
+                f"🔄 过滤 {escape(max_tokens_field)} tokens > {max_tokens_value} 的记录 (model={token_model})...",
+            )
         )
 
     out = resolve_output(filename, output, in_place)
@@ -260,11 +321,11 @@ def clean(
 
     if dry_run:
         # dry-run 走内存模式：返回准确的 input/output/removed 与各步统计 — 它本来就是预演
-        log(f"📊 加载数据: {input_label(filename)}")
+        log(t(f"📊 Loading: {input_label(filename)}", f"📊 加载数据: {input_label(filename)}"))
         try:
             rows = st.collect()
         except Exception as e:
-            die_io_error(e, operation="读取", path=input_label(filename))
+            die_io_error(e, operation=t("Read", "读取"), path=input_label(filename))
         data, step_stats = _clean_data_single_pass(
             rows,
             strip=strip,
@@ -298,7 +359,7 @@ def clean(
         )
         return
 
-    log(f"📊 流式处理: {input_label(filename)}")
+    log(t(f"📊 Streaming: {input_label(filename)}", f"📊 流式处理: {input_label(filename)}"))
     st = clean_rows(
         st,
         strip=strip,
@@ -329,11 +390,21 @@ def _parse_rename_param(param: str) -> Dict[str, str]:
     for pair in param.split(","):
         pair = pair.strip()
         if ":" not in pair:
-            raise ValueError(f"重命名参数格式错误: {pair}，应为 'old:new'")
+            raise ValueError(
+                t(
+                    f"Invalid rename spec: {pair}, expected 'old:new'",
+                    f"重命名参数格式错误: {pair}，应为 'old:new'",
+                )
+            )
         old, new = pair.split(":", 1)
         old, new = old.strip(), new.strip()
         if not old or not new:
-            raise ValueError(f"重命名参数格式错误: {pair}，字段名不能为空")
+            raise ValueError(
+                t(
+                    f"Invalid rename spec: {pair}, field names must not be empty",
+                    f"重命名参数格式错误: {pair}，字段名不能为空",
+                )
+            )
         rename_map[old] = new
     return rename_map
 
@@ -356,7 +427,7 @@ def _parse_promote_param(param: str) -> List[tuple]:
             # 默认用路径最后一段作为目标名
             dst = src.rsplit(".", 1)[-1] if "." in src else src
         if not src or not dst:
-            raise ValueError(f"promote 参数格式错误: {item}")
+            raise ValueError(t(f"Invalid promote spec: {item}", f"promote 参数格式错误: {item}"))
         result.append((src, dst))
     return result
 
@@ -367,11 +438,21 @@ def _parse_kv_param(param: str, param_name: str) -> Dict[str, str]:
     for pair in param.split(","):
         pair = pair.strip()
         if ":" not in pair:
-            raise ValueError(f"{param_name} 参数格式错误: {pair}，应为 'key:value'")
+            raise ValueError(
+                t(
+                    f"Invalid {param_name} spec: {pair}, expected 'key:value'",
+                    f"{param_name} 参数格式错误: {pair}，应为 'key:value'",
+                )
+            )
         key, value = pair.split(":", 1)
         key, value = key.strip(), value.strip()
         if not key:
-            raise ValueError(f"{param_name} 参数格式错误: {pair}，key 不能为空")
+            raise ValueError(
+                t(
+                    f"Invalid {param_name} spec: {pair}, key must not be empty",
+                    f"{param_name} 参数格式错误: {pair}，key 不能为空",
+                )
+            )
         kv_map[key] = value
     return kv_map
 
@@ -379,13 +460,20 @@ def _parse_kv_param(param: str, param_name: str) -> Dict[str, str]:
 def _parse_len_param(param: str) -> tuple:
     """解析长度参数，格式 'field:length'"""
     if ":" not in param:
-        raise ValueError(f"长度参数格式错误: {param}，应为 '字段:长度'")
+        raise ValueError(
+            t(
+                f"Invalid length spec: {param}, expected 'field:length'",
+                f"长度参数格式错误: {param}，应为 '字段:长度'",
+            )
+        )
     parts = param.split(":", 1)
     field = parts[0].strip()
     try:
         length = int(parts[1].strip())
     except ValueError as e:
-        raise ValueError(f"长度必须是整数: {parts[1]}") from e
+        raise ValueError(
+            t(f"Length must be an integer: {parts[1]}", f"长度必须是整数: {parts[1]}")
+        ) from e
     return field, length
 
 
@@ -531,17 +619,21 @@ def _clean_data_single_pass(
     if stats["max_tokens"] > 0:
         step_stats.append(f"max-tokens: -{stats['max_tokens']}")
     if keep_fields:
-        step_stats.append(f"keep: {len(keep_fields)} 字段")
+        step_stats.append(t(f"keep: {len(keep_fields)} fields", f"keep: {len(keep_fields)} 字段"))
     if drop_fields:
-        step_stats.append(f"drop: {len(drop_fields)} 字段")
+        step_stats.append(t(f"drop: {len(drop_fields)} fields", f"drop: {len(drop_fields)} 字段"))
     if rename_map:
-        step_stats.append(f"rename: {len(rename_map)} 字段")
+        step_stats.append(t(f"rename: {len(rename_map)} fields", f"rename: {len(rename_map)} 字段"))
     if promote_list:
-        step_stats.append(f"promote: {len(promote_list)} 字段")
+        step_stats.append(
+            t(f"promote: {len(promote_list)} fields", f"promote: {len(promote_list)} 字段")
+        )
     if add_field_map:
-        step_stats.append(f"add-field: {len(add_field_map)} 字段")
+        step_stats.append(
+            t(f"add-field: {len(add_field_map)} fields", f"add-field: {len(add_field_map)} 字段")
+        )
     if fill_map:
-        step_stats.append(f"fill: {len(fill_map)} 字段")
+        step_stats.append(t(f"fill: {len(fill_map)} fields", f"fill: {len(fill_map)} 字段"))
     if reorder_fields:
         step_stats.append("reorder")
 

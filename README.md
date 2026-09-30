@@ -42,7 +42,7 @@ dt filter data.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant
 dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alpaca / dpo → OpenAI messages
 ```
 
-Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every data command accepts `-` for stdin and writes to stdout when no `-o` is given, so everything composes. No data at hand? [`examples/`](examples/) has small synthetic chat / ShareGPT / Alpaca / DPO files to try these on.
+Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every data command accepts `-` for stdin and writes to stdout when no `-o` is given, so everything composes. The interface is in English; `dt lang zh` switches it to Chinese. No data at hand? [`examples/`](examples/) has small synthetic chat / ShareGPT / Alpaca / DPO files to try these on.
 
 ## Why dtflow
 

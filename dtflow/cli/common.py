@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import orjson
+from rich.cells import cell_len, get_character_cell_size
+
+from ..i18n import t
 
 # 支持的文件格式
 # 命令入口的格式门禁：必须与 storage/io.py 实际读得动的格式一致。
@@ -131,14 +134,16 @@ def _format_value(value: Any, max_len: Optional[int] = 120) -> str:
                 half_len = max_len // 2
                 head = _escape_markup(preview[:half_len])
                 tail = _escape_markup(preview[-half_len:])
-                return f'"{head} [yellow]<<<{len(lines)}行>>>[/yellow] {tail}"'
+                marker = t(f"{len(lines)} lines", f"{len(lines)}行")
+                return f'"{head} [yellow]<<<{marker}>>>[/yellow] {tail}"'
             return f'"{_escape_markup(preview)}"'
         if max_len is not None and len(value) > max_len:
             # 前半 + 省略标记 + 后半
             half_len = max_len // 2
             head = _escape_markup(value[:half_len])
             tail = _escape_markup(value[-half_len:])
-            return f'"{head} [yellow]<<<{len(value)}字符>>>[/yellow] {tail}"'
+            marker = t(f"{len(value)} chars", f"{len(value)}字符")
+            return f'"{head} [yellow]<<<{marker}>>>[/yellow] {tail}"'
         return f'"{_escape_markup(value)}"'
     return str(value)
 
@@ -255,7 +260,7 @@ def _print_samples(
         file_size: 文件大小（字节），当 total_count 为 None 时显示
     """
     if not samples:
-        print("没有数据")
+        print(t("No data", "没有数据"))
         return
 
     # 过滤字段
@@ -279,15 +284,24 @@ def _print_samples(
             field_names = ", ".join(sorted(all_fields))
 
             if total_count is not None:
-                info = f"总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                info = t(
+                    f"Rows: {total_count:,} | Sampled: {len(samples)} | Fields: {len(all_fields)}",
+                    f"总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个",
+                )
             elif file_size is not None:
-                info = f"文件大小: {_format_file_size(file_size)} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                info = t(
+                    f"File size: {_format_file_size(file_size)} | Sampled: {len(samples)} | Fields: {len(all_fields)}",
+                    f"文件大小: {_format_file_size(file_size)} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个",
+                )
             else:
-                info = f"采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                info = t(
+                    f"Sampled: {len(samples)} | Fields: {len(all_fields)}",
+                    f"采样: {len(samples)} 条 | 字段: {len(all_fields)} 个",
+                )
 
             console.print(
                 Panel(
-                    f"[dim]{info}[/dim]\n[dim]字段: {_escape_markup(field_names)}[/dim]",
+                    f"[dim]{info}[/dim]\n[dim]{t('Fields', '字段')}: {_escape_markup(field_names)}[/dim]",
                     title=f"[bold]📊 {_escape_markup(filename)}[/bold]",
                     expand=False,
                     border_style="dim",
@@ -315,7 +329,12 @@ def _print_samples(
             return
 
         for i, item in enumerate(samples, 1):
-            console.print(f"[bold cyan]--- 第 {i} 条 ---[/bold cyan]")
+            console.print(
+                t(
+                    f"[bold cyan]--- #{i} ---[/bold cyan]",
+                    f"[bold cyan]--- 第 {i} 条 ---[/bold cyan]",
+                )
+            )
             if isinstance(item, dict):
                 console.print(render_detail(item, fmt))
             else:
@@ -333,19 +352,35 @@ def _print_samples(
             print(f"\n📊 {filename}")
             if total_count is not None:
                 print(
-                    f"   总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                    t(
+                        f"   Rows: {total_count:,} | Sampled: {len(samples)} | Fields: {len(all_fields)}",
+                        f"   总行数: {total_count:,} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个",
+                    )
                 )
             elif file_size is not None:
                 print(
-                    f"   文件大小: {_format_file_size(file_size)} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个"
+                    t(
+                        f"   File size: {_format_file_size(file_size)} | Sampled: {len(samples)} | Fields: {len(all_fields)}",
+                        f"   文件大小: {_format_file_size(file_size)} | 采样: {len(samples)} 条 | 字段: {len(all_fields)} 个",
+                    )
                 )
             else:
-                print(f"   采样: {len(samples)} 条 | 字段: {len(all_fields)} 个")
-            print(f"   字段: {', '.join(sorted(all_fields))}")
+                print(
+                    t(
+                        f"   Sampled: {len(samples)} | Fields: {len(all_fields)}",
+                        f"   采样: {len(samples)} 条 | 字段: {len(all_fields)} 个",
+                    )
+                )
+            print(
+                t(
+                    f"   Fields: {', '.join(sorted(all_fields))}",
+                    f"   字段: {', '.join(sorted(all_fields))}",
+                )
+            )
             print()
 
         for i, item in enumerate(samples, 1):
-            print(f"--- 第 {i} 条 ---")
+            print(t(f"--- #{i} ---", f"--- 第 {i} 条 ---"))
             print(orjson.dumps(item, option=orjson.OPT_INDENT_2).decode("utf-8"))
             print()
 
@@ -404,15 +439,7 @@ def _truncate(v: Any, max_width: int) -> str:
     width = 0
     result = []
     for char in s:
-        # CJK 字符范围
-        if (
-            "\u4e00" <= char <= "\u9fff"
-            or "\u3000" <= char <= "\u303f"
-            or "\uff00" <= char <= "\uffef"
-        ):
-            char_width = 2
-        else:
-            char_width = 1
+        char_width = get_character_cell_size(char)
         if width + char_width > max_width - 3:  # 预留 ... 的宽度
             return "".join(result) + "..."
         result.append(char)
@@ -421,19 +448,8 @@ def _truncate(v: Any, max_width: int) -> str:
 
 
 def _display_width(s: str) -> int:
-    """计算字符串的显示宽度（中文字符算 2，ASCII 字符算 1）"""
-    width = 0
-    for char in s:
-        # CJK 字符范围
-        if (
-            "\u4e00" <= char <= "\u9fff"
-            or "\u3000" <= char <= "\u303f"
-            or "\uff00" <= char <= "\uffef"
-        ):
-            width += 2
-        else:
-            width += 1
-    return width
+    """计算字符串的显示宽度（中文等宽字符算 2，ASCII 字符算 1）"""
+    return cell_len(s)
 
 
 def _pad_to_width(s: str, target_width: int) -> str:
@@ -481,7 +497,14 @@ def apply_where(rows: List[Dict], exprs: Sequence[str], strict: bool = False) ->
             ok = pred(row)
         except Exception as e:
             if strict:
-                die("where_error", f"表达式求值失败: {type(e).__name__}: {e}", exit_code=1)
+                die(
+                    "where_error",
+                    t(
+                        f"Expression evaluation failed: {type(e).__name__}: {e}",
+                        f"表达式求值失败: {type(e).__name__}: {e}",
+                    ),
+                    exit_code=1,
+                )
             failed += 1
             if first_err is None:
                 first_err = f"{type(e).__name__}: {e}"
@@ -489,7 +512,12 @@ def apply_where(rows: List[Dict], exprs: Sequence[str], strict: bool = False) ->
         if ok:
             kept.append(row)
     if failed:
-        log(f"⚠ {failed}/{len(rows)} 行 --where 求值失败, 已视为不匹配 (首个: {first_err})")
+        log(
+            t(
+                f"⚠ --where failed on {failed}/{len(rows)} rows, treated as non-matching (first: {first_err})",
+                f"⚠ {failed}/{len(rows)} 行 --where 求值失败, 已视为不匹配 (首个: {first_err})",
+            )
+        )
     return kept
 
 
@@ -509,7 +537,10 @@ def field_path_arg(value: Optional[str], option: str) -> Optional[str]:
                 for p in str(value).split(",")
             )
             die_usage(
-                f"{option} 是字段路径, 不是表达式: 去掉 x. 前缀 ({item})",
+                t(
+                    f"{option} takes a field path, not an expression: drop the x. prefix ({item})",
+                    f"{option} 是字段路径, 不是表达式: 去掉 x. 前缀 ({item})",
+                ),
                 suggestion=f"{option}={fixed}",
             )
     return value

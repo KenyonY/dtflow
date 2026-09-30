@@ -7,6 +7,7 @@ from typing import Optional
 
 from .. import ops
 from ..expr import ExprSyntaxError
+from ..i18n import t
 from .output import die, die_usage, log
 from .pipe import load_rows, open_input, write_output
 
@@ -116,7 +117,7 @@ def sort_cmd(
     _guard("sort", lambda: compile_value(by))  # 先校验表达式, 再去读数据
     st = open_input(filename)
     if st._total:
-        log(f"📊 全量加载 {st._total} 行用于排序")
+        log(t(f"📊 Loading all {st._total} rows to sort", f"📊 全量加载 {st._total} 行用于排序"))
     st = _guard("sort", lambda: ops.sort_rows(st, by, desc, strict))
     _emit(st, output, "sort", filename)
 
@@ -173,11 +174,21 @@ def join_cmd(
         dt join data.jsonl labels.jsonl --on x.id --inner -o labeled.jsonl
     """
     if not (on or (left_on and right_on)):
-        die_usage("需要 --on EXPR, 或同时给 --left-on 与 --right-on")
+        die_usage(
+            t(
+                "Need --on EXPR, or both --left-on and --right-on",
+                "需要 --on EXPR, 或同时给 --left-on 与 --right-on",
+            )
+        )
     if on and (left_on or right_on):
-        die_usage("--on 与 --left-on/--right-on 只能二选一")
+        die_usage(
+            t(
+                "--on and --left-on/--right-on are mutually exclusive",
+                "--on 与 --left-on/--right-on 只能二选一",
+            )
+        )
     if left == "-" and right == "-":
-        die_usage("stdin (-) 只能出现一次")
+        die_usage(t("stdin (-) can be used only once", "stdin (-) 只能出现一次"))
     right_rows = load_rows(right)
     result = _guard(
         "join",
@@ -185,5 +196,11 @@ def join_cmd(
     )
     st, dup = result
     if dup:
-        log(f"[yellow]⚠ 右表有 {dup} 行重复键, 只取首条[/yellow]")
+        log(
+            t(
+                f"[yellow]⚠ Right table has {dup} rows with duplicate keys; "
+                f"keeping the first[/yellow]",
+                f"[yellow]⚠ 右表有 {dup} 行重复键, 只取首条[/yellow]",
+            )
+        )
     _emit(st, output, "join", left, right=right, right_rows=len(right_rows), right_dup_keys=dup)

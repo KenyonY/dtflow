@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import orjson
 
 from ..core import DataTransformer, DictWrapper, unwrap
+from ..i18n import t
 from ..presets import get_preset, list_presets
 from .output import die, die_usage, emit_action, log
 
@@ -68,17 +69,33 @@ def transform(
 
     # 配置文件模式
     if is_stdin(filename) and not config:
-        die_usage("stdin 输入没有文件名可推导配置", suggestion="用 --preset 或 -c 指定配置文件")
+        die_usage(
+            t("stdin has no filename to derive a config from", "stdin 输入没有文件名可推导配置"),
+            suggestion=t(
+                "Use --preset, or -c to pass a config file", "用 --preset 或 -c 指定配置文件"
+            ),
+        )
     config_path = _get_config_path(filepath, config)
 
     if not config_path.exists():
         if dry_run:
             die_usage(
-                "首次使用需要先生成配置，--dry-run 对配置生成无效",
-                suggestion=f"先执行: dt transform {filename}",
+                t(
+                    "No config yet; generate one first (--dry-run does not apply to config generation)",
+                    "首次使用需要先生成配置，--dry-run 对配置生成无效",
+                ),
+                suggestion=t(
+                    f"Run first: dt transform {filename}", f"先执行: dt transform {filename}"
+                ),
             )
         if is_stdin(filename):
-            die_usage(f"配置文件不存在: {config_path}", suggestion="先用文件生成配置再接管道")
+            die_usage(
+                t(f"Config file not found: {config_path}", f"配置文件不存在: {config_path}"),
+                suggestion=t(
+                    "Generate the config from a file first, then use it in a pipe",
+                    "先用文件生成配置再接管道",
+                ),
+            )
         _generate_config(filepath, config_path)
     else:
         _execute_transform(filename, config_path, output, num, dry_run=dry_run)
@@ -86,7 +103,7 @@ def transform(
 
 def _generate_config(input_path: Path, config_path: Path) -> None:
     """分析输入数据并生成配置文件"""
-    log(f"📊 分析输入数据: {input_path}")
+    log(t(f"📊 Analyzing input: {input_path}", f"📊 分析输入数据: {input_path}"))
 
     # 读取数据
     from .pipe import load_rows
@@ -94,12 +111,12 @@ def _generate_config(input_path: Path, config_path: Path) -> None:
     data = load_rows(str(input_path))
 
     if not data:
-        die("empty_file", "文件为空", exit_code=1)
+        die("empty_file", t("File is empty", "文件为空"), exit_code=1)
 
     total_count = len(data)
     sample_item = data[0]
 
-    log(f"   检测到 {total_count} 条数据")
+    log(t(f"   Found {total_count} rows", f"   检测到 {total_count} 条数据"))
 
     # 生成配置内容
     config_content = _build_config_content(sample_item, input_path.name, total_count)
@@ -110,10 +127,20 @@ def _generate_config(input_path: Path, config_path: Path) -> None:
     # 写入配置文件
     config_path.write_text(config_content, encoding="utf-8")
 
-    log(f"\n📝 已生成配置文件: {config_path}")
-    log("\n👉 下一步:")
-    log(f"   1. 编辑 {config_path}，定义 transform 函数")
-    log(f"   2. 再次执行 dt transform {input_path.name} 完成转换")
+    log(t(f"\n📝 Config generated: {config_path}", f"\n📝 已生成配置文件: {config_path}"))
+    log(t("\n👉 Next steps:", "\n👉 下一步:"))
+    log(
+        t(
+            f"   1. Edit {config_path} and define the transform function",
+            f"   1. 编辑 {config_path}，定义 transform 函数",
+        )
+    )
+    log(
+        t(
+            f"   2. Run dt transform {input_path.name} again to convert",
+            f"   2. 再次执行 dt transform {input_path.name} 完成转换",
+        )
+    )
     emit_action(
         "transform",
         status="config_generated",
@@ -142,20 +169,20 @@ def _build_config_content(sample: Dict[str, Any], filename: str, total: int) -> 
     output_filename = f"{base_name}_output.jsonl"
 
     config = f'''"""
-DataTransformer 配置文件
-生成时间: {now}
-输入文件: {filename} ({total} 条)
+{t("DataTransformer config", "DataTransformer 配置文件")}
+{t(f"Generated: {now}", f"生成时间: {now}")}
+{t(f"Input: {filename} ({total} rows)", f"输入文件: {filename} ({total} 条)")}
 """
 
 
-# ===== 输入数据结构（自动生成，IDE 可补全）=====
+# ===== {t("Input schema (auto-generated, IDE-completable) =====", "输入数据结构（自动生成，IDE 可补全）=====")}
 
 class Item:
 {fields_def}
 
 
-# ===== 定义转换逻辑 =====
-# 提示：输入 item. 后 IDE 会自动补全可用字段
+# ===== {t("Transform logic", "定义转换逻辑")} =====
+# {t("Tip: type item. and your IDE will complete the fields", "提示：输入 item. 后 IDE 会自动补全可用字段")}
 
 def transform(item: Item):
     return {{
@@ -163,13 +190,13 @@ def transform(item: Item):
     }}
 
 
-# 输出文件路径
+# {t("Output file path", "输出文件路径")}
 output = "{output_filename}"
 
 
-# ===== 示例 =====
+# ===== {t("Examples", "示例")} =====
 #
-# 示例1: 构建 OpenAI Chat 格式
+# {t("Example 1: OpenAI Chat format", "示例1: 构建 OpenAI Chat 格式")}
 # def transform(item: Item):
 #     return {{
 #         "messages": [
@@ -178,7 +205,7 @@ output = "{output_filename}"
 #         ]
 #     }}
 #
-# 示例2: Alpaca 格式
+# {t("Example 2: Alpaca format", "示例2: Alpaca 格式")}
 # def transform(item: Item):
 #     return {{
 #         "instruction": item.{safe_field1},
@@ -198,7 +225,7 @@ def _generate_fields_definition(sample: Dict[str, Any], indent: int = 4) -> str:
         type_name = _get_type_name(value)
         example = _format_example_value(value)
         safe_key, changed = _sanitize_field_name(key)
-        comment = f"  # 原字段名: {key}" if changed else ""
+        comment = t(f"  # original name: {key}", f"  # 原字段名: {key}") if changed else ""
         lines.append(f"{prefix}{safe_key}: {type_name} = {example}{comment}")
 
     return "\n".join(lines) if lines else f"{prefix}pass"
@@ -278,7 +305,11 @@ def _generate_default_transform(field_names: List[str]) -> str:
     for name in field_names[:5]:  # 最多显示 5 个字段
         safe_name, _ = _sanitize_field_name(name)
         lines.append(f'        "{name}": item.{safe_name},')
-    return "\n".join(lines) if lines else "        # 在这里定义输出字段"
+    return (
+        "\n".join(lines)
+        if lines
+        else t("        # define output fields here", "        # 在这里定义输出字段")
+    )
 
 
 def _execute_transform(
@@ -289,16 +320,19 @@ def _execute_transform(
     dry_run: bool = False,
 ) -> None:
     """使用配置文件执行转换"""
-    log(f"📂 使用配置: {config_path}")
+    log(t(f"📂 Using config: {config_path}", f"📂 使用配置: {config_path}"))
     try:
         config_ns = _load_config(config_path)
     except Exception as e:
-        die("config_load_failed", f"无法加载配置文件: {e}")
+        die("config_load_failed", t(f"Failed to load config: {e}", f"无法加载配置文件: {e}"))
 
     if "transform" not in config_ns:
         die_usage(
-            "配置文件中未定义 transform 函数",
-            suggestion=f"编辑 {config_path} 并添加 transform(item) 函数",
+            t("Config does not define a transform function", "配置文件中未定义 transform 函数"),
+            suggestion=t(
+                f"Edit {config_path} and add a transform(item) function",
+                f"编辑 {config_path} 并添加 transform(item) 函数",
+            ),
         )
 
     # 配置里的 output 是默认落盘位置; 两者都没有才走 stdout
@@ -314,11 +348,17 @@ def _execute_preset_transform(
     dry_run: bool = False,
 ) -> None:
     """使用预设模板执行转换"""
-    log(f"📂 使用预设: {preset_name}")
+    log(t(f"📂 Using preset: {preset_name}", f"📂 使用预设: {preset_name}"))
     try:
         transform_func = get_preset(preset_name)
     except ValueError as e:
-        die_usage(str(e), suggestion=f"可用预设: {', '.join(list_presets())}")
+        die_usage(
+            str(e),
+            suggestion=t(
+                f"Available presets: {', '.join(list_presets())}",
+                f"可用预设: {', '.join(list_presets())}",
+            ),
+        )
     _run_transform(filename, transform_func, output_override, num, dry_run, {"preset": preset_name})
 
 
@@ -336,14 +376,14 @@ def _run_transform(
     st = open_input(filename)
     if num:
         st = st.head(num)
-    log("🔄 执行转换...")
+    log(t("🔄 Transforming...", "🔄 执行转换..."))
 
     if dry_run:
         try:
             rows = st.collect()
             results = DataTransformer(rows).to(transform_func)
         except Exception as e:
-            die("transform_failed", f"转换失败: {e}")
+            die("transform_failed", t(f"Transform failed: {e}", f"转换失败: {e}"))
         preview = results[0] if results else None
         emit_action(
             "transform",

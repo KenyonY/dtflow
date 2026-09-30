@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 import orjson
 import polars as pl
 
+from ..i18n import t
+
 
 def save_data(data: List[Dict[str, Any]], filepath: str, file_format: Optional[str] = None) -> None:
     """
@@ -161,10 +163,17 @@ def _warn_skipped_lines(filepath: Path, skipped: List[int]) -> None:
     import sys
 
     shown = ", ".join(str(n) for n in skipped[:5])
-    more = f" 等 {len(skipped)} 行" if len(skipped) > 5 else ""
+    if len(skipped) > 5:
+        more = t(f" ({len(skipped)} lines in total)", f" 等 {len(skipped)} 行")
+    else:
+        more = ""
     print(
-        f"[Warning] {filepath}: 已跳过无法解析的第 {shown} 行{more}"
-        f"（用 dt view {filepath} 可直接定位，坏行会显示出来）",
+        t(
+            f"[Warning] {filepath}: skipped unparsable line(s) {shown}{more}"
+            f" (dt view {filepath} jumps straight to them; bad lines are shown)",
+            f"[Warning] {filepath}: 已跳过无法解析的第 {shown} 行{more}"
+            f"（用 dt view {filepath} 可直接定位，坏行会显示出来）",
+        ),
         file=sys.stderr,
     )
 
@@ -203,15 +212,25 @@ def _load_jsonl(filepath: Path) -> List[Dict[str, Any]]:
                         data.append(json.loads(line))
                         use_fallback = True
                         print(
-                            f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                            t(
+                                f"[Warning] Line {i+1} contains non-standard JSON (e.g. NaN); "
+                                f"switched to the standard json parser",
+                                f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                            ),
                             file=sys.stderr,
                         )
                     except json.JSONDecodeError as e:
                         snippet = line.decode("utf-8", errors="replace")[:120]
                         raise ValueError(
-                            f"{filepath} 第 {i + 1} 行不是合法 JSON: {e}\n"
-                            f"  行内容: {snippet}\n"
-                            f"  想直接看这一行用: dt view {filepath}（坏行会显示出来，不会中断浏览）"
+                            t(
+                                f"{filepath} line {i + 1} is not valid JSON: {e}\n"
+                                f"  Line content: {snippet}\n"
+                                f"  To inspect it directly: dt view {filepath}"
+                                f" (bad lines are shown without interrupting browsing)",
+                                f"{filepath} 第 {i + 1} 行不是合法 JSON: {e}\n"
+                                f"  行内容: {snippet}\n"
+                                f"  想直接看这一行用: dt view {filepath}（坏行会显示出来，不会中断浏览）",
+                            )
                         ) from e
 
     return data
@@ -242,7 +261,10 @@ def _load_json(filepath: Path) -> List[Dict[str, Any]]:
     except orjson.JSONDecodeError:
         # orjson 解析失败，回退到标准 json
         print(
-            "[Warning] 文件包含非标准 JSON（如 NaN），使用标准 json 解析",
+            t(
+                "[Warning] File contains non-standard JSON (e.g. NaN); using the standard json parser",
+                "[Warning] 文件包含非标准 JSON（如 NaN），使用标准 json 解析",
+            ),
             file=sys.stderr,
         )
         data = json.loads(content)
@@ -557,7 +579,10 @@ def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
         import sys
 
         print(
-            f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
+            t(
+                f"[Warning] Polars ndjson parsing failed, falling back to Python: {type(e).__name__}",
+                f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
+            ),
             file=sys.stderr,
         )
 
@@ -613,7 +638,10 @@ def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
         import sys
 
         print(
-            f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
+            t(
+                f"[Warning] Polars ndjson parsing failed, falling back to Python: {type(e).__name__}",
+                f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
+            ),
             file=sys.stderr,
         )
 
@@ -742,7 +770,12 @@ def _stream_random_jsonl(
         import sys
 
         print(
-            f"[Warning] Polars ndjson 解析失败，回退到流式采样: {type(e).__name__}", file=sys.stderr
+            t(
+                f"[Warning] Polars ndjson parsing failed, falling back to streaming sampling: "
+                f"{type(e).__name__}",
+                f"[Warning] Polars ndjson 解析失败，回退到流式采样: {type(e).__name__}",
+            ),
+            file=sys.stderr,
         )
         return _count_sample_jsonl(filepath, num, seed)
 

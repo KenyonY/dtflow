@@ -23,6 +23,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Pattern, Sequence, Tuple
 
+from ...i18n import t
 from . import render
 from .source import SourceChangedError, _identity, _loads
 
@@ -266,13 +267,15 @@ def _iter_chunk(
     i = first_row
     with open(path, "rb") as f:
         if expected is not None and _identity(os.fstat(f.fileno())) != expected:
-            raise SourceChangedError("文件已被替换")
+            raise SourceChangedError(t("file was replaced", "文件已被替换"))
         f.seek(start)
         pos = start
         while pos < end:
             line = f.readline(end - pos)
             if not line:
-                raise SourceChangedError("文件在扫描期间被截断")
+                raise SourceChangedError(
+                    t("file was truncated during the scan", "文件在扫描期间被截断")
+                )
             pos += len(line)
             line = line.strip()
             if not line:

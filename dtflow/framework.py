@@ -17,10 +17,11 @@
 """
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional
+
+from .i18n import t
 
 # 支持的框架类型
 FrameworkType = Literal["llama-factory", "swift", "axolotl"]
@@ -41,21 +42,21 @@ class CompatibilityResult:
         return self.valid
 
     def __str__(self) -> str:
-        status = "✅ 兼容" if self.valid else "❌ 不兼容"
+        status = t("✅ Compatible", "✅ 兼容") if self.valid else t("❌ Incompatible", "❌ 不兼容")
         lines = [f"{status} - {self.framework} ({self.format})"]
 
         if self.errors:
-            lines.append("\n错误:")
+            lines.append(t("\nErrors:", "\n错误:"))
             for err in self.errors:
                 lines.append(f"  - {err}")
 
         if self.warnings:
-            lines.append("\n警告:")
+            lines.append(t("\nWarnings:", "\n警告:"))
             for warn in self.warnings:
                 lines.append(f"  - {warn}")
 
         if self.suggestions:
-            lines.append("\n建议:")
+            lines.append(t("\nSuggestions:", "\n建议:"))
             for sug in self.suggestions:
                 lines.append(f"  - {sug}")
 
@@ -142,8 +143,13 @@ def check_compatibility(
             valid=False,
             framework=framework,
             format="unknown",
-            errors=[f"不支持的框架: {framework}"],
-            suggestions=["支持的框架: llama-factory, swift, axolotl"],
+            errors=[t(f"Unsupported framework: {framework}", f"不支持的框架: {framework}")],
+            suggestions=[
+                t(
+                    "Supported frameworks: llama-factory, swift, axolotl",
+                    "支持的框架: llama-factory, swift, axolotl",
+                )
+            ],
         )
 
 
@@ -156,8 +162,13 @@ def _check_llama_factory_compatibility(data: List[dict]) -> CompatibilityResult:
 
     # 检查格式兼容性
     if format_type == "unknown":
-        errors.append("无法识别数据格式")
-        suggestions.append("LLaMA-Factory 支持: alpaca, sharegpt, openai_chat")
+        errors.append(t("Unrecognized data format", "无法识别数据格式"))
+        suggestions.append(
+            t(
+                "LLaMA-Factory supports: alpaca, sharegpt, openai_chat",
+                "LLaMA-Factory 支持: alpaca, sharegpt, openai_chat",
+            )
+        )
         return CompatibilityResult(
             valid=False,
             framework="LLaMA-Factory",
@@ -171,12 +182,22 @@ def _check_llama_factory_compatibility(data: List[dict]) -> CompatibilityResult:
 
     if format_type == "openai_chat":
         # 需要转换为 sharegpt 格式
-        suggestions.append("建议使用 to_llama_factory_sharegpt() 转换")
+        suggestions.append(
+            t(
+                "Convert with to_llama_factory_sharegpt()",
+                "建议使用 to_llama_factory_sharegpt() 转换",
+            )
+        )
 
     elif format_type == "alpaca":
         # 直接兼容
         if "input" not in sample:
-            warnings.append("缺少 'input' 字段，将使用空字符串")
+            warnings.append(
+                t(
+                    "Missing 'input' field; an empty string will be used",
+                    "缺少 'input' 字段，将使用空字符串",
+                )
+            )
 
     elif format_type == "sharegpt":
         # 检查角色名
@@ -188,15 +209,27 @@ def _check_llama_factory_compatibility(data: List[dict]) -> CompatibilityResult:
             valid_roles = {"human", "gpt", "user", "assistant", "system"}
             invalid_roles = roles - valid_roles
             if invalid_roles:
-                warnings.append(f"非标准角色名: {invalid_roles}")
-                suggestions.append("标准角色: human/gpt 或 user/assistant")
+                warnings.append(
+                    t(f"Non-standard role names: {invalid_roles}", f"非标准角色名: {invalid_roles}")
+                )
+                suggestions.append(
+                    t(
+                        "Standard roles: human/gpt or user/assistant",
+                        "标准角色: human/gpt 或 user/assistant",
+                    )
+                )
 
     elif format_type == "dpo":
         # LLaMA-Factory 支持 DPO
         pass
 
     elif format_type == "simple_qa":
-        suggestions.append("建议使用 to_llama_factory() 转换为 alpaca 格式")
+        suggestions.append(
+            t(
+                "Convert to alpaca format with to_llama_factory()",
+                "建议使用 to_llama_factory() 转换为 alpaca 格式",
+            )
+        )
 
     return CompatibilityResult(
         valid=len(errors) == 0,
@@ -216,8 +249,13 @@ def _check_swift_compatibility(data: List[dict]) -> CompatibilityResult:
     suggestions = []
 
     if format_type == "unknown":
-        errors.append("无法识别数据格式")
-        suggestions.append("ms-swift 支持: messages, query-response, sharegpt")
+        errors.append(t("Unrecognized data format", "无法识别数据格式"))
+        suggestions.append(
+            t(
+                "ms-swift supports: messages, query-response, sharegpt",
+                "ms-swift 支持: messages, query-response, sharegpt",
+            )
+        )
         return CompatibilityResult(
             valid=False,
             framework="ms-swift",
@@ -231,7 +269,9 @@ def _check_swift_compatibility(data: List[dict]) -> CompatibilityResult:
         # messages 格式直接支持
         pass
     elif format_type == "alpaca":
-        suggestions.append("建议使用 to_swift_query_response() 转换")
+        suggestions.append(
+            t("Convert with to_swift_query_response()", "建议使用 to_swift_query_response() 转换")
+        )
     elif format_type == "sharegpt":
         # 需要转换角色
         pass
@@ -254,8 +294,13 @@ def _check_axolotl_compatibility(data: List[dict]) -> CompatibilityResult:
     suggestions = []
 
     if format_type == "unknown":
-        errors.append("无法识别数据格式")
-        suggestions.append("Axolotl 支持: alpaca, sharegpt, openai_chat")
+        errors.append(t("Unrecognized data format", "无法识别数据格式"))
+        suggestions.append(
+            t(
+                "Axolotl supports: alpaca, sharegpt, openai_chat",
+                "Axolotl 支持: alpaca, sharegpt, openai_chat",
+            )
+        )
         return CompatibilityResult(
             valid=False,
             framework="Axolotl",
@@ -324,7 +369,7 @@ def export_for(
     elif framework == "axolotl":
         return _export_axolotl(data, output_path, dataset_name, format_type, **kwargs)
     else:
-        raise ValueError(f"不支持的框架: {framework}")
+        raise ValueError(t(f"Unsupported framework: {framework}", f"不支持的框架: {framework}"))
 
 
 def _export_llama_factory(
@@ -357,10 +402,10 @@ def _export_llama_factory(
         f.write(train_args)
     files["train_args"] = str(args_file)
 
-    print(f"✅ LLaMA-Factory 导出完成:")
-    print(f"   数据文件: {data_file}")
-    print(f"   配置文件: {info_file}")
-    print(f"   训练参数: {args_file}")
+    print(t("✅ LLaMA-Factory export done:", "✅ LLaMA-Factory 导出完成:"))
+    print(t(f"   Data file: {data_file}", f"   数据文件: {data_file}"))
+    print(t(f"   Dataset info: {info_file}", f"   配置文件: {info_file}"))
+    print(t(f"   Train args: {args_file}", f"   训练参数: {args_file}"))
 
     return files
 
@@ -422,37 +467,47 @@ def _generate_llama_factory_train_args(
     **kwargs,
 ) -> str:
     """生成 LLaMA-Factory 训练参数模板"""
-    return f"""### LLaMA-Factory 训练参数模板
-### 使用: llamafactory-cli train train_args.yaml
+    title = t("LLaMA-Factory training args template", "LLaMA-Factory 训练参数模板")
+    usage = t("Usage", "使用")
+    h_model, h_method, h_dataset, h_output, h_train, h_lora = (
+        t("Model", "模型"),
+        t("Method", "方法"),
+        t("Dataset", "数据集"),
+        t("Output", "输出"),
+        t("Training", "训练参数"),
+        t("LoRA", "LoRA 参数"),
+    )
+    return f"""### {title}
+### {usage}: llamafactory-cli train train_args.yaml
 
-### 模型
+### {h_model}
 model_name_or_path: {model_name}
 
-### 方法
+### {h_method}
 stage: sft
 do_train: true
 finetuning_type: lora
 
-### 数据集
+### {h_dataset}
 dataset: {dataset_name}
 dataset_dir: .
 template: qwen
 cutoff_len: 2048
 
-### 输出
+### {h_output}
 output_dir: ./output
 logging_steps: 10
 save_steps: 500
 plot_loss: true
 
-### 训练参数
+### {h_train}
 per_device_train_batch_size: 2
 gradient_accumulation_steps: 4
 learning_rate: 1.0e-4
 num_train_epochs: 3.0
 lr_scheduler_type: cosine
 
-### LoRA 参数
+### {h_lora}
 lora_rank: 8
 lora_alpha: 16
 lora_dropout: 0.1
@@ -484,9 +539,9 @@ def _export_swift(
         f.write(train_script)
     files["train_script"] = str(script_file)
 
-    print(f"✅ ms-swift 导出完成:")
-    print(f"   数据文件: {data_file}")
-    print(f"   训练脚本: {script_file}")
+    print(t("✅ ms-swift export done:", "✅ ms-swift 导出完成:"))
+    print(t(f"   Data file: {data_file}", f"   数据文件: {data_file}"))
+    print(t(f"   Train script: {script_file}", f"   训练脚本: {script_file}"))
 
     return files
 
@@ -498,15 +553,11 @@ def _generate_swift_train_script(
     **kwargs,
 ) -> str:
     """生成 ms-swift 训练脚本"""
-    # 确定数据集格式
-    if format_type in ("openai_chat", "sharegpt"):
-        dataset_format = "messages"
-    else:
-        dataset_format = "query-response"
-
+    title = t("ms-swift training script", "ms-swift 训练脚本")
+    usage = t("Usage", "使用")
     return f"""#!/bin/bash
-# ms-swift 训练脚本
-# 使用: bash train.sh
+# {title}
+# {usage}: bash train.sh
 
 swift sft \\
     --model_type {model_name} \\
@@ -548,9 +599,9 @@ def _export_axolotl(
         f.write(config)
     files["config"] = str(config_file)
 
-    print(f"✅ Axolotl 导出完成:")
-    print(f"   数据文件: {data_file}")
-    print(f"   配置文件: {config_file}")
+    print(t("✅ Axolotl export done:", "✅ Axolotl 导出完成:"))
+    print(t(f"   Data file: {data_file}", f"   数据文件: {data_file}"))
+    print(t(f"   Config file: {config_file}", f"   配置文件: {config_file}"))
 
     return files
 
@@ -572,8 +623,10 @@ def _generate_axolotl_config(
     else:
         ds_type = "completion"
 
-    return f"""# Axolotl 配置文件
-# 使用: accelerate launch -m axolotl.cli.train config.yaml
+    title = t("Axolotl config", "Axolotl 配置文件")
+    usage = t("Usage", "使用")
+    return f"""# {title}
+# {usage}: accelerate launch -m axolotl.cli.train config.yaml
 
 base_model: {model_name}
 model_type: AutoModelForCausalLM

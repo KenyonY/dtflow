@@ -30,6 +30,7 @@ docs/
 | **Lineage** | `lineage.py` | sidecar files, `dt history` |
 | **CLI** | `__main__.py`, `cli/` | typer commands; `cli/pipe.py` is the stdin/stdout layer; `cli/view/` is the browser |
 | **IO** | `storage/io.py` | JSONL/JSON (+`.gz`), CSV/TSV, Parquet, Arrow, Excel, FlaxKV via Polars/orjson |
+| **Language** | `i18n.py` | `t("English", "中文")` for every user-facing string; `dt lang` / `DT_LANG` pick one at import |
 | **Field paths** | `utils/field_path.py` | `a.b`, `a[0].b`, `a.#`, `a[*].b` |
 
 Regenerate the README screenshots and GIF with `python scripts/view_showcase.py` (drives the real TUI headlessly; needs playwright + ffmpeg).

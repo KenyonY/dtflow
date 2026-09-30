@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from ..i18n import t
 from ..streaming import StreamingTransformer, open_stream
 from .common import _check_file_format, _require_file_exists
 from .output import (
@@ -52,7 +53,7 @@ def open_input(filename: str) -> StreamingTransformer:
     try:
         return open_stream(filename)
     except Exception as e:
-        die_io_error(e, operation="读取", path=input_label(filename))
+        die_io_error(e, operation=t("Read", "读取"), path=input_label(filename))
 
 
 def load_rows(filename: str) -> List[Dict]:
@@ -61,7 +62,7 @@ def load_rows(filename: str) -> List[Dict]:
     try:
         return st.collect()
     except Exception as e:
-        die_io_error(e, operation="读取", path=input_label(filename))
+        die_io_error(e, operation=t("Read", "读取"), path=input_label(filename))
 
 
 def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None, action: str = "") -> int:
@@ -95,11 +96,18 @@ def emit_rows(st: StreamingTransformer, *, fmt: Optional[str] = None, action: st
     st.report_errors()
     if truncated:
         log(
-            f"[yellow]… 终端预览只显示前 {limit} 条 (未消费完, 总数未知); 取全量请 -o FILE 落盘、"
-            f"| 接下游, 或 --format=ndjson[/yellow]"
+            t(
+                f"[yellow]… Terminal preview shows only the first {limit} rows (input not fully "
+                f"consumed, total unknown); for everything use -o FILE, pipe with |, "
+                f"or --format=ndjson[/yellow]",
+                f"[yellow]… 终端预览只显示前 {limit} 条 (未消费完, 总数未知); 取全量请 -o FILE 落盘、"
+                f"| 接下游, 或 --format=ndjson[/yellow]",
+            )
         )
     elif action:
-        log(f"[dim]{action}: 输出 {count} 条[/dim]")
+        log(
+            t(f"[dim]{action}: {count} rows written[/dim]", f"[dim]{action}: 输出 {count} 条[/dim]")
+        )
     return count
 
 
@@ -110,7 +118,13 @@ def check_output_path(output: str) -> None:
 
     p = Path(output)
     if is_gz(p) and _detect_format(p) not in ("jsonl", "json"):
-        die_usage(f"{p.name}: 只有 .jsonl.gz / .json.gz 支持压缩写出", suggestion="改用 .jsonl.gz")
+        die_usage(
+            t(
+                f"{p.name}: only .jsonl.gz / .json.gz support compressed output",
+                f"{p.name}: 只有 .jsonl.gz / .json.gz 支持压缩写出",
+            ),
+            suggestion=t("Use .jsonl.gz instead", "改用 .jsonl.gz"),
+        )
 
 
 def save_rows(st: StreamingTransformer, output: str) -> int:
@@ -125,7 +139,7 @@ def save_rows(st: StreamingTransformer, output: str) -> int:
         try:
             return st.save(output, show_progress=is_stderr_tty())
         except OSError as e:
-            die_io_error(e, operation="保存", path=output)
+            die_io_error(e, operation=t("Save", "保存"), path=output)
     fd, tmp = tempfile.mkstemp(suffix="".join(out.suffixes), prefix=".tmp_", dir=out.parent)
     os.close(fd)
     try:
@@ -134,7 +148,7 @@ def save_rows(st: StreamingTransformer, output: str) -> int:
         shutil.move(tmp, output)
         return n
     except OSError as e:
-        die_io_error(e, operation="保存", path=output)
+        die_io_error(e, operation=t("Save", "保存"), path=output)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -167,7 +181,7 @@ def write_output(
         raise
     except Exception as e:
         die(f"{action}_failed", f"{type(e).__name__}: {e}", exit_code=1)
-    log(f"💾 保存结果: {output}")
+    log(t(f"💾 Saved: {output}", f"💾 保存结果: {output}"))
     emit_action(
         action,
         input_files=[input_label(f) for f in inputs],
@@ -184,8 +198,16 @@ def resolve_output(filename: str, output: Optional[str], in_place: bool) -> Opti
 
     if in_place:
         if output:
-            die_usage("-i/--in-place 与 -o/--output 只能二选一")
+            die_usage(
+                t(
+                    "-i/--in-place and -o/--output are mutually exclusive",
+                    "-i/--in-place 与 -o/--output 只能二选一",
+                )
+            )
         if is_stdin(filename):
-            die_usage("stdin 输入无法原地写回", suggestion="用 -o FILE 或直接接管道")
+            die_usage(
+                t("Cannot write stdin input in place", "stdin 输入无法原地写回"),
+                suggestion=t("Use -o FILE or pipe the output", "用 -o FILE 或直接接管道"),
+            )
         return filename
     return None if output == STDIN else output

@@ -30,7 +30,9 @@ isort's Black profile. Name modules, functions, and variables with `snake_case`;
 `PascalCase`; constants with `UPPER_SNAKE_CASE`. Keep the existing functional, chainable API style
 and prefer small helpers over new inheritance hierarchies. CLI changes must preserve the documented
 stdout/stderr and exit-code contracts. Update `README.md`, `docs/`, or `dtflow/SKILL.md` when public
-behavior changes.
+behavior changes. Every user-facing string (help, messages, errors, `dt view` labels) is written as
+`t("English", "中文")` from `dtflow/i18n.py`; command help goes in `@app.command(help=t(...))`,
+not in docstrings. `tests/test_i18n.py` fails on Chinese text outside `t()`.
 
 ## Testing Guidelines
 

@@ -11,6 +11,7 @@ from typing import Optional
 
 from rich.markup import escape
 
+from ..i18n import t
 from ..utils.field_path import get_field
 from ..utils.text_parser import extract_code_snippets, parse_generic_tags, strip_think_tags
 from .output import die, die_usage, emit_action, log
@@ -55,7 +56,12 @@ def eval(
     # --- 加载数据 ---
     data = load_rows(result_file)
     df = pd.DataFrame(data)
-    log(f"[cyan]加载 {input_label(result_file)}，共 {len(df)} 条[/cyan]")
+    log(
+        t(
+            f"[cyan]Loaded {input_label(result_file)}: {len(df)} rows[/cyan]",
+            f"[cyan]加载 {input_label(result_file)}，共 {len(df)} 条[/cyan]",
+        )
+    )
 
     # 合并 source 文件
     if source:
@@ -64,21 +70,35 @@ def eval(
         if len(source_df) != len(df):
             die(
                 "row_count_mismatch",
-                f"行数不一致: result={len(df)}, source={len(source_df)}",
-                suggestion="确保 result_file 与 source 一一对应",
+                t(
+                    f"Row count mismatch: result={len(df)}, source={len(source_df)}",
+                    f"行数不一致: result={len(df)}, source={len(source_df)}",
+                ),
+                suggestion=t(
+                    "Make sure result_file and source align row by row",
+                    "确保 result_file 与 source 一一对应",
+                ),
                 exit_code=2,
             )
         for col in source_df.columns:
             if col not in df.columns:
                 df[col] = source_df[col].values
-        log(f"[dim]已合并 source 文件: {source}[/dim]")
+        log(
+            t(
+                f"[dim]Merged source file: {source}[/dim]",
+                f"[dim]已合并 source 文件: {source}[/dim]",
+            )
+        )
 
     # --- 解析 response_col（支持嵌套）---
     response_col_resolved = _resolve_nested_col(df, response_col)
     if response_col_resolved is None:
         die_usage(
-            f"响应列 '{response_col}' 不存在",
-            suggestion=f"可用列: {list(df.columns)}",
+            t(
+                f"Response column '{response_col}' not found",
+                f"响应列 '{response_col}' 不存在",
+            ),
+            suggestion=t(f"Available columns: {list(df.columns)}", f"可用列: {list(df.columns)}"),
         )
 
     # --- 自动检测 label_col ---
@@ -86,16 +106,19 @@ def eval(
         label_col = _auto_detect_label_col(df)
         if label_col is None:
             die_usage(
-                "未找到标签列",
-                suggestion=f"通过 --label-col 指定. 可用列: {list(df.columns)}",
+                t("No label column found", "未找到标签列"),
+                suggestion=t(
+                    f"Specify it with --label-col. Available columns: {list(df.columns)}",
+                    f"通过 --label-col 指定. 可用列: {list(df.columns)}",
+                ),
             )
 
     # 解析 label_col（支持嵌套）
     label_col_resolved = _resolve_nested_col(df, label_col)
     if label_col_resolved is None:
         die_usage(
-            f"标签列 '{label_col}' 不存在",
-            suggestion=f"可用列: {list(df.columns)}",
+            t(f"Label column '{label_col}' not found", f"标签列 '{label_col}' 不存在"),
+            suggestion=t(f"Available columns: {list(df.columns)}", f"可用列: {list(df.columns)}"),
         )
 
     log(
@@ -155,7 +178,7 @@ def eval(
         return
 
     # --- 调用 export_eval_report ---
-    log("[bold green]评估结果[/bold green]")
+    log(t("[bold green]Evaluation results[/bold green]", "[bold green]评估结果[/bold green]"))
     input_name = Path(result_file).stem
     try:
         export_eval_report(
@@ -168,7 +191,7 @@ def eval(
     except Exception as e:
         die(
             "eval_failed",
-            f"指标计算失败: {e}",
+            t(f"Metric computation failed: {e}", f"指标计算失败: {e}"),
             exit_code=1,
         )
 
@@ -291,7 +314,12 @@ def _apply_op(text: str, op: str, sep: Optional[str] = None) -> str:
             return m.group(1) if m.lastindex else m.group(0)
         return text
     else:
-        log(f"[yellow]未知算子: {escape(str(op))}，跳过[/yellow]")
+        log(
+            t(
+                f"[yellow]Unknown operator: {escape(str(op))}, skipped[/yellow]",
+                f"[yellow]未知算子: {escape(str(op))}，跳过[/yellow]",
+            )
+        )
         return text
 
 

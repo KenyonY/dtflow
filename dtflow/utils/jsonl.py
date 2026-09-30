@@ -6,6 +6,8 @@ import os
 import threading
 from pathlib import Path
 
+from ..i18n import t
+
 _CHECK_BLOCK = 8 * 1024 * 1024
 # Polars 1.36 的自动解压签名。这里统计的是原始 JSONL 字节，不能解压后再计数。
 _COMPRESSION_PREFIXES = (b"\x1f\x8b", b"x\x01", b"x^", b"x\x9c", b"x\xda", b"\x28\xb5\x2f\xfd")
@@ -25,10 +27,10 @@ def count_jsonl_rows(path: Path, *, end=None, expected_identity=None, cancel=Non
         before = os.fstat(f.fileno())
         if expected_identity is not None:
             if (before.st_dev, before.st_ino) != expected_identity:
-                raise OSError("文件已被替换")
+                raise OSError(t("File was replaced", "文件已被替换"))
         end = before.st_size if end is None else end
         if before.st_size < end:
-            raise OSError("文件已被截断")
+            raise OSError(t("File was truncated", "文件已被截断"))
         if cancel.is_set():
             return None
         if not end:
@@ -59,7 +61,7 @@ def count_jsonl_rows(path: Path, *, end=None, expected_identity=None, cancel=Non
             return None
         after = os.fstat(f.fileno())
         if after.st_size < end:
-            raise OSError("文件在计数期间被截断")
+            raise OSError(t("File was truncated during counting", "文件在计数期间被截断"))
         if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
             after.st_size,
             after.st_mtime_ns,
@@ -77,7 +79,7 @@ def count_jsonl_rows(path: Path, *, end=None, expected_identity=None, cancel=Non
                     return None
                 block = f.read(min(_CHECK_BLOCK, remaining))
                 if not block:
-                    raise OSError("文件在计数期间被截断")
+                    raise OSError(t("File was truncated during counting", "文件在计数期间被截断"))
                 remaining -= len(block)
                 if b"\v" in block or b"\f" in block:
                     total = None
@@ -91,9 +93,9 @@ def count_jsonl_rows(path: Path, *, end=None, expected_identity=None, cancel=Non
                     return None
                 line = f.readline(end - pos)
                 if not line:
-                    raise OSError("文件在计数期间被截断")
+                    raise OSError(t("File was truncated during counting", "文件在计数期间被截断"))
                 pos += len(line)
                 total += bool(line.strip())
         if os.fstat(f.fileno()).st_size < end:
-            raise OSError("文件在计数期间被截断")
+            raise OSError(t("File was truncated during counting", "文件在计数期间被截断"))
         return None if cancel.is_set() else total

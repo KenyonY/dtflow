@@ -7,6 +7,7 @@ from typing import Optional
 
 from rich.markup import escape
 
+from ..i18n import t
 from ..ops import parse_ratio, split_names, split_rows
 from ..storage.io import save_data
 from .output import die_io_error, die_usage, emit_action, log
@@ -40,9 +41,20 @@ def split(
 
     filepath = Path(filename)
     if output == "-":
-        die_usage("split 输出多个文件, -o 必须是目录, 不能是 -")
+        die_usage(
+            t(
+                "split writes multiple files; -o must be a directory, not -",
+                "split 输出多个文件, -o 必须是目录, 不能是 -",
+            )
+        )
     if is_stdin(filename) and not (output and name):
-        die_usage("stdin 输入需要指定输出目录和文件名前缀", suggestion="-o DIR --name STEM")
+        die_usage(
+            t(
+                "stdin input requires an output directory and a file name prefix",
+                "stdin 输入需要指定输出目录和文件名前缀",
+            ),
+            suggestion="-o DIR --name STEM",
+        )
 
     # 解析比例
     try:
@@ -50,17 +62,25 @@ def split(
     except ValueError as e:
         die_usage(
             str(e),
-            suggestion="示例: --ratio=0.8 (二分) 或 --ratio=0.7,0.15,0.15 (三分)",
+            suggestion=t(
+                "Example: --ratio=0.8 (two-way) or --ratio=0.7,0.15,0.15 (three-way)",
+                "示例: --ratio=0.8 (二分) 或 --ratio=0.7,0.15,0.15 (三分)",
+            ),
         )
     names = split_names(len(ratios))
 
     # 加载数据
-    log(f"[bold]📊 加载数据:[/bold] {input_label(filename)}")
+    log(
+        t(
+            f"[bold]📊 Loading:[/bold] {input_label(filename)}",
+            f"[bold]📊 加载数据:[/bold] {input_label(filename)}",
+        )
+    )
     rows = load_rows(filename)
     total = len(rows)
-    log(f"   共 {total} 条数据")
+    log(t(f"   {total} records", f"   共 {total} 条数据"))
     if seed is not None:
-        log(f"🎲 随机种子: {seed}")
+        log(t(f"🎲 Random seed: {seed}", f"🎲 随机种子: {seed}"))
     parts = split_rows(rows, ratios, seed)
 
     # 确定输出目录
@@ -70,7 +90,9 @@ def split(
             try:
                 output_dir.mkdir(parents=True, exist_ok=True)
             except Exception as e:
-                die_io_error(e, operation="创建输出目录", path=str(output_dir))
+                die_io_error(
+                    e, operation=t("Create output directory", "创建输出目录"), path=str(output_dir)
+                )
     else:
         output_dir = filepath.parent
 
@@ -78,7 +100,8 @@ def split(
     stem = name or filepath.stem
     ext = ".jsonl" if is_stdin(filename) else filepath.suffix
 
-    log(f"[bold]🔀 切分比例:[/bold] {' / '.join(f'{r:.0%}' for r in ratios)}")
+    ratio_text = " / ".join(f"{r:.0%}" for r in ratios)
+    log(t(f"[bold]🔀 Split ratio:[/bold] {ratio_text}", f"[bold]🔀 切分比例:[/bold] {ratio_text}"))
     split_info = []
     for i, (part_name, part) in enumerate(zip(names, parts, strict=False)):
         output_path = output_dir / f"{stem}_{part_name}{ext}"
@@ -113,9 +136,14 @@ def split(
         try:
             save_data(part, info["path"])
         except Exception as e:
-            die_io_error(e, operation="保存", path=str(info["path"]))
+            die_io_error(e, operation=t("Save", "保存"), path=str(info["path"]))
         log(
-            f"   {escape(info['name'])}: {info['rows']} 条 ({info['ratio'] * 100:.1f}%) -> {info['path']}"
+            t(
+                f"   {escape(info['name'])}: {info['rows']} rows "
+                f"({info['ratio'] * 100:.1f}%) -> {info['path']}",
+                f"   {escape(info['name'])}: {info['rows']} 条 "
+                f"({info['ratio'] * 100:.1f}%) -> {info['path']}",
+            )
         )
 
     emit_action(

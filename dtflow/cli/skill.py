@@ -5,6 +5,8 @@ from pathlib import Path
 
 from rich.console import Console
 
+from ..i18n import t
+
 console = Console()
 
 SKILL_TARGETS = {
@@ -24,7 +26,12 @@ def get_skill_target_dir(target: str = "claude") -> Path:
         config_dir, _ = SKILL_TARGETS[target]
     except KeyError as exc:
         choices = ", ".join(SKILL_TARGETS)
-        raise ValueError(f"未知 skill 安装目标: {target}（可选: {choices}）") from exc
+        raise ValueError(
+            t(
+                f"Unknown skill install target: {target} (choices: {choices})",
+                f"未知 skill 安装目标: {target}（可选: {choices}）",
+            )
+        ) from exc
     return Path.home() / config_dir / "skills" / "dtflow"
 
 
@@ -36,7 +43,12 @@ def install_skill(target: str = "claude") -> None:
     _, agent_name = SKILL_TARGETS[target]
 
     if not source.exists():
-        console.print("[red]错误: SKILL.md 源文件不存在[/red]")
+        console.print(
+            t(
+                "[red]Error: SKILL.md source file not found[/red]",
+                "[red]错误: SKILL.md 源文件不存在[/red]",
+            )
+        )
         raise SystemExit(1)
 
     # 创建目标目录
@@ -45,11 +57,21 @@ def install_skill(target: str = "claude") -> None:
     # 复制文件
     shutil.copy2(source, target_file)
 
-    console.print(f"[green]✓[/green] 已安装 dtflow skill 到 {agent_name}")
+    console.print(
+        t(
+            f"[green]✓[/green] Installed dtflow skill for {agent_name}",
+            f"[green]✓[/green] 已安装 dtflow skill 到 {agent_name}",
+        )
+    )
     console.print(f"  [dim]{target_file}[/dim]")
     console.print()
     invocation = "/dtflow" if target == "claude" else "$dtflow"
-    console.print(f"[dim]在 {agent_name} 中使用 {invocation} 调用此 skill[/dim]")
+    console.print(
+        t(
+            f"[dim]Invoke it in {agent_name} with {invocation}[/dim]",
+            f"[dim]在 {agent_name} 中使用 {invocation} 调用此 skill[/dim]",
+        )
+    )
 
 
 def uninstall_skill(target: str = "claude") -> None:
@@ -58,7 +80,12 @@ def uninstall_skill(target: str = "claude") -> None:
     target = target_dir / "SKILL.md"
 
     if not target.exists():
-        console.print("[yellow]dtflow skill 未安装[/yellow]")
+        console.print(
+            t(
+                "[yellow]dtflow skill is not installed[/yellow]",
+                "[yellow]dtflow skill 未安装[/yellow]",
+            )
+        )
         return
 
     target.unlink()
@@ -67,7 +94,9 @@ def uninstall_skill(target: str = "claude") -> None:
     if target_dir.exists() and not any(target_dir.iterdir()):
         target_dir.rmdir()
 
-    console.print("[green]✓[/green] 已卸载 dtflow skill")
+    console.print(
+        t("[green]✓[/green] Uninstalled dtflow skill", "[green]✓[/green] 已卸载 dtflow skill")
+    )
 
 
 def skill_status(target: str = "claude") -> None:
@@ -76,8 +105,23 @@ def skill_status(target: str = "claude") -> None:
     _, agent_name = SKILL_TARGETS[target]
 
     if target_file.exists():
-        console.print(f"[green]✓[/green] {agent_name} skill 已安装")
+        console.print(
+            t(
+                f"[green]✓[/green] {agent_name} skill installed",
+                f"[green]✓[/green] {agent_name} skill 已安装",
+            )
+        )
         console.print(f"  [dim]{target_file}[/dim]")
     else:
-        console.print(f"[yellow]✗[/yellow] {agent_name} skill 未安装")
-        console.print(f"  [dim]运行 dt install-skill --target {target} 安装[/dim]")
+        console.print(
+            t(
+                f"[yellow]✗[/yellow] {agent_name} skill not installed",
+                f"[yellow]✗[/yellow] {agent_name} skill 未安装",
+            )
+        )
+        console.print(
+            t(
+                f"  [dim]Run dt install-skill --target {target} to install[/dim]",
+                f"  [dim]运行 dt install-skill --target {target} 安装[/dim]",
+            )
+        )

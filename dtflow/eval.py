@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from .i18n import t
+
 if TYPE_CHECKING:
     from pandas import DataFrame
 
@@ -26,7 +28,10 @@ def _check_eval_deps():
     except ImportError as e:
         missing = str(e).split("'")[1] if "'" in str(e) else str(e)
         raise ImportError(
-            f"eval 功能需要额外依赖: {missing}\n" f"请运行: pip install dtflow[eval]"
+            t(
+                f"eval requires extra dependency: {missing}\nRun: pip install dtflow[eval]",
+                f"eval 功能需要额外依赖: {missing}\n" f"请运行: pip install dtflow[eval]",
+            )
         ) from e
 
 
@@ -154,7 +159,9 @@ class MetricsCalculator:
 
         processed_labels = [self._clean_label_for_markdown(lb, max_label_length) for lb in labels]
 
-        header = "| 真实值/预测值 | " + " | ".join(processed_labels) + " |\n"
+        header = (
+            t("| Actual/Predicted | ", "| 真实值/预测值 | ") + " | ".join(processed_labels) + " |\n"
+        )
         separator_parts = [":---:"] * (len(processed_labels) + 1)
         separator = "| " + " | ".join(separator_parts) + " |\n"
 
@@ -197,7 +204,7 @@ def export_eval_report(
     # 用 Rich Table 构建指标概览（替代 tabulate）
     from rich.table import Table
 
-    overview_table = Table(title="指标概览", show_header=True)
+    overview_table = Table(title=t("Metrics Overview", "指标概览"), show_header=True)
     overview_table.add_column("Accuracy", justify="center")
     overview_table.add_column("Precision", justify="center")
     overview_table.add_column("Recall", justify="center")
@@ -209,8 +216,8 @@ def export_eval_report(
 
     # 构建 Markdown 报告内容
     md = (
-        f"\n\n### 指标概览\n\n"
-        f"| Accuracy | Precision | Recall |\n"
+        t("\n\n### Metrics Overview\n\n", "\n\n### 指标概览\n\n")
+        + f"| Accuracy | Precision | Recall |\n"
         f"|----------|-----------|--------|\n"
         f"| {metrics['accuracy']:.4f} | {metrics['precision']:.4f} | {metrics['recall']:.4f} |"
     )
@@ -270,7 +277,17 @@ def export_eval_report(
     except Exception:
         pass
 
-    console.print(f"\n[green]报告已保存到: {record_path}[/green]")
-    console.print(f"[dim]  - metrics.md ({len(df)} 条数据, {len(bad_case_df)} 条错误)[/dim]")
+    console.print(
+        t(
+            f"\n[green]Report saved to: {record_path}[/green]",
+            f"\n[green]报告已保存到: {record_path}[/green]",
+        )
+    )
+    console.print(
+        t(
+            f"[dim]  - metrics.md ({len(df)} rows, {len(bad_case_df)} errors)[/dim]",
+            f"[dim]  - metrics.md ({len(df)} 条数据, {len(bad_case_df)} 条错误)[/dim]",
+        )
+    )
 
     return record_path

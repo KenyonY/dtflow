@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
+from .i18n import t
 from .utils.field_path import _parse_path, get_field
 
 
@@ -156,7 +157,9 @@ class Field:
             if self.nullable:
                 return []  # None 是允许的，跳过后续检查
             if self.required:
-                errors.append(ValidationError(path, "字段不能为 None", value))
+                errors.append(
+                    ValidationError(path, t("must not be None", "字段不能为 None"), value)
+                )
             return errors
 
         # 类型检查
@@ -165,7 +168,12 @@ class Field:
             if expected_type and not isinstance(value, expected_type):
                 errors.append(
                     ValidationError(
-                        path, f"类型错误，期望 {self.type}，实际 {type(value).__name__}", value
+                        path,
+                        t(
+                            f"type mismatch: expected {self.type}, got {type(value).__name__}",
+                            f"类型错误，期望 {self.type}，实际 {type(value).__name__}",
+                        ),
+                        value,
                     )
                 )
                 return errors  # 类型错误，跳过后续检查
@@ -173,39 +181,85 @@ class Field:
         # 数值范围检查
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if self.min is not None and value < self.min:
-                errors.append(ValidationError(path, f"值不能小于 {self.min}", value))
+                errors.append(
+                    ValidationError(
+                        path, t(f"must be >= {self.min}", f"值不能小于 {self.min}"), value
+                    )
+                )
             if self.max is not None and value > self.max:
-                errors.append(ValidationError(path, f"值不能大于 {self.max}", value))
+                errors.append(
+                    ValidationError(
+                        path, t(f"must be <= {self.max}", f"值不能大于 {self.max}"), value
+                    )
+                )
 
         # 长度检查
         if isinstance(value, (str, list, tuple)):
             length = len(value)
             if self.min_length is not None and length < self.min_length:
-                errors.append(ValidationError(path, f"长度不能小于 {self.min_length}", length))
+                errors.append(
+                    ValidationError(
+                        path,
+                        t(
+                            f"length must be >= {self.min_length}",
+                            f"长度不能小于 {self.min_length}",
+                        ),
+                        length,
+                    )
+                )
             if self.max_length is not None and length > self.max_length:
-                errors.append(ValidationError(path, f"长度不能大于 {self.max_length}", length))
+                errors.append(
+                    ValidationError(
+                        path,
+                        t(
+                            f"length must be <= {self.max_length}",
+                            f"长度不能大于 {self.max_length}",
+                        ),
+                        length,
+                    )
+                )
 
         # 选项检查
         if self.choices is not None and value not in self.choices:
-            errors.append(ValidationError(path, f"值必须是 {self.choices} 之一", value))
+            errors.append(
+                ValidationError(
+                    path,
+                    t(f"must be one of {self.choices}", f"值必须是 {self.choices} 之一"),
+                    value,
+                )
+            )
 
         # 正则表达式检查
         if self.pattern is not None and isinstance(value, str):
             import re
 
             if not re.match(self.pattern, value):
-                errors.append(ValidationError(path, f"不匹配模式 {self.pattern}", value))
+                errors.append(
+                    ValidationError(
+                        path,
+                        t(f"does not match pattern {self.pattern}", f"不匹配模式 {self.pattern}"),
+                        value,
+                    )
+                )
 
         # 自定义验证
         if self.custom is not None:
             try:
                 result = self.custom(value)
                 if result is False:
-                    errors.append(ValidationError(path, "自定义验证失败", value))
+                    errors.append(
+                        ValidationError(
+                            path, t("custom validation failed", "自定义验证失败"), value
+                        )
+                    )
                 elif isinstance(result, str):
                     errors.append(ValidationError(path, result, value))
             except Exception as e:
-                errors.append(ValidationError(path, f"自定义验证异常: {e}", value))
+                errors.append(
+                    ValidationError(
+                        path, t(f"custom validation error: {e}", f"自定义验证异常: {e}"), value
+                    )
+                )
 
         return errors
 
@@ -257,7 +311,11 @@ class Schema:
         if not isinstance(data, dict):
             return ValidationResult(
                 valid=False,
-                errors=[ValidationError("", "数据必须是字典类型", type(data).__name__)],
+                errors=[
+                    ValidationError(
+                        "", t("data must be a dict", "数据必须是字典类型"), type(data).__name__
+                    )
+                ],
             )
 
         errors: List[ValidationError] = []
@@ -270,7 +328,9 @@ class Schema:
             if value is None and field_def.required:
                 # 区分「字段不存在」和「字段值为 None」
                 if not self._field_exists(data, path):
-                    errors.append(ValidationError(path, "必填字段缺失"))
+                    errors.append(
+                        ValidationError(path, t("required field missing", "必填字段缺失"))
+                    )
                     continue
 
             field_errors = field_def.validate(value, path)
@@ -328,7 +388,11 @@ class Schema:
             return errors
 
         if not isinstance(array, (list, tuple)):
-            errors.append(ValidationError(prefix, "期望是数组类型", type(array).__name__))
+            errors.append(
+                ValidationError(
+                    prefix, t("expected an array", "期望是数组类型"), type(array).__name__
+                )
+            )
             return errors
 
         # 对数组中的每个元素验证
@@ -490,22 +554,25 @@ def openai_chat_schema(
 
 def _check_message(m: Any) -> Union[bool, str]:
     if not isinstance(m, dict):
-        return "消息必须是对象"
+        return t("message must be an object", "消息必须是对象")
     content = m.get("content")
     if m.get("role") == "assistant" and m.get("tool_calls"):
         return True  # 工具调用消息的 content 允许为空
     if m.get("role") == "tool" and not m.get("tool_call_id"):
-        return "tool 消息缺少 tool_call_id"
+        return t("tool message missing tool_call_id", "tool 消息缺少 tool_call_id")
     if isinstance(content, list):
         if not content:
-            return "content 为空"
+            return t("content is empty", "content 为空")
         if not all(isinstance(p, dict) and "type" in p for p in content):
-            return "content 为 list 时每个元素须是带 type 的多模态片段"
+            return t(
+                "when content is a list, every item must be a multimodal part with a type",
+                "content 为 list 时每个元素须是带 type 的多模态片段",
+            )
         return True
     if not isinstance(content, str):
-        return "content 必须是字符串"
+        return t("content must be a string", "content 必须是字符串")
     if not content:
-        return "content 为空"
+        return t("content is empty", "content 为空")
     return True
 
 

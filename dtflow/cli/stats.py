@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import orjson
 
+from ..i18n import t
 from ..utils.field_path import get_field_with_spec
 from .common import (
     _infer_type,
@@ -67,7 +68,12 @@ def stats(
     # 快速模式：忽略 --field 和 --expand 参数 (stdin 无文件可探, 直接走完整模式)
     if not full and not is_stdin(filename):
         if fields or expand_fields:
-            log("[yellow]⚠️  警告: --field 和 --expand 参数仅在完整模式 (--full) 下生效[/yellow]")
+            log(
+                t(
+                    "[yellow]⚠️  Warning: --field and --expand only take effect with --full[/yellow]",
+                    "[yellow]⚠️  警告: --field 和 --expand 参数仅在完整模式 (--full) 下生效[/yellow]",
+                )
+            )
         _quick_stats(filepath, fmt=fmt)
         return
 
@@ -75,7 +81,7 @@ def stats(
     data = load_rows(filename)
 
     if not data:
-        die("empty_file", "文件为空", exit_code=1)
+        die("empty_file", t("File is empty", "文件为空"), exit_code=1)
 
     # 计算统计信息
     total = len(data)
@@ -112,11 +118,14 @@ def _schema_stats(filename: str, label: str, sample: int, fmt: str) -> None:
     from .output import stderr_console
 
     def label_of(name: str, node: dict) -> str:
-        t = node["type"]
-        t = "|".join(t) if isinstance(t, list) else t
-        s = f"[bold]{name}[/bold]: [cyan]{t}[/cyan]"
+        typ = node["type"]
+        typ = "|".join(typ) if isinstance(typ, list) else typ
+        s = f"[bold]{name}[/bold]: [cyan]{typ}[/cyan]"
         if node.get("non_null", 1.0) < 1.0:
-            s += f" [dim]非空 {node['non_null']:.0%}[/dim]"
+            s += t(
+                f" [dim]non-null {node['non_null']:.0%}[/dim]",
+                f" [dim]非空 {node['non_null']:.0%}[/dim]",
+            )
         if node.get("values"):
             from rich.markup import escape
 
@@ -134,7 +143,12 @@ def _schema_stats(filename: str, label: str, sample: int, fmt: str) -> None:
                 if item.get("fields"):
                     add(sub, item["fields"])
 
-    tree = Tree(f"[bold]{label}[/bold] [dim](扫描 {result['rows_scanned']} 行)[/dim]")
+    tree = Tree(
+        t(
+            f"[bold]{label}[/bold] [dim](scanned {result['rows_scanned']} rows)[/dim]",
+            f"[bold]{label}[/bold] [dim](扫描 {result['rows_scanned']} 行)[/dim]",
+        )
+    )
     add(tree, result["fields"])
     stderr_console.print(tree)
 
@@ -247,22 +261,38 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
     # TTY table 模式：rich 渲染到 stderr
     from rich.table import Table
 
-    size_line = f"\n[bold]大小:[/bold] {format_size(file_size)}" if file_size is not None else ""
-    total_text = f"{total:,} 条" if total is not None else "未知（无法解析）"
+    size_line = (
+        t(
+            f"\n[bold]Size:[/bold] {format_size(file_size)}",
+            f"\n[bold]大小:[/bold] {format_size(file_size)}",
+        )
+        if file_size is not None
+        else ""
+    )
+    total_text = (
+        t(f"{total:,}", f"{total:,} 条")
+        if total is not None
+        else t("unknown (could not parse)", "未知（无法解析）")
+    )
     log_panel(
-        (
+        t(
+            f"[bold]File:[/bold] {filepath.name}{size_line}\n"
+            f"[bold]Rows:[/bold] {total_text}\n"
+            f"[bold]Fields:[/bold] {len(fields)}",
             f"[bold]文件:[/bold] {filepath.name}{size_line}\n"
             f"[bold]总数:[/bold] {total_text}\n"
-            f"[bold]字段:[/bold] {len(fields)} 个"
+            f"[bold]字段:[/bold] {len(fields)} 个",
         ),
-        title="📊 快速统计",
+        title=t("📊 Quick stats", "📊 快速统计"),
     )
 
     if fields:
-        table = Table(title="📋 字段结构", show_header=True, header_style="bold cyan")
+        table = Table(
+            title=t("📋 Fields", "📋 字段结构"), show_header=True, header_style="bold cyan"
+        )
         table.add_column("#", style="dim", justify="right")
-        table.add_column("字段", style="green")
-        table.add_column("类型", style="yellow")
+        table.add_column(t("Field", "字段"), style="green")
+        table.add_column(t("Type", "类型"), style="yellow")
 
         from rich.text import Text
 
@@ -466,7 +496,7 @@ def _compute_field_stats(
             stat = {
                 "field": field_spec,
                 "non_null": non_null_count,
-                "null_rate": f"总元素: {len(values)}",
+                "null_rate": t(f"elements: {len(values)}", f"总元素: {len(values)}"),
                 "type": field_type,
                 "is_expanded": is_expanded,
             }
@@ -561,21 +591,26 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
     from rich.text import Text
 
     log_panel(
-        (
+        t(
+            f"[bold]File:[/bold] {filename}\n"
+            f"[bold]Rows:[/bold] {total:,}\n"
+            f"[bold]Fields:[/bold] {len(field_stats)}",
             f"[bold]文件:[/bold] {filename}\n"
             f"[bold]总数:[/bold] {total:,} 条\n"
-            f"[bold]字段:[/bold] {len(field_stats)} 个"
+            f"[bold]字段:[/bold] {len(field_stats)} 个",
         ),
-        title="📊 数据概览",
+        title=t("📊 Overview", "📊 数据概览"),
     )
 
     # 字段统计表
-    table = Table(title="📋 字段统计", show_header=True, header_style="bold cyan")
-    table.add_column("字段", style="green")
-    table.add_column("类型", style="yellow")
-    table.add_column("非空率", justify="right")
-    table.add_column("唯一值", justify="right")
-    table.add_column("统计", style="dim")
+    table = Table(
+        title=t("📋 Field stats", "📋 字段统计"), show_header=True, header_style="bold cyan"
+    )
+    table.add_column(t("Field", "字段"), style="green")
+    table.add_column(t("Type", "类型"), style="yellow")
+    table.add_column(t("Non-null", "非空率"), justify="right")
+    table.add_column(t("Unique", "唯一值"), justify="right")
+    table.add_column(t("Stats", "统计"), style="dim")
 
     for stat in field_stats:
         if "null_rate" in stat:
@@ -586,16 +621,31 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
 
         field_name = stat["field"]
         if stat.get("is_expanded"):
-            field_name += " (展开)"
+            field_name += t(" (expanded)", " (展开)")
 
         extra = []
         if "len_avg" in stat:
-            extra.append(f"长度: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})")
+            extra.append(
+                t(
+                    f"len: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})",
+                    f"长度: {stat['len_min']}-{stat['len_max']} (avg {stat['len_avg']:.0f})",
+                )
+            )
         if "avg" in stat:
             if stat["type"] == "int":
-                extra.append(f"范围: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})")
+                extra.append(
+                    t(
+                        f"range: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})",
+                        f"范围: {int(stat['min'])}-{int(stat['max'])} (avg {stat['avg']:.1f})",
+                    )
+                )
             else:
-                extra.append(f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})")
+                extra.append(
+                    t(
+                        f"range: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})",
+                        f"范围: {stat['min']:.2f}-{stat['max']:.2f} (avg {stat['avg']:.2f})",
+                    )
+                )
 
         table.add_row(
             Text(field_name),  # 字段名来自用户数据, 避免被当 markup 解析
@@ -626,10 +676,15 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
 
         field_display = stat["field"]
         if stat.get("is_expanded"):
-            field_display += " (展开)"
+            field_display += t(" (expanded)", " (展开)")
 
         # 字段名/值来自用户数据, 转义避免被当 markup 解析; "[空]" 是有意的字面标记不转义
-        log(f"\n[bold cyan]{escape(field_display)}[/bold cyan] 值分布 (Top {len(top_values)}):")
+        log(
+            t(
+                f"\n[bold cyan]{escape(field_display)}[/bold cyan] value distribution (Top {len(top_values)}):",
+                f"\n[bold cyan]{escape(field_display)}[/bold cyan] 值分布 (Top {len(top_values)}):",
+            )
+        )
         max_count = max(c for _, c in top_values) if top_values else 1
         base_count = stat["non_null"] if stat.get("is_expanded") else total
         for value, count in top_values:
@@ -638,7 +693,9 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
             bar = "█" * bar_len
             # 先补齐再转义: escape 不改变渲染宽度, 对齐按原文算
             padded_value = (
-                escape(_pad_to_width(str(value), 32)) if value else _pad_to_width("[空]", 32)
+                escape(_pad_to_width(str(value), 32))
+                if value
+                else escape(_pad_to_width(t("[empty]", "[空]"), 32))
             )
             log(f"  {padded_value} {count:>6} ({pct:>5.1f}%) {bar}")
 
@@ -678,14 +735,14 @@ def token_stats(
     fmt = resolve_format(format, default_for_tty="table")
 
     # 加载数据
-    log(f"📊 加载数据: {filepath}")
+    log(t(f"📊 Loading: {filepath}", f"📊 加载数据: {filepath}"))
     data = load_rows(filename)
 
     if not data:
-        die("empty_file", "文件为空", exit_code=1)
+        die("empty_file", t("File is empty", "文件为空"), exit_code=1)
 
     total = len(data)
-    log(f"   共 {total:,} 条数据")
+    log(t(f"   {total:,} rows", f"   共 {total:,} 条数据"))
 
     # 检查字段类型并选择合适的统计方法（支持嵌套路径）
     sample = data[0]
@@ -709,10 +766,10 @@ def token_stats(
 
             with Progress(
                 SpinnerColumn(),
-                TextColumn("[bold blue]统计 Token"),
+                TextColumn(t("[bold blue]Counting tokens", "[bold blue]统计 Token")),
                 BarColumn(),
                 TaskProgressColumn(),
-                TextColumn(f"(模型: {model})"),
+                TextColumn(t(f"(model: {model})", f"(模型: {model})")),
                 console=_progress_console,
                 transient=True,
             ) as progress:
@@ -725,12 +782,24 @@ def token_stats(
                     data, field, model, workers, is_messages, update_progress
                 )
         else:
-            log(f"🔢 统计 Token (模型: {model}, 字段: {field})...")
+            log(
+                t(
+                    f"🔢 Counting tokens (model: {model}, field: {field})...",
+                    f"🔢 统计 Token (模型: {model}, 字段: {field})...",
+                )
+            )
             stats_result = _compute_token_stats(data, field, model, workers, is_messages, None)
     except ImportError as e:
-        die("missing_dependency", str(e), suggestion="安装相关依赖或使用 cl100k_base 模型")
+        die(
+            "missing_dependency",
+            str(e),
+            suggestion=t(
+                "Install the missing dependency or use the cl100k_base model",
+                "安装相关依赖或使用 cl100k_base 模型",
+            ),
+        )
     except Exception as e:
-        die("stats_error", f"统计失败: {e}")
+        die("stats_error", t(f"Stats failed: {e}", f"统计失败: {e}"))
 
     # 输出
     if fmt == "table":
@@ -775,22 +844,26 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
 
     std = stats.get("std_tokens", 0)
     log_panel(
-        (
+        t(
+            f"[bold]Samples:[/bold] {stats['count']:,}\n"
+            f"[bold]Total tokens:[/bold] {stats['total_tokens']:,}\n"
+            f"[bold]Avg tokens:[/bold] {stats['avg_tokens']:,} (std: {std:.1f})\n"
+            f"[bold]Range:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}",
             f"[bold]总样本数:[/bold] {stats['count']:,}\n"
             f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
             f"[bold]平均 Token:[/bold] {stats['avg_tokens']:,} (std: {std:.1f})\n"
-            f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
+            f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}",
         ),
-        title="📊 Token 统计概览",
+        title=t("📊 Token stats overview", "📊 Token 统计概览"),
     )
 
-    table = Table(title="📈 分布统计")
-    table.add_column("百分位", style="cyan", justify="center")
-    table.add_column("Token 数", justify="right")
+    table = Table(title=t("📈 Distribution", "📈 分布统计"))
+    table.add_column(t("Percentile", "百分位"), style="cyan", justify="center")
+    table.add_column(t("Tokens", "Token 数"), justify="right")
     percentiles = [
         ("Min", stats["min_tokens"]),
         ("P25", stats.get("p25", "-")),
-        ("P50 (中位数)", stats.get("median_tokens", "-")),
+        (t("P50 (median)", "P50 (中位数)"), stats.get("median_tokens", "-")),
         ("P75", stats.get("p75", "-")),
         ("P90", stats.get("p90", "-")),
         ("P95", stats.get("p95", "-")),
@@ -802,10 +875,10 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
     log_table(table)
 
     if detailed:
-        role_table = Table(title="📋 分角色统计")
-        role_table.add_column("角色", style="cyan")
-        role_table.add_column("Token 数", justify="right")
-        role_table.add_column("占比", justify="right")
+        role_table = Table(title=t("📋 By role", "📋 分角色统计"))
+        role_table.add_column(t("Role", "角色"), style="cyan")
+        role_table.add_column(t("Tokens", "Token 数"), justify="right")
+        role_table.add_column(t("Share", "占比"), justify="right")
 
         total = stats["total_tokens"]
         for role, key in [
@@ -818,7 +891,12 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
             role_table.add_row(role, f"{tokens:,}", f"{pct:.1f}%")
 
         log_table(role_table)
-        log(f"平均对话轮数: {stats.get('avg_turns', 0)}")
+        log(
+            t(
+                f"Avg turns: {stats.get('avg_turns', 0)}",
+                f"平均对话轮数: {stats.get('avg_turns', 0)}",
+            )
+        )
 
 
 def _print_text_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
@@ -827,22 +905,26 @@ def _print_text_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
 
     std = stats.get("std_tokens", 0)
     log_panel(
-        (
+        t(
+            f"[bold]Samples:[/bold] {stats['count']:,}\n"
+            f"[bold]Total tokens:[/bold] {stats['total_tokens']:,}\n"
+            f"[bold]Avg tokens:[/bold] {stats['avg_tokens']:.1f} (std: {std:.1f})\n"
+            f"[bold]Range:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}",
             f"[bold]总样本数:[/bold] {stats['count']:,}\n"
             f"[bold]总 Token:[/bold] {stats['total_tokens']:,}\n"
             f"[bold]平均 Token:[/bold] {stats['avg_tokens']:.1f} (std: {std:.1f})\n"
-            f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}"
+            f"[bold]范围:[/bold] {stats['min_tokens']:,} - {stats['max_tokens']:,}",
         ),
-        title="📊 Token 统计",
+        title=t("📊 Token stats", "📊 Token 统计"),
     )
 
-    table = Table(title="📈 分布统计")
-    table.add_column("百分位", style="cyan", justify="center")
-    table.add_column("Token 数", justify="right")
+    table = Table(title=t("📈 Distribution", "📈 分布统计"))
+    table.add_column(t("Percentile", "百分位"), style="cyan", justify="center")
+    table.add_column(t("Tokens", "Token 数"), justify="right")
     percentiles = [
         ("Min", stats["min_tokens"]),
         ("P25", stats.get("p25", "-")),
-        ("P50 (中位数)", stats.get("median_tokens", "-")),
+        (t("P50 (median)", "P50 (中位数)"), stats.get("median_tokens", "-")),
         ("P75", stats.get("p75", "-")),
         ("P90", stats.get("p90", "-")),
         ("P95", stats.get("p95", "-")),

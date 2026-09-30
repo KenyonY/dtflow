@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..core import DataTransformer
 from ..framework import check_compatibility, detect_format, export_for
+from ..i18n import t
 from .output import die, die_io_error, emit_action, log
 
 
@@ -39,16 +40,16 @@ def export(
     filepath = Path(input_label(filename))
 
     # 加载数据
-    log(f"[bold]📊 加载数据:[/bold] {filepath}")
+    log(t(f"[bold]📊 Loading:[/bold] {filepath}", f"[bold]📊 加载数据:[/bold] {filepath}"))
     dt = DataTransformer(load_rows(filename))
 
     data = dt.data
     total = len(data)
-    log(f"   共 {total} 条数据")
+    log(t(f"   {total} records", f"   共 {total} 条数据"))
 
     # 检测格式
     fmt = detect_format(data)
-    log(f"[bold]📋 检测到格式:[/bold] {fmt}")
+    log(t(f"[bold]📋 Detected format:[/bold] {fmt}", f"[bold]📋 检测到格式:[/bold] {fmt}"))
 
     # 兼容性检查
     result = check_compatibility(data, framework)
@@ -84,23 +85,31 @@ def export(
     if not result.valid:
         die(
             "incompatible_data",
-            "兼容性检查未通过，跳过导出",
-            suggestion="使用 --check 查看具体不兼容点, 或先用 clean/transform 修正数据",
+            t("Compatibility check failed, export skipped", "兼容性检查未通过，跳过导出"),
+            suggestion=t(
+                "Use --check to see what is incompatible, "
+                "or fix the data with clean/transform first",
+                "使用 --check 查看具体不兼容点, 或先用 clean/transform 修正数据",
+            ),
             exit_code=2,
             context={"framework": framework},
         )
 
     # 执行导出
-    log(f"[bold]📦 导出到 {framework}...[/bold]")
+    log(t(f"[bold]📦 Exporting to {framework}...[/bold]", f"[bold]📦 导出到 {framework}...[/bold]"))
     try:
         export_for(data, framework, output, dataset_name=dataset_name)
     except (PermissionError, FileExistsError, IsADirectoryError, FileNotFoundError) as e:
-        die_io_error(e, operation="导出", path=output)
+        die_io_error(e, operation=t("Export", "导出"), path=output)
     except Exception as e:
         die(
             "export_failed",
-            f"导出失败: {e}",
-            suggestion="查看 framework 模块的支持格式 / 确认输出目录可写",
+            t(f"Export failed: {e}", f"导出失败: {e}"),
+            suggestion=t(
+                "Check the formats the framework module supports / "
+                "make sure the output directory is writable",
+                "查看 framework 模块的支持格式 / 确认输出目录可写",
+            ),
             exit_code=1,
         )
 

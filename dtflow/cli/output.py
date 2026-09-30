@@ -27,6 +27,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ..i18n import t
+
 # ============================================================================
 # 退出码
 # ============================================================================
@@ -371,8 +373,8 @@ def emit_data(
     # 未知格式兜底
     die(
         "usage_error",
-        f"不支持的输出格式: {fmt}",
-        suggestion="使用 --format=json|ndjson|csv|table",
+        t(f"Unsupported output format: {fmt}", f"不支持的输出格式: {fmt}"),
+        suggestion=t("Use --format=json|ndjson|csv|table", "使用 --format=json|ndjson|csv|table"),
         exit_code=ExitCode.USAGE,
     )
 
@@ -541,10 +543,15 @@ def die(
             text = str(suggestion)
             if "\n" in text:
                 # 多行建议 (表达式 + caret) 独占行, 首行不能带 "提示:" 前缀, 否则 ^ 就对不上列
-                console.print("[yellow]提示:[/yellow]")
+                console.print(t("[yellow]Hint:[/yellow]", "[yellow]提示:[/yellow]"))
                 console.print(escape(text), highlight=False, soft_wrap=True)
             else:
-                console.print(f"[yellow]提示:[/yellow] {escape(text)}")
+                console.print(
+                    t(
+                        f"[yellow]Hint:[/yellow] {escape(text)}",
+                        f"[yellow]提示:[/yellow] {escape(text)}",
+                    )
+                )
         if context:
             # JSON 模式里 agent 靠 context 拿细节 (如 pipeline 的逐条 errors), 终端里人也得看见
             for key, value in context.items():
@@ -553,7 +560,7 @@ def die(
                 for item in items:
                     console.print(escape(str(item)), highlight=False, soft_wrap=True)
         if retryable:
-            console.print("[dim](此错误可重试)[/dim]")
+            console.print(t("[dim](this error is retryable)[/dim]", "[dim](此错误可重试)[/dim]"))
 
     raise typer.Exit(code=exit_code)
 
@@ -566,8 +573,11 @@ def die(
 def die_file_not_found(path: str) -> NoReturn:
     die(
         "file_not_found",
-        f"文件不存在: {path}",
-        suggestion=f"检查路径是否正确，或确认文件是否已创建: ls -l {path}",
+        t(f"File not found: {path}", f"文件不存在: {path}"),
+        suggestion=t(
+            f"Check the path, or make sure the file exists: ls -l {path}",
+            f"检查路径是否正确，或确认文件是否已创建: ls -l {path}",
+        ),
         exit_code=ExitCode.NOT_FOUND,
     )
 
@@ -575,8 +585,11 @@ def die_file_not_found(path: str) -> NoReturn:
 def die_unsupported_format(path: str, supported: Iterable[str]) -> NoReturn:
     die(
         "unsupported_format",
-        f"不支持的文件格式: {path}",
-        suggestion=f"支持的格式: {', '.join(sorted(supported))}",
+        t(f"Unsupported file format: {path}", f"不支持的文件格式: {path}"),
+        suggestion=t(
+            f"Supported formats: {', '.join(sorted(supported))}",
+            f"支持的格式: {', '.join(sorted(supported))}",
+        ),
         exit_code=ExitCode.USAGE,
     )
 
@@ -634,38 +647,59 @@ def die_io_error(exc: BaseException, *, operation: str, path: Optional[str] = No
     if isinstance(exc, FileNotFoundError):
         die(
             "file_not_found",
-            f"{operation}失败，文件不存在{target}",
-            suggestion="检查路径是否正确" + (f": ls -l {path}" if path else ""),
+            t(
+                f"{operation} failed: file not found{target}",
+                f"{operation}失败，文件不存在{target}",
+            ),
+            suggestion=t("Check the path", "检查路径是否正确")
+            + (f": ls -l {path}" if path else ""),
             exit_code=ExitCode.NOT_FOUND,
         )
     if isinstance(exc, PermissionError):
         die(
             "permission_denied",
-            f"{operation}失败，权限被拒绝{target}",
-            suggestion=(
-                f"检查文件/目录权限: ls -ld {Path(path).parent}" if path else "检查文件/目录权限"
+            t(
+                f"{operation} failed: permission denied{target}",
+                f"{operation}失败，权限被拒绝{target}",
             ),
+            suggestion=t(
+                "Check file/directory permissions",
+                "检查文件/目录权限",
+            )
+            + (f": ls -ld {Path(path).parent}" if path else ""),
             exit_code=ExitCode.PERMISSION,
         )
     if isinstance(exc, FileExistsError):
         die(
             "conflict",
-            f"{operation}失败，目标已存在{target}",
-            suggestion="使用不同的输出路径，或先删除已存在的目标",
+            t(
+                f"{operation} failed: target already exists{target}",
+                f"{operation}失败，目标已存在{target}",
+            ),
+            suggestion=t(
+                "Use a different output path, or remove the existing target first",
+                "使用不同的输出路径，或先删除已存在的目标",
+            ),
             exit_code=ExitCode.CONFLICT,
         )
     if isinstance(exc, IsADirectoryError):
         die(
             "usage_error",
-            f"{operation}失败，目标是目录而非文件{target}",
-            suggestion="提供文件路径而不是目录路径",
+            t(
+                f"{operation} failed: target is a directory, not a file{target}",
+                f"{operation}失败，目标是目录而非文件{target}",
+            ),
+            suggestion=t("Pass a file path, not a directory", "提供文件路径而不是目录路径"),
             exit_code=ExitCode.USAGE,
         )
     # 兜底：通用 I/O 错误
     die(
         "io_error",
-        f"{operation}失败: {exc}",
-        suggestion="检查文件是否可访问、磁盘空间是否充足",
+        t(f"{operation} failed: {exc}", f"{operation}失败: {exc}"),
+        suggestion=t(
+            "Check that the file is accessible and there is enough disk space",
+            "检查文件是否可访问、磁盘空间是否充足",
+        ),
         exit_code=ExitCode.GENERAL,
         retryable=True,
     )

@@ -25,6 +25,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from .i18n import t
+
 # 支持的流式格式。分发一律走 storage.io._detect_format, 不再各处比较扩展名字符串 ——
 # "这是什么格式"只该有一个答案, 分散成 5 处 ext== 比较, 新格式必然漏掉其中几处
 # (.ndjson 就是这么掉出流式路径的: 它和 .jsonl 是同一种东西, 却因为字符串不等而全量入内存)。
@@ -201,12 +203,19 @@ class StreamingTransformer:
         if is_flaxkv:
             db_dir = path.parent / (path.stem or "data")
             if not db_dir.exists():
-                raise FileNotFoundError(f"FlaxKV 数据库不存在: {db_dir}")
+                raise FileNotFoundError(
+                    t(f"FlaxKV database not found: {db_dir}", f"FlaxKV 数据库不存在: {db_dir}")
+                )
         elif not path.exists():
-            raise FileNotFoundError(f"文件不存在: {filepath}")
+            raise FileNotFoundError(t(f"File not found: {filepath}", f"文件不存在: {filepath}"))
 
         if ext not in STREAMING_FORMATS and not is_flaxkv:
-            raise ValueError(f"不支持的流式格式: {ext}，支持: {STREAMING_FORMATS}")
+            raise ValueError(
+                t(
+                    f"Unsupported streaming format: {ext}, supported: {STREAMING_FORMATS}",
+                    f"不支持的流式格式: {ext}，支持: {STREAMING_FORMATS}",
+                )
+            )
 
         # 快速统计总行数（用于进度条）
         total = _count_rows_fast(filepath)
@@ -228,7 +237,7 @@ class StreamingTransformer:
         elif fmt == "arrow":
             return cls(_stream_arrow(filepath), source_path=filepath, total=total)
         else:
-            raise ValueError(f"未知格式: {ext}")
+            raise ValueError(t(f"Unknown format: {ext}", f"未知格式: {ext}"))
 
     @classmethod
     def load_sharded(cls, pattern: str, batch_size: int = 10000) -> "StreamingTransformer":
@@ -250,7 +259,7 @@ class StreamingTransformer:
         """
         files = sorted(glob.glob(pattern))
         if not files:
-            raise FileNotFoundError(f"没有匹配的文件: {pattern}")
+            raise FileNotFoundError(t(f"No files match: {pattern}", f"没有匹配的文件: {pattern}"))
 
         def generator():
             for filepath in files:
@@ -457,7 +466,9 @@ class StreamingTransformer:
             elif callable(key):
                 return key(wrapper_func(item))
             else:
-                raise ValueError(f"不支持的 key 类型: {type(key)}")
+                raise ValueError(
+                    t(f"Unsupported key type: {type(key)}", f"不支持的 key 类型: {type(key)}")
+                )
 
         def deduped_iterator():
             seen = set()
@@ -694,7 +705,10 @@ class StreamingTransformer:
         fmt = _fmt_of(path)
         if is_gz(path) and fmt not in ("jsonl", "json"):
             raise ValueError(
-                f"{fmt} 格式不支持 .gz 压缩写出 (只有 .jsonl.gz / .json.gz): {filepath}"
+                t(
+                    f"{fmt} format cannot be written gzipped (only .jsonl.gz / .json.gz): {filepath}",
+                    f"{fmt} 格式不支持 .gz 压缩写出 (只有 .jsonl.gz / .json.gz): {filepath}",
+                )
             )
 
         if fmt == "flaxkv":
@@ -719,7 +733,10 @@ class StreamingTransformer:
             import sys
 
             print(
-                f"⚠️  {self._error_count} 条记录求值失败 (首个: {self._first_error})",
+                t(
+                    f"⚠️  {self._error_count} records failed to evaluate (first: {self._first_error})",
+                    f"⚠️  {self._error_count} 条记录求值失败 (首个: {self._first_error})",
+                ),
                 file=sys.stderr,
             )
 
@@ -752,7 +769,7 @@ class StreamingTransformer:
                 ]
 
             with Progress(*columns, console=_stderr_console()) as progress:
-                task = progress.add_task("处理中", total=self._total)
+                task = progress.add_task(t("Processing", "处理中"), total=self._total)
                 with _open_bin(Path(filepath), "wb") as f:
                     for item in self._iterator:
                         f.write(orjson.dumps(item) + b"\n")
@@ -820,7 +837,7 @@ class StreamingTransformer:
         try:
             if show_progress:
                 with Progress(*progress_columns, console=_stderr_console()) as progress:
-                    task = progress.add_task("处理中", total=self._total)
+                    task = progress.add_task(t("Processing", "处理中"), total=self._total)
                     for item in self._iterator:
                         batch.append(item)
                         count += 1
@@ -873,7 +890,7 @@ class StreamingTransformer:
 
             if show_progress:
                 with Progress(*progress_columns, console=_stderr_console()) as progress:
-                    task = progress.add_task("处理中", total=self._total)
+                    task = progress.add_task(t("Processing", "处理中"), total=self._total)
                     for item in self._iterator:
                         batch.append(item)
                         count += 1
@@ -956,7 +973,9 @@ class StreamingTransformer:
                     shard_idx += 1
                     count_in_shard = 0
                     if progress is not None:
-                        progress.update(task, description=f"分片 {shard_idx}")
+                        progress.update(
+                            task, description=t(f"Shard {shard_idx}", f"分片 {shard_idx}")
+                        )
 
                 current_file.write(orjson.dumps(item) + b"\n")
                 count_in_shard += 1
@@ -984,7 +1003,7 @@ class StreamingTransformer:
                     ]
 
                 with Progress(*columns, console=_stderr_console()) as progress:
-                    task = progress.add_task("分片 1", total=self._total)
+                    task = progress.add_task(t("Shard 1", "分片 1"), total=self._total)
                     process_items(progress, task)
             else:
                 process_items()
@@ -1195,15 +1214,24 @@ def _iter_jsonl(fileobj, name: str) -> Generator[Dict[str, Any], None, None]:
                     yield json.loads(line)
                     use_fallback = True
                     print(
-                        f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                        t(
+                            f"[Warning] Line {i+1} contains non-standard JSON (e.g. NaN); "
+                            f"switched to the standard json parser",
+                            f"[Warning] 第 {i+1} 行包含非标准 JSON（如 NaN），已切换到标准 json 解析",
+                        ),
                         file=sys.stderr,
                     )
                 except json.JSONDecodeError as e:
                     snippet = line.decode("utf-8", errors="replace")[:120]
                     raise ValueError(
-                        f"{name} 第 {i + 1} 行不是合法 JSON: {e}\n"
-                        f"  行内容: {snippet}\n"
-                        f"  想直接看这一行用: dt view {name}"
+                        t(
+                            f"{name} line {i + 1} is not valid JSON: {e}\n"
+                            f"  Line content: {snippet}\n"
+                            f"  To inspect it directly: dt view {name}",
+                            f"{name} 第 {i + 1} 行不是合法 JSON: {e}\n"
+                            f"  行内容: {snippet}\n"
+                            f"  想直接看这一行用: dt view {name}",
+                        )
                     ) from e
 
 

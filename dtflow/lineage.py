@@ -7,12 +7,12 @@
 import hashlib
 import os
 import platform
-import time
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import orjson
+
+from .i18n import t
 
 # 血缘元数据版本
 LINEAGE_VERSION = "1.0"
@@ -364,10 +364,10 @@ def format_lineage_report(data_path: str) -> str:
     chain = get_lineage_chain(data_path)
 
     if not chain:
-        return f"文件 {data_path} 没有血缘记录"
+        return t(f"No lineage records for {data_path}", f"文件 {data_path} 没有血缘记录")
 
     lines = []
-    lines.append(f"📊 数据血缘报告: {data_path}")
+    lines.append(t(f"📊 Lineage report: {data_path}", f"📊 数据血缘报告: {data_path}"))
     lines.append("=" * 60)
 
     for i, record in enumerate(chain):
@@ -375,21 +375,30 @@ def format_lineage_report(data_path: str) -> str:
         indent = "  " * i
 
         # 基本信息
-        lines.append(f"{indent}{prefix} 版本 {i + 1}")
-        lines.append(f"{indent}   创建时间: {record.created_at}")
+        lines.append(t(f"{indent}{prefix} Version {i + 1}", f"{indent}{prefix} 版本 {i + 1}"))
+        lines.append(
+            t(
+                f"{indent}   Created: {record.created_at}",
+                f"{indent}   创建时间: {record.created_at}",
+            )
+        )
 
         # 来源信息
         if record.source:
             if isinstance(record.source, dict):
-                lines.append(f"{indent}   来源: {record.source.get('path', 'unknown')}")
+                src = record.source.get("path", "unknown")
+                lines.append(t(f"{indent}   Source: {src}", f"{indent}   来源: {src}"))
                 if record.source.get("hash"):
-                    lines.append(f"{indent}   哈希: {record.source['hash']}")
+                    h = record.source["hash"]
+                    lines.append(t(f"{indent}   Hash: {h}", f"{indent}   哈希: {h}"))
             else:
-                lines.append(f"{indent}   来源: {record.source}")
+                lines.append(
+                    t(f"{indent}   Source: {record.source}", f"{indent}   来源: {record.source}")
+                )
 
         # 操作列表
         if record.operations:
-            lines.append(f"{indent}   操作链:")
+            lines.append(t(f"{indent}   Operations:", f"{indent}   操作链:"))
             for j, op in enumerate(record.operations):
                 op_prefix = "└─" if j == len(record.operations) - 1 else "├─"
                 op_type = op.get("type", "unknown")
@@ -406,7 +415,12 @@ def format_lineage_report(data_path: str) -> str:
         if record.metadata:
             output_count = record.metadata.get("output_count")
             if output_count:
-                lines.append(f"{indent}   输出数量: {output_count}")
+                lines.append(
+                    t(
+                        f"{indent}   Output count: {output_count}",
+                        f"{indent}   输出数量: {output_count}",
+                    )
+                )
 
         lines.append("")
 

@@ -21,6 +21,8 @@ from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import orjson
 
+from ...i18n import t
+
 PARSE_ERROR_FIELD = "_parse_error"
 RAW_LINE_FIELD = "_raw_line"
 _RAW_KEEP = 500
@@ -96,7 +98,7 @@ def _tail_offsets(path: Path, end: int, count: int, *, expected_identity=None, c
     with open(path, "rb") as f:
         if expected_identity is not None:
             if _identity(os.fstat(f.fileno())) != expected_identity:
-                raise SourceChangedError("文件已被替换")
+                raise SourceChangedError(t("file was replaced", "文件已被替换"))
         while pos > 0 and len(entries) < count:
             if cancel is not None and cancel.is_set():
                 return None
@@ -104,7 +106,9 @@ def _tail_offsets(path: Path, end: int, count: int, *, expected_identity=None, c
             f.seek(start)
             block = f.read(pos - start)
             if len(block) != pos - start:
-                raise SourceChangedError("文件在读取尾部期间被截断")
+                raise SourceChangedError(
+                    t("file was truncated while reading its tail", "文件在读取尾部期间被截断")
+                )
             cursor = len(block)
             while cursor > 0 and len(entries) < count:
                 newline = block.rfind(b"\n", 0, cursor)
@@ -134,7 +138,7 @@ def _scan_offsets(
     offsets = array("Q")
     with open(path, "rb") as f:
         if _identity(os.fstat(f.fileno())) != expected_identity:
-            raise SourceChangedError("文件已被替换")
+            raise SourceChangedError(t("file was replaced", "文件已被替换"))
         f.seek(start)
         pos = start
         while pos < end and (max_rows is None or len(offsets) < max_rows):
@@ -143,14 +147,18 @@ def _scan_offsets(
             line_start = pos
             line = f.readline(end - pos)
             if not line:
-                raise SourceChangedError("文件在扫描期间被截断")
+                raise SourceChangedError(
+                    t("file was truncated during the scan", "文件在扫描期间被截断")
+                )
             pos += len(line)
             if line.strip():
                 offsets.append(line_start)
                 if progress_cb is not None and len(offsets) % 5000 == 0:
                     progress_cb(len(offsets))
         if os.fstat(f.fileno()).st_size < end:
-            raise SourceChangedError("文件在扫描期间被截断")
+            raise SourceChangedError(
+                t("file was truncated during the scan", "文件在扫描期间被截断")
+            )
     if progress_cb is not None:
         progress_cb(len(offsets))
     return offsets, pos
@@ -320,10 +328,10 @@ class _JsonlSource(RowSource):
         st = os.fstat(f.fileno())
         if _identity(st) != self._identity:
             f.close()
-            raise SourceChangedError("文件已被替换")
+            raise SourceChangedError(t("file was replaced", "文件已被替换"))
         if st.st_size < self._read_end:
             f.close()
-            raise SourceChangedError("文件已被截断")
+            raise SourceChangedError(t("file was truncated", "文件已被截断"))
         return f
 
     def _rows_for_offsets(self, offsets: Sequence[int]) -> List[Dict]:
@@ -345,7 +353,7 @@ class _JsonlSource(RowSource):
             offset = max(0, offset)
             end = min(offset + size, self.total)
             if not self.window_is_indexed(offset, size):
-                raise RuntimeError("窗口偏移尚未建立")
+                raise RuntimeError(t("window offsets not built yet", "窗口偏移尚未建立"))
             if self._known_total is not None and offset >= self.total - len(self._suffix_offsets):
                 start = offset - (self.total - len(self._suffix_offsets))
                 picked = self._suffix_offsets[start : start + max(0, end - offset)]
@@ -362,7 +370,7 @@ class _JsonlSource(RowSource):
 
     def iter_all(self, progress_cb: Optional[Callable[[int], None]] = None) -> Iterator[Dict]:
         if not self.fully_indexed:
-            raise RuntimeError("历史偏移索引尚未建立")
+            raise RuntimeError(t("history offset index not built yet", "历史偏移索引尚未建立"))
         with self._lock:
             limit = self.total
             end = self._read_end
@@ -370,7 +378,7 @@ class _JsonlSource(RowSource):
         n = 0
         with open(self._path, "rb") as f:
             if _identity(os.fstat(f.fileno())) != expected:
-                raise SourceChangedError("文件已被替换")
+                raise SourceChangedError(t("file was replaced", "文件已被替换"))
             pos = 0
             while pos < end and n < limit:
                 line = f.readline(end - pos)
@@ -385,7 +393,9 @@ class _JsonlSource(RowSource):
                 if progress_cb is not None and n % 5000 == 0:
                     progress_cb(n)
         if n < limit:
-            raise SourceChangedError("文件在扫描期间被截断")
+            raise SourceChangedError(
+                t("file was truncated during the scan", "文件在扫描期间被截断")
+            )
         if progress_cb is not None:
             progress_cb(n)
 
@@ -401,7 +411,7 @@ class _JsonlSource(RowSource):
                 elif i >= suffix_start:
                     picked.append(self._suffix_offsets[i - suffix_start])
                 else:
-                    raise RuntimeError("行偏移尚未建立")
+                    raise RuntimeError(t("line offsets not built yet", "行偏移尚未建立"))
         return self._rows_for_offsets(picked)
 
     def ensure_index(self, progress_cb=None, cancel=None) -> bool:
@@ -461,7 +471,12 @@ class _JsonlSource(RowSource):
                 if offsets is None:
                     return False
                 if len(offsets) != needed:
-                    raise SourceChangedError("文件在读取尾窗期间发生变化")
+                    raise SourceChangedError(
+                        t(
+                            "file changed while reading the tail window",
+                            "文件在读取尾窗期间发生变化",
+                        )
+                    )
             else:
                 offsets = array("Q")
             with self._open_checked():
@@ -511,7 +526,9 @@ class _JsonlSource(RowSource):
 
         with self._lock:
             if self._identity != expected:
-                raise SourceChangedError("建索引期间发生了日志轮转")
+                raise SourceChangedError(
+                    t("log rotated while building the index", "建索引期间发生了日志轮转")
+                )
             if self._tail_size is None:
                 self._offsets.extend(offsets)
             else:
@@ -609,7 +626,7 @@ class _JsonlSource(RowSource):
         rows: List[Dict] = []
         with open(self._path, "rb") as f:
             if _identity(os.fstat(f.fileno())) != expected:
-                raise SourceChangedError("文件已被替换")
+                raise SourceChangedError(t("file was replaced", "文件已被替换"))
             for offset in offsets:
                 f.seek(offset)
                 line = f.readline(end - offset).strip()

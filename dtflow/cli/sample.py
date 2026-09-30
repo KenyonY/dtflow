@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from rich.markup import escape
 
+from ..i18n import t
 from ..storage.io import sample_file, save_data
 from ..utils.field_path import get_field_with_spec
 from .common import (
@@ -118,8 +119,11 @@ def sample(
     # uniform 必须配合 by 使用
     if uniform and not by:
         die_usage(
-            "--uniform 必须配合 --by 使用",
-            suggestion="例: dt sample data.jsonl 100 --by=category --uniform",
+            t("--uniform requires --by", "--uniform 必须配合 --by 使用"),
+            suggestion=t(
+                "e.g. dt sample data.jsonl 100 --by=category --uniform",
+                "例: dt sample data.jsonl 100 --by=category --uniform",
+            ),
         )
 
     # dist 验证
@@ -127,24 +131,37 @@ def sample(
     if dist:
         if not by:
             die_usage(
-                "--dist 必须配合 --by 使用",
-                suggestion='例: dt sample data.jsonl 100 --by=label --dist=\'{"A":0.5,"B":0.5}\'',
+                t("--dist requires --by", "--dist 必须配合 --by 使用"),
+                suggestion=t(
+                    'e.g. dt sample data.jsonl 100 --by=label --dist=\'{"A":0.5,"B":0.5}\'',
+                    '例: dt sample data.jsonl 100 --by=label --dist=\'{"A":0.5,"B":0.5}\'',
+                ),
             )
         if uniform:
-            die_usage("--dist 和 --uniform 不能同时使用")
+            die_usage(
+                t("--dist and --uniform are mutually exclusive", "--dist 和 --uniform 不能同时使用")
+            )
         import json
 
         try:
             dist_dict = json.loads(dist)
         except json.JSONDecodeError:
             die_usage(
-                f"--dist 不是合法的 JSON: {dist}", suggestion='示例: --dist=\'{"A":0.5,"B":0.5}\''
+                t(f"--dist is not valid JSON: {dist}", f"--dist 不是合法的 JSON: {dist}"),
+                suggestion=t(
+                    'Example: --dist=\'{"A":0.5,"B":0.5}\'', '示例: --dist=\'{"A":0.5,"B":0.5}\''
+                ),
             )
         if not isinstance(dist_dict, dict) or not dist_dict:
-            die_usage("--dist 必须是非空的 JSON 对象")
+            die_usage(t("--dist must be a non-empty JSON object", "--dist 必须是非空的 JSON 对象"))
         total_ratio = sum(dist_dict.values())
         if abs(total_ratio - 1.0) > 0.01:
-            die_usage(f"--dist 比例之和必须为 1.0，当前为 {total_ratio}")
+            die_usage(
+                t(
+                    f"--dist ratios must sum to 1.0, got {total_ratio}",
+                    f"--dist 比例之和必须为 1.0，当前为 {total_ratio}",
+                )
+            )
 
     # 处理 where 筛选
     where_conditions = where or []
@@ -156,12 +173,19 @@ def sample(
         all_data = load_rows(filename)
         original_count = len(all_data)
         filtered_data = apply_where(all_data, where_conditions)
-        log(f"🔍 筛选: {original_count} → {len(filtered_data)} 条")
+        log(
+            t(
+                f"🔍 Filtered: {original_count} → {len(filtered_data)} rows",
+                f"🔍 筛选: {original_count} → {len(filtered_data)} 条",
+            )
+        )
         if not filtered_data:
             die(
                 "empty_result",
-                "筛选后无数据",
-                suggestion="放宽 --where 条件或检查字段路径",
+                t("No rows left after filtering", "筛选后无数据"),
+                suggestion=t(
+                    "Loosen --where or check the field paths", "放宽 --where 条件或检查字段路径"
+                ),
                 exit_code=1,
             )
 
@@ -172,7 +196,13 @@ def sample(
                 filepath, num, by, uniform, seed, type, data=filtered_data, dist=dist_dict
             )
         except Exception as e:
-            die("sample_error", str(e), suggestion="检查 --by 字段是否存在且可用")
+            die(
+                "sample_error",
+                str(e),
+                suggestion=t(
+                    "Check that the --by field exists and is usable", "检查 --by 字段是否存在且可用"
+                ),
+            )
     else:
         # 普通采样
         try:
@@ -205,7 +235,7 @@ def sample(
     # 输出结果
     if output:
         save_data(sampled, output)
-        log(f"已保存 {len(sampled)} 条数据到 {output}")
+        log(t(f"Saved {len(sampled)} rows to {output}", f"已保存 {len(sampled)} 条数据到 {output}"))
         return
 
     field_list = _parse_field_list(fields) if fields else None
@@ -320,12 +350,24 @@ def _stratified_sample(
     num_groups = len(group_keys)
 
     # 打印分组信息（写 stderr，不污染 stdout）
-    log(f"📊 分层采样: 字段={escape(stratify_field)}, 共 {num_groups} 组")
+    log(
+        t(
+            f"📊 Stratified sampling: field={escape(stratify_field)}, {num_groups} groups",
+            f"📊 分层采样: 字段={escape(stratify_field)}, 共 {num_groups} 组",
+        )
+    )
     for key in sorted(group_keys, key=lambda x: -len(groups[x])):
         count = len(groups[key])
         pct = count / total * 100
-        display_key = escape(str(key)) if key != "__null__" else "[空值]"  # 组值来自数据, 转义
-        log(f"   {display_key}: {count} 条 ({pct:.1f}%)")
+        display_key = (
+            escape(str(key)) if key != "__null__" else t("\\[null]", "[空值]")
+        )  # 组值来自数据, 转义
+        log(
+            t(
+                f"   {display_key}: {count} ({pct:.1f}%)",
+                f"   {display_key}: {count} 条 ({pct:.1f}%)",
+            )
+        )
 
     # 计算各组采样数量
     if dist:
@@ -337,7 +379,12 @@ def _stratified_sample(
         dist_keys = [k for k in dist.keys() if k in str_to_group_key]
         for k in dist:
             if k not in str_to_group_key:
-                log(f"  ⚠️  分布中的 '{escape(str(k))}' 在数据中不存在，跳过")
+                log(
+                    t(
+                        f"  ⚠️  '{escape(str(k))}' in --dist not found in data, skipped",
+                        f"  ⚠️  分布中的 '{escape(str(k))}' 在数据中不存在，跳过",
+                    )
+                )
         for i, dk in enumerate(dist_keys):
             gk = str_to_group_key[dk]
             if i == len(dist_keys) - 1:
@@ -379,7 +426,7 @@ def _stratified_sample(
 
     # 执行各组采样
     result = []
-    log("🔄 执行采样...")
+    log(t("🔄 Sampling...", "🔄 执行采样..."))
     for key in group_keys:
         group_data = groups[key]
         target = min(sample_counts[key], len(group_data))
@@ -398,7 +445,7 @@ def _stratified_sample(
         result.extend(sampled)
 
     # 打印采样结果（写 stderr）
-    log("📋 采样结果:")
+    log(t("📋 Result:", "📋 采样结果:"))
     result_groups: Dict[Any, int] = defaultdict(int)
     for item in result:
         key = item.get(stratify_field, "__null__")
@@ -407,10 +454,12 @@ def _stratified_sample(
     for key in sorted(group_keys, key=lambda x: -len(groups[x])):
         orig = len(groups[key])
         sampled_count = result_groups.get(key, 0)
-        display_key = escape(str(key)) if key != "__null__" else "[空值]"  # 组值来自数据, 转义
+        display_key = (
+            escape(str(key)) if key != "__null__" else t("\\[null]", "[空值]")
+        )  # 组值来自数据, 转义
         log(f"   {display_key}: {orig} → {sampled_count}")
 
-    log(f"✅ 总计: {total} → {len(result)} 条")
+    log(t(f"✅ Total: {total} → {len(result)} rows", f"✅ 总计: {total} → {len(result)} 条"))
 
     return result
 
@@ -486,8 +535,13 @@ def slice_data(
     # 解析 range
     if ":" not in range_str:
         die_usage(
-            f"无效的范围格式 '{range_str}'，应为 start:end（如 10:20）",
-            suggestion="示例: 10:20 / :100 / 100: / -10:",
+            t(
+                f"Invalid range '{range_str}', expected start:end (e.g. 10:20)",
+                f"无效的范围格式 '{range_str}'，应为 start:end（如 10:20）",
+            ),
+            suggestion=t(
+                "Examples: 10:20 / :100 / 100: / -10:", "示例: 10:20 / :100 / 100: / -10:"
+            ),
         )
 
     parts = range_str.split(":", 1)
@@ -497,7 +551,12 @@ def slice_data(
         start = int(start_str) if start_str else None
         end = int(end_str) if end_str else None
     except ValueError:
-        die_usage(f"无效的范围格式 '{range_str}'，start 和 end 必须为整数")
+        die_usage(
+            t(
+                f"Invalid range '{range_str}', start and end must be integers",
+                f"无效的范围格式 '{range_str}'，start 和 end 必须为整数",
+            )
+        )
 
     # 加载数据并切片
     data = load_rows(filename)
@@ -507,8 +566,11 @@ def slice_data(
         total = len(data)
         die(
             "empty_result",
-            f"范围 [{range_str}] 无数据（文件共 {total} 行）",
-            suggestion="调整 start:end 范围",
+            t(
+                f"Range [{range_str}] is empty (file has {total} rows)",
+                f"范围 [{range_str}] 无数据（文件共 {total} 行）",
+            ),
+            suggestion=t("Adjust the start:end range", "调整 start:end 范围"),
             exit_code=1,
         )
 
@@ -518,12 +580,17 @@ def slice_data(
     if actual_start < 0:
         actual_start = max(0, total + actual_start)
     actual_end = min(end, total) if end is not None else total
-    log(f"📍 行 {actual_start}-{actual_end - 1}（共 {len(sliced)} 条，文件共 {total} 行）")
+    log(
+        t(
+            f"📍 Rows {actual_start}-{actual_end - 1} ({len(sliced)} rows, file has {total})",
+            f"📍 行 {actual_start}-{actual_end - 1}（共 {len(sliced)} 条，文件共 {total} 行）",
+        )
+    )
 
     # 输出结果
     if output:
         save_data(sliced, output)
-        log(f"已保存 {len(sliced)} 条数据到 {output}")
+        log(t(f"Saved {len(sliced)} rows to {output}", f"已保存 {len(sliced)} 条数据到 {output}"))
         return
 
     field_list = _parse_field_list(fields) if fields else None

@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .core import DictWrapper, ListWrapper, unwrap
 from .expr import compile_in, compile_map, compile_value, compile_where
+from .i18n import t
 from .streaming import StreamingTransformer
 from .utils.field_path import get_field_with_spec
 
@@ -65,13 +66,23 @@ def parse_spec(spec: str) -> List[Tuple[str, Optional[str]]]:
         name, eq, expr = item.partition("=")
         # 只有 "name=expr" 形态的 = 算赋值; "a==b" 这种会被上面切成 name="a", expr="=b" → 拒绝
         if eq and (not expr or expr.startswith("=")):
-            raise ValueError(f"无法解析: {item!r} (形如 name=表达式 或 字段名)")
+            raise ValueError(
+                t(
+                    f"Cannot parse: {item!r} (expected name=expr or a field name)",
+                    f"无法解析: {item!r} (形如 name=表达式 或 字段名)",
+                )
+            )
         name = name.strip()
         if not name.isidentifier() and eq:
-            raise ValueError(f"派生字段名必须是合法标识符: {name!r}")
+            raise ValueError(
+                t(
+                    f"Derived field name must be a valid identifier: {name!r}",
+                    f"派生字段名必须是合法标识符: {name!r}",
+                )
+            )
         out.append((name, expr.strip() if eq else None))
     if not out:
-        raise ValueError("SPEC 为空")
+        raise ValueError(t("SPEC is empty", "SPEC 为空"))
     return out
 
 
@@ -100,7 +111,10 @@ def map_rows(st: StreamingTransformer, code: str, strict: bool = False) -> Strea
                 raise
             err.count += 1
             if err.first is None:
-                err.first = f"{type(e).__name__}: {e} (该行原样保留)"
+                err.first = t(
+                    f"{type(e).__name__}: {e} (row kept as is)",
+                    f"{type(e).__name__}: {e} (该行原样保留)",
+                )
             return row
 
     new._iterator = map(apply, st)
@@ -132,7 +146,10 @@ def select_rows(st: StreamingTransformer, spec: str, strict: bool = False) -> St
                     raise
                 err.count += 1
                 if err.first is None:
-                    err.first = f"{name}: {type(e).__name__}: {e} (该项置 null)"
+                    err.first = t(
+                        f"{name}: {type(e).__name__}: {e} (set to null)",
+                        f"{name}: {type(e).__name__}: {e} (该项置 null)",
+                    )
                 out[name] = None
         return dict(out)
 
@@ -197,11 +214,19 @@ def sort_rows(
     try:
         ok.sort(key=lambda k: k[1], reverse=desc)
     except TypeError as e:
-        raise ValueError(f"排序键类型不一致, 无法比较 ({e}); 用 str(...) 或 float(...) 统一") from e
+        raise ValueError(
+            t(
+                f"Sort keys have mixed types and cannot be compared ({e}); "
+                f"normalize with str(...) or float(...)",
+                f"排序键类型不一致, 无法比较 ({e}); 用 str(...) 或 float(...) 统一",
+            )
+        ) from e
     new = _materialize(st, [k[2] for k in ok] + [k[2] for k in bad])
     if failed:
         new._error_count += failed
-        new._first_error = new._first_error or "排序键求值失败 (已排在末尾)"
+        new._first_error = new._first_error or t(
+            "Sort key evaluation failed (placed last)", "排序键求值失败 (已排在末尾)"
+        )
     return new
 
 
@@ -259,7 +284,12 @@ def group_rows(
 
     for name, expr in parse_spec(agg):
         if expr is None:
-            raise ValueError(f"--agg 每项都要是 name=表达式, 得到 {name!r}")
+            raise ValueError(
+                t(
+                    f"Each --agg item must be name=expr, got {name!r}",
+                    f"--agg 每项都要是 name=表达式, 得到 {name!r}",
+                )
+            )
     plan = [(name, compile_in(expr, _AGG_ALLOWED)) for name, expr in parse_spec(agg)]
     groups: Dict[Any, List[Row]] = OrderedDict()
     keys = {}
@@ -288,7 +318,10 @@ def group_rows(
                 if strict:
                     raise
                 failed += 1
-                first_err = first_err or f"聚合 {name}: {type(e).__name__}: {e} (该项置 null)"
+                first_err = first_err or t(
+                    f"aggregate {name}: {type(e).__name__}: {e} (set to null)",
+                    f"聚合 {name}: {type(e).__name__}: {e} (该项置 null)",
+                )
                 rec[name] = None
         out.append(rec)
     new = _materialize(st, out)
@@ -519,10 +552,17 @@ def transform_rows(
     elif config:
         ns = load_transform_config(config)
         if "transform" not in ns:
-            raise ValueError(f"配置文件未定义 transform 函数: {config}")
+            raise ValueError(
+                t(
+                    f"Config file defines no transform function: {config}",
+                    f"配置文件未定义 transform 函数: {config}",
+                )
+            )
         func = ns["transform"]
     else:
-        raise ValueError("transform 需要指定 preset 或 config")
+        raise ValueError(
+            t("transform requires a preset or config", "transform 需要指定 preset 或 config")
+        )
     return st.transform(
         lambda item: unwrap(func(DictWrapper(item))), raw=True, on_error=_on_error(strict)
     )
@@ -543,7 +583,7 @@ def dedupe_rows(
     if similar is None:
         return st.dedupe(dedupe_key(key), raw=True)
     if not key:
-        raise ValueError("相似度去重需要指定 key")
+        raise ValueError(t("Similarity dedupe requires a key", "相似度去重需要指定 key"))
     from .core import DataTransformer
 
     rows = DataTransformer(st.collect()).dedupe_similar(key, threshold=similar).data
@@ -560,12 +600,19 @@ def parse_ratio(ratio: Any) -> List[float]:
         parts = [float(x.strip()) for x in str(ratio).split(",")]
     if len(parts) == 1:
         if not (0 < parts[0] < 1):
-            raise ValueError(f"比例必须在 0-1 之间: {parts[0]}")
+            raise ValueError(
+                t(f"Ratio must be between 0 and 1: {parts[0]}", f"比例必须在 0-1 之间: {parts[0]}")
+            )
         parts.append(round(1 - parts[0], 10))
     if abs(sum(parts) - 1.0) > 1e-6:
-        raise ValueError(f"比例之和必须为 1.0，当前为 {sum(parts)}")
+        raise ValueError(
+            t(
+                f"Ratios must sum to 1.0, got {sum(parts)}",
+                f"比例之和必须为 1.0，当前为 {sum(parts)}",
+            )
+        )
     if any(p <= 0 for p in parts):
-        raise ValueError("每个比例都必须大于 0")
+        raise ValueError(t("Every ratio must be greater than 0", "每个比例都必须大于 0"))
     return parts
 
 
@@ -619,18 +666,18 @@ def infer_schema(rows: Iterable[Row], max_depth: int = 5) -> Dict[str, Any]:
             node["types"]["null"] += 1
             return
         node["nonnull"] += 1
-        t = _type_name(value)
-        node["types"][t] += 1
-        if t == "str" and node["values"] is not None:
+        tn = _type_name(value)
+        node["types"][tn] += 1
+        if tn == "str" and node["values"] is not None:
             node["values"].add(value)
             if len(node["values"]) > _LOW_CARDINALITY:
                 node["values"] = None
-        elif t == "dict" and depth < max_depth:
+        elif tn == "dict" and depth < max_depth:
             if node["fields"] is None:
                 node["fields"] = {}
             for k, v in value.items():
                 visit(node["fields"].setdefault(k, new_node()), v, depth + 1)
-        elif t == "list" and depth < max_depth:
+        elif tn == "list" and depth < max_depth:
             if node["items"] is None:
                 node["items"] = new_node()
             for v in value:
@@ -644,7 +691,7 @@ def infer_schema(rows: Iterable[Row], max_depth: int = 5) -> Dict[str, Any]:
 
     def render(node: Dict[str, Any], denom: int) -> Dict[str, Any]:
         # denom = 父级出现次数: 键缺失也算"空", 否则缺字段的行会把非空率虚报成 100%
-        types = [t for t, _ in node["types"].most_common() if t != "null"]
+        types = [tn for tn, _ in node["types"].most_common() if tn != "null"]
         out: Dict[str, Any] = {"type": types[0] if len(types) == 1 else (types or ["null"])}
         out["non_null"] = round(node["nonnull"] / denom, 4) if denom else 0.0
         if node["values"]:

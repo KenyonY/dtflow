@@ -28,6 +28,7 @@ from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
+from ...i18n import t
 from ...utils import clipboard
 from . import render, scan
 from .scan import ScanSpec, compile_search
@@ -54,7 +55,7 @@ class FastDataTable(DataTable):
 
     # DataTable 自带 enter→select_cursor, 焦点在表格时会先于 App 层的 enter→zoom 吃掉按键;
     # 在这里同键覆盖, 直接转给 app 的放大动作 (弹窗/输入框里的 Enter 焦点不在表格, 不受影响)。
-    BINDINGS = [Binding("enter", "app.zoom", "放大")]
+    BINDINGS = [Binding("enter", "app.zoom", t("Zoom", "放大"))]
 
     def _update_dimensions(self, new_rows) -> None:
         for row_key in new_rows:
@@ -252,7 +253,67 @@ class FastDataTable(DataTable):
         event.prevent_default()
 
 
-_HELP = """[b]dt view 快捷键[/b]
+_HELP = t(
+    """[b]dt view keys[/b]
+
+  ↑/↓  j/k     select row (detail follows)
+  PgUp/PgDn    full page     d/u (or Ctrl+d/u)  half page
+  g/G          first/last row   Tab  switch focus (to scroll long conversations)
+  ←/→          scroll sideways   h/l scroll 4 chars sideways
+  ] / [        next/prev window (paging big files)   :  jump to row (-1 = last)
+                 paging back from a tail window or full-file ops build the history index
+                 on demand; in follow mode moving up pauses, G resumes tailing
+  n / N        next/prev field in detail (conversations go per message: msg0/msg1…;
+                 clicking a field selects it too)
+  *            jump to the next search hit in detail (hits are highlighted in yellow)
+  y            copy the current sample's JSON to the clipboard
+  mouse drag   drag with the left button in detail to select text (what you see is what
+                 you get, even across soft wraps), then Ctrl+c to copy; more clicks select
+                 more: double = word (ids/values; - and _ count as word chars) · triple =
+                 line · 4x = field block · 5x = whole detail; Esc or a click clears it
+                 copies via OSC52 + local wl-copy/xclip/xsel (works over SSH/tmux too)
+  v            multi-select samples (j/k extends), y copies them all, Esc cancels
+  w            export the current browse sequence (or selection) to a file; format follows
+                 the extension. .jsonl streams, so 100k+ rows use no memory; lineage is
+                 written too, so dt history shows the source and conditions
+  C            copy a dt view command that reproduces this view (with filter/search/sort)
+  s            full sort (enter a column name, prefix - to reverse; scans the whole file,
+                 holds across windows)
+  S            column snapshot (n·min·max·mean·non-empty rate of a column over the current
+                 sequence; full distribution: dt stats)
+  /            full search (every value of each record, incl. assistant replies;
+                 case-insensitive, re: prefix for regex)
+                 → hit subset + yellow highlights in table/detail; * hops between hits
+  f            full filter (scans the whole file → hit subset): Python expr, row is x
+                 derived columns by name: chars>2000 · turns>=6 · 'refund' in first_user
+                 other fields via x.: x.source=='alpaca' · len(x.messages)>=2
+                       x.messages[-1].role=='assistant' · 'get_weather' in calls
+                       any('error' in m.content for m in x.messages)   (whole chat)
+                 and/or/not/parentheses: turns>=6 and (chars<2000 or x.source=='a')
+                 press f again to stack more conditions (combined with and)
+  F / header   value filter (Excel-style): lists the column's unique values + counts,
+                 check the ones to keep → subset
+                 the search box on top narrows candidates by substring; with a query,
+                 Apply keeps only the checked matches
+                 click outside or Esc cancels; filtered headers show ▾; reopen to add
+                 removed values back
+  Esc          cancel a running scan
+  Enter        zoom into the current sample (Esc to return)
+  drag hdr │   resize columns (Excel-style): the │ right of each header is the divider;
+                 hover turns it ┃, drag left/right to resize, double-click to auto-fit;
+                 widths stick to the column name across windows and filters
+  z            toggle side-by-side / stacked layout (default side-by-side)
+  +/-          resize the table/detail split (5% per step)
+  drag split   the border between table and detail (two rows, or two columns side-by-side)
+                 is the split: it lights up on hover, drag it anywhere; double-click
+                 restores the default 65:35
+  c            choose columns (checkbox panel, applies to both table and detail)
+  r            clear all filters/search/sort and browse the full file again (also scrolls
+                 back to the left)
+               after a filter/search the horizontal position stays; if the current sample
+               still matches, the cursor stays on it
+  ?            help      q  quit""",
+    """[b]dt view 快捷键[/b]
 
   ↑/↓  j/k     选行 (详情联动)
   PgUp/PgDn    整页      d/u (或 Ctrl+d/u)  半屏
@@ -300,7 +361,8 @@ _HELP = """[b]dt view 快捷键[/b]
 
   搜索/筛选/排序都是全量的 (扫整个文件, 非仅当前窗口), 且可叠加;
   启动即带条件: dt view f.jsonl --where=... --search=... --sort=-chars
-"""
+""",
+)
 
 
 # 双击取词的分段: 词 (\w 已含中文与下划线, 再带上 uuid/命名里的 -) / 空白 / 符号, 三类各自成段
@@ -453,7 +515,10 @@ def _fit_panel(screen, sl: SelectionList, chrome: int, hard_max: int) -> int:
 
 # 勾选面板的默认提示。讲按键而不只是按钮名: 窄屏下 _fit_panel 会隐藏 全选/全不选
 # 两个按钮, 只讲按钮等于没讲。两个面板共用同一句, 免得改一处漏一处。
-_PICK_HINT = "空格 勾选/取消 · a/n 全选/全不选 · 亦可点下方按钮"
+_PICK_HINT = t(
+    "Space: toggle · a/n: all/none · or click below",
+    "空格 勾选/取消 · a/n 全选/全不选 · 亦可点下方按钮",
+)
 
 # 面板中列表之外的固定行数 (边框2 + 内边距2 + 标题1 + 提示1&margin1 + 按钮1&margin1)
 _PICKER_CHROME = 10
@@ -464,7 +529,7 @@ class HelpScreen(ModalScreen):
     """帮助。放在 VerticalScroll 里: 帮助文本只会越加越长, 而终端高度是给定的,
     定高 Static 一旦超屏就把末尾几行连边框一起静默裁掉 (最先没的正是 q 退出那行)。"""
 
-    BINDINGS = [Binding("escape,q,question_mark", "dismiss", "关闭")]
+    BINDINGS = [Binding("escape,q,question_mark", "dismiss", t("Close", "关闭"))]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="help-box"):
@@ -482,10 +547,10 @@ class ColumnPicker(ModalScreen):
 
     # priority=True: 抢在 SelectionList 之前处理, 否则 enter 会被它消费而无法关闭
     BINDINGS = [
-        Binding("enter,c", "close", "应用", priority=True),
-        Binding("escape", "cancel", "取消", priority=True),
-        Binding("a", "all", "全选"),
-        Binding("n", "none", "全不选"),
+        Binding("enter,c", "close", t("Apply", "应用"), priority=True),
+        Binding("escape", "cancel", t("Cancel", "取消"), priority=True),
+        Binding("a", "all", t("All", "全选")),
+        Binding("n", "none", t("None", "全不选")),
     ]
 
     def __init__(self, columns: List[str], checked: Set[str]):
@@ -495,14 +560,14 @@ class ColumnPicker(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
-            yield Static("[b]选择要显示的列[/b]", id="picker-title")
+            yield Static(t("[b]Columns to show[/b]", "[b]选择要显示的列[/b]"), id="picker-title")
             yield SelectionList(id="cols")
             yield Static(f"[dim]{_PICK_HINT}[/dim]", id="picker-hint")
             with Horizontal(classes="panel-btns"):
-                yield Button("全选", id="cp-all")
-                yield Button("全不选", id="cp-none")
-                yield Button("应用", id="cp-apply", variant="primary")
-                yield Button("取消", id="cp-cancel")
+                yield Button(t("All", "全选"), id="cp-all")
+                yield Button(t("None", "全不选"), id="cp-none")
+                yield Button(t("Apply", "应用"), id="cp-apply", variant="primary")
+                yield Button(t("Cancel", "取消"), id="cp-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         {
@@ -528,7 +593,7 @@ class ColumnPicker(ModalScreen):
     def action_close(self) -> None:
         selected = set(self.query_one(SelectionList).selected)
         if not selected:
-            self.notify("至少选一列")
+            self.notify(t("Select at least one column", "至少选一列"))
             return
         self.dismiss(selected)
 
@@ -559,11 +624,11 @@ class ValueFilterScreen(ModalScreen):
     _MAX_SHOW = 1000  # 列表最多渲染的候选值数; 超出部分靠搜索框缩小范围后可见
 
     BINDINGS = [
-        Binding("enter", "close", "应用", priority=True),
-        Binding("escape", "cancel", "取消", priority=True),
-        Binding("down", "focus_list", "进入列表", show=False),
-        Binding("a", "all", "全选"),
-        Binding("n", "none", "全不选"),
+        Binding("enter", "close", t("Apply", "应用"), priority=True),
+        Binding("escape", "cancel", t("Cancel", "取消"), priority=True),
+        Binding("down", "focus_list", t("To list", "进入列表"), show=False),
+        Binding("a", "all", t("All", "全选")),
+        Binding("n", "none", t("None", "全不选")),
     ]
 
     def __init__(self, col: str, items: List, total: int, prior=None, anchor=None):
@@ -580,14 +645,16 @@ class ValueFilterScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="vf-box"):
             yield Static(id="picker-title")
-            yield Input(placeholder="输入子串过滤候选值…", id="vf-search")
+            yield Input(
+                placeholder=t("Type to filter values…", "输入子串过滤候选值…"), id="vf-search"
+            )
             yield SelectionList(id="cols")
             yield Static(id="picker-hint")
             with Horizontal(classes="panel-btns"):  # 鼠标可点: 全流程无需回键盘
-                yield Button("全选", id="vf-all")
-                yield Button("全不选", id="vf-none")
-                yield Button("应用", id="vf-apply", variant="primary")
-                yield Button("取消", id="vf-cancel")
+                yield Button(t("All", "全选"), id="vf-all")
+                yield Button(t("None", "全不选"), id="vf-none")
+                yield Button(t("Apply", "应用"), id="vf-apply", variant="primary")
+                yield Button(t("Cancel", "取消"), id="vf-cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         {
@@ -647,20 +714,35 @@ class ValueFilterScreen(ModalScreen):
         shown = matched[: self._MAX_SHOW]
         self._shown = [v for v, _ in shown]  # _sync 只并回显示过的项
         for val, cnt in shown:
-            label = val if val != "" else "(空)"
+            label = val if val != "" else t("(empty)", "(空)")
             if len(label) > 46:
                 label = label[:45] + "…"
             sl.add_option(Selection(Text(f"{label}  ({cnt})"), val, val in self._checked))
-        scope = f"匹配 {len(matched)}/{self._total}" if self._query else f"{self._total} 个值"
+        scope = (
+            t(f"{len(matched)}/{self._total} match", f"匹配 {len(matched)}/{self._total}")
+            if self._query
+            else t(f"{self._total} values", f"{self._total} 个值")
+        )
         if len(matched) > len(shown):
-            scope += f", 仅显示前 {len(shown)}"
+            scope += t(f", showing first {len(shown)}", f", 仅显示前 {len(shown)}")
         self.query_one("#picker-title", Static).update(
-            Text.from_markup(f"[b]按 {escape(self._col)} 值筛选[/b] [dim]({scope})[/dim]")
+            Text.from_markup(
+                t(
+                    f"[b]Filter {escape(self._col)}[/b] [dim]({scope})[/dim]",
+                    f"[b]按 {escape(self._col)} 值筛选[/b] [dim]({scope})[/dim]",
+                )
+            )
         )
         if self._query:
-            hint = "应用 = 只保留勾选的匹配项 · ↓ 进列表空格勾选"
+            hint = t(
+                "Apply keeps checked matches · ↓ then Space checks",
+                "应用 = 只保留勾选的匹配项 · ↓ 进列表空格勾选",
+            )
         elif len(matched) > len(shown):
-            hint = "候选过多, 输入子串缩小范围 · 应用 = 只保留匹配项"
+            hint = t(
+                "Too many; type to narrow · Apply keeps matches",
+                "候选过多, 输入子串缩小范围 · 应用 = 只保留匹配项",
+            )
         else:
             hint = _PICK_HINT
         self.query_one("#picker-hint", Static).update(Text.from_markup(f"[dim]{hint}[/dim]"))
@@ -695,7 +777,7 @@ class ValueFilterScreen(ModalScreen):
             matched = {v for v, _ in self._matched()}
             selected = (selected & matched) or matched
         if not selected:
-            self.notify("至少选一个值")
+            self.notify(t("Select at least one value", "至少选一个值"))
             return
         self.dismiss(selected)
 
@@ -713,15 +795,15 @@ class ViewApp(App):
     #detail { height: 3fr; border: round $secondary; padding: 0 1; }
     #main.horizontal #detail { width: 1fr; height: 1fr; }
     #detail.zoomed { height: 1fr; }
-    /* 鼠标压在两区分界上: 把贴着分界的那圈边框点亮, 告诉用户这条线能拖 */
+    /* Mouse over the split line: light up the border along it to show it can be dragged */
     #table.split-hot { border: round $accent; }
     #detail.split-hot { border: round $accent; }
     #table.hidden { display: none; }
     #prompt { dock: bottom; display: none; }
     #prompt.active { display: block; }
     #status { dock: bottom; height: 1; background: $panel; color: $text-muted; padding: 0 1; }
-    /* 宽度写死: VerticalScroll 的 width:auto 会塌缩 (滚动容器不按内容测宽),
-       98 = 帮助最长行 + 内边距 + 边框; max-* 100% 保证窄/矮终端下改为滚动而非被裁 */
+    /* Fixed width: width:auto collapses on VerticalScroll (scroll containers don't size to content).
+       98 = longest help line + padding + border; max-* 100% scrolls instead of clipping on small terminals */
     #help-box { padding: 1 2; border: round $primary; background: $surface;
                 width: 98; max-width: 100%; height: auto; max-height: 100%; }
     #help-box Static { width: auto; }
@@ -737,10 +819,10 @@ class ViewApp(App):
               border: round $primary;
               background: $surface; padding: 1 2; }
     #vf-box #cols { width: 1fr; height: auto; max-height: 14; background: $surface; }
-    /* 紧凑搜索框: 去掉 Input 默认 border 占的 2 行, 面板不至于顶到屏幕外 */
+    /* Compact search box: drop the 2 rows of Input's default border so the panel stays on screen */
     #vf-search { border: none; height: 1; padding: 0; margin-bottom: 1;
                  background: $boost; width: 1fr; }
-    /* 紧凑单行按钮 (去掉 Button 默认的边框/height:3/min-width:16, 不再又大又丑) */
+    /* Compact one-line buttons: drop Button's default border / height:3 / min-width:16 */
     .panel-btns { width: 1fr; height: auto; align: center middle; margin-top: 1; }
     .panel-btns Button {
         height: 1; min-width: 0; border: none; padding: 0 1; margin: 0 1; color: $text;
@@ -749,52 +831,54 @@ class ViewApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "退出"),
-        Binding("question_mark", "help", "帮助"),
-        Binding("slash", "search", "搜索"),
-        Binding("f", "filter", "筛选"),
-        Binding("F", "value_filter", "值筛选"),
-        Binding("s", "sort", "排序"),
-        Binding("S", "snapshot", "列快照"),
-        Binding("z", "toggle_layout", "布局"),
-        Binding("r", "reset", "重置"),
-        Binding("enter", "zoom", "放大"),
-        Binding("escape", "unzoom", "返回", show=False),
-        Binding("g", "top", "首行", show=False),
-        Binding("G", "bottom", "末行", show=False),
+        Binding("q", "quit", t("Quit", "退出")),
+        Binding("question_mark", "help", t("Help", "帮助")),
+        Binding("slash", "search", t("Search", "搜索")),
+        Binding("f", "filter", t("Filter", "筛选")),
+        Binding("F", "value_filter", t("Value filter", "值筛选")),
+        Binding("s", "sort", t("Sort", "排序")),
+        Binding("S", "snapshot", t("Snapshot", "列快照")),
+        Binding("z", "toggle_layout", t("Layout", "布局")),
+        Binding("r", "reset", t("Reset", "重置")),
+        Binding("enter", "zoom", t("Zoom", "放大")),
+        Binding("escape", "unzoom", t("Back", "返回"), show=False),
+        Binding("g", "top", t("Top", "首行"), show=False),
+        Binding("G", "bottom", t("Bottom", "末行"), show=False),
         # DataTable 内置只认箭头键, 这里补 vim 键 (与帮助屏承诺一致)
-        Binding("j", "cursor_down", "下移", show=False),
-        Binding("k", "cursor_up", "上移", show=False),
+        Binding("j", "cursor_down", t("Down", "下移"), show=False),
+        Binding("k", "cursor_up", t("Up", "上移"), show=False),
         # h/l 每次水平滚动 4 字符，方向键保留 Textual 默认的单字符跨度。
-        Binding("h", "scroll_left", "左滚", show=False),
-        Binding("l", "scroll_right", "右滚", show=False),
+        Binding("h", "scroll_left", t("Scroll left", "左滚"), show=False),
+        Binding("l", "scroll_right", t("Scroll right", "右滚"), show=False),
         # 调整表格/详情两区大小 (竖排调高度, 横排调宽度)
-        Binding("plus", "grow_table", "表格+", show=False),
-        Binding("equals_sign", "grow_table", "表格+", show=False),
-        Binding("minus", "shrink_table", "表格-", show=False),
+        Binding("plus", "grow_table", t("Table+", "表格+"), show=False),
+        Binding("equals_sign", "grow_table", t("Table+", "表格+"), show=False),
+        Binding("minus", "shrink_table", t("Table-", "表格-"), show=False),
         # 半屏滚动: d/u 单键 (ctrl+d/u 同义, 照顾 vim 习惯); PgUp/PgDn 整页
-        Binding("d", "half_down", "半屏下", show=False),
-        Binding("u", "half_up", "半屏上", show=False),
-        Binding("ctrl+d", "half_down", "半屏下", show=False),
-        Binding("ctrl+u", "half_up", "半屏上", show=False),
+        Binding("d", "half_down", t("Half page down", "半屏下"), show=False),
+        Binding("u", "half_up", t("Half page up", "半屏上"), show=False),
+        Binding("ctrl+d", "half_down", t("Half page down", "半屏下"), show=False),
+        Binding("ctrl+u", "half_up", t("Half page up", "半屏上"), show=False),
         # 列显示选择器: c 打开勾选面板 (同时作用于表格列和详情字段)
-        Binding("c", "columns", "选列", show=False),
+        Binding("c", "columns", t("Columns", "选列"), show=False),
         # 大文件窗口翻页: ] 下一窗口, [ 上一窗口, : 跳到指定行号
-        Binding("right_square_bracket", "next_window", "下一窗口", show=False),
-        Binding("left_square_bracket", "prev_window", "上一窗口", show=False),
-        Binding("colon", "jump", "跳行", show=False),
+        Binding("right_square_bracket", "next_window", t("Next window", "下一窗口"), show=False),
+        Binding("left_square_bracket", "prev_window", t("Prev window", "上一窗口"), show=False),
+        Binding("colon", "jump", t("Jump to row", "跳行"), show=False),
         # n/N: 详情内下/上一字段精确定位 (绕过滚动条像素限制, 底部字段也可达)
-        Binding("n", "next_field", "下一字段", show=False),
-        Binding("N", "prev_field", "上一字段", show=False),
+        Binding("n", "next_field", t("Next field", "下一字段"), show=False),
+        Binding("N", "prev_field", t("Prev field", "上一字段"), show=False),
         # *: 只在含搜索命中的字段间跳 (n/N 的过滤版, 长对话里直奔命中那条消息)
-        Binding("asterisk", "next_match", "下一命中", show=False),
+        Binding("asterisk", "next_match", t("Next hit", "下一命中"), show=False),
         # 复制到剪贴板: y 复制当前样本 JSON; v 多选样本后 y 复制
-        Binding("ctrl+c", "copy_selection", "复制选区", show=False, priority=True),
-        Binding("y", "yank", "复制", show=False),
-        Binding("v", "visual", "多选", show=False),
+        Binding(
+            "ctrl+c", "copy_selection", t("Copy selection", "复制选区"), show=False, priority=True
+        ),
+        Binding("y", "yank", t("Copy", "复制"), show=False),
+        Binding("v", "visual", t("Multi-select", "多选"), show=False),
         # 落地: w 导出当前子集到文件, C 复制可复现当前视图的命令
-        Binding("w", "export", "导出", show=False),
-        Binding("C", "copy_command", "复制命令", show=False),
+        Binding("w", "export", t("Export", "导出"), show=False),
+        Binding("C", "copy_command", t("Copy command", "复制命令"), show=False),
     ]
 
     def __init__(
@@ -917,7 +1001,13 @@ class ViewApp(App):
         """
         if self._scan_cancel is None:
             return False
-        self.notify("扫描进行中, 先按 Esc 取消再改条件", severity="warning")
+        self.notify(
+            t(
+                "A scan is running; press Esc to cancel it before changing conditions",
+                "扫描进行中, 先按 Esc 取消再改条件",
+            ),
+            severity="warning",
+        )
         return True
 
     def _begin_scan(self):
@@ -970,7 +1060,9 @@ class ViewApp(App):
         self._rollback_constraints()  # 这次改动没生效, 约束退回改之前
         if self._sort_spec is None:
             self._follow_sort_snapshot = False
-        self.notify(escape(f"扫描失败: {msg}"), severity="error", timeout=10)
+        self.notify(
+            escape(t(f"Scan failed: {msg}", f"扫描失败: {msg}")), severity="error", timeout=10
+        )
         self._update_status()
 
     # ------------------------------------------------------------------ #
@@ -1062,7 +1154,13 @@ class ViewApp(App):
                 self._search_text = self._init_search
             except re.error as e:
                 self.notify(
-                    escape(f"--search {self._init_search}: 正则无效 ({e})"), severity="error"
+                    escape(
+                        t(
+                            f"--search {self._init_search}: invalid regex ({e})",
+                            f"--search {self._init_search}: 正则无效 ({e})",
+                        )
+                    ),
+                    severity="error",
                 )
         if self._init_sort:
             self._set_sort_spec(self._init_sort)
@@ -1440,7 +1538,9 @@ class ViewApp(App):
         要精确得钻 textual 的渲染行缓存。对话已按条拆段, 配合黄底高亮, 这个粒度够用。
         """
         if self._search_re is None:
-            self.notify("先用 / 搜索, 再用 * 跳命中")
+            self.notify(
+                t("Search with / first, then * jumps to hits", "先用 / 搜索, 再用 * 跳命中")
+            )
             return
         n = len(self._field_texts)
         for step in range(1, n + 1):  # 从当前字段之后找起, 绕一圈回到自己
@@ -1448,7 +1548,7 @@ class ViewApp(App):
             if self._search_re.search(self._field_texts[i]):
                 self._goto_field(i)
                 return
-        self.notify("本样本详情内无命中")
+        self.notify(t("No hits in this sample's detail", "本样本详情内无命中"))
 
     def _goto_field(self, i: int) -> None:
         """精确跳到第 i 个字段 (绕过滚动条像素限制, 底部字段 clamp 但可见)。
@@ -1483,7 +1583,7 @@ class ViewApp(App):
         total = self.source.total
         win = len(self.all_rows)
         seq_total = self._seq_total()
-        parts = [f"[b]{escape(self.filename)}[/b]", f"格式:{self.fmt}"]
+        parts = [f"[b]{escape(self.filename)}[/b]", t(f"format:{self.fmt}", f"格式:{self.fmt}")]
         if self._scan_msg:  # 扫描进行中: 只显文件名 + 进度, 醒目
             parts.append(f"[reverse] {escape(self._scan_msg)} [/reverse]")
             status.update(Text.from_markup("  ·  ".join(parts)))
@@ -1491,54 +1591,107 @@ class ViewApp(App):
         # 排在最前 (文件名之后): 状态栏从左往右排, 右端先被窄屏截掉 —— 常驻提示挂在末尾,
         # 越是小终端越看不见。压在可拖的线上时让位给那条更贴当下的提示。
         if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
-            hint = "[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]"
+            hint = t(
+                "[reverse] drag to resize column · double-click to auto-fit [/reverse]",
+                "[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]",
+            )
         elif self._split_hint:
-            hint = "[reverse] 拖动调两区大小 · 双击恢复默认 · z 换上下/左右 [/reverse]"
+            hint = t(
+                "[reverse] drag to resize panes · double-click to reset · z flips layout"
+                " [/reverse]",
+                "[reverse] 拖动调两区大小 · 双击恢复默认 · z 换上下/左右 [/reverse]",
+            )
         else:
-            hint = "[dim]z 布局 · ? 帮助[/dim]"
+            hint = t("[dim]z layout · ? help[/dim]", "[dim]z 布局 · ? 帮助[/dim]")
         parts.insert(1, hint)
         if self._follow:
             if self._follow_missing:
-                parts.append("[yellow]路径暂时不存在，等待轮转新文件[/yellow]")
+                parts.append(
+                    t(
+                        "[yellow]path missing, waiting for the rotated file[/yellow]",
+                        "[yellow]路径暂时不存在，等待轮转新文件[/yellow]",
+                    )
+                )
             elif self._follow_sort_snapshot:
-                parts.append("[yellow]排序快照（r 重置后回到实时）[/yellow]")
+                parts.append(
+                    t(
+                        "[yellow]sorted snapshot (r resets to live)[/yellow]",
+                        "[yellow]排序快照（r 重置后回到实时）[/yellow]",
+                    )
+                )
             elif self._follow_pinned:
-                parts.append("[green]实时追尾[/green]")
+                parts.append(t("[green]following live[/green]", "[green]实时追尾[/green]"))
             else:
-                pending = f" · +{self._follow_pending} 新行" if self._follow_pending else ""
-                parts.append(f"[yellow]已暂停界面{pending}（G 回到最新）[/yellow]")
+                pending = (
+                    t(f" · +{self._follow_pending} new", f" · +{self._follow_pending} 新行")
+                    if self._follow_pending
+                    else ""
+                )
+                parts.append(
+                    t(
+                        f"[yellow]paused{pending} (G for latest)[/yellow]",
+                        f"[yellow]已暂停界面{pending}（G 回到最新）[/yellow]",
+                    )
+                )
             if self._follow_partial:
-                parts.append("[dim]尾行写入中[/dim]")
+                parts.append(t("[dim]last line being written[/dim]", "[dim]尾行写入中[/dim]"))
         if self.source.has_unindexed_history:
-            parts.append(f"尾窗 {win} 行（历史未索引）")
+            parts.append(
+                t(f"tail window {win} rows (history not indexed)", f"尾窗 {win} 行（历史未索引）")
+            )
         elif self.source.has_unindexed_tail and not self.source.total_known:
-            parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}] / 总行数待定")
-            parts.append("[dim]]/[ 按需翻窗口·G 到末尾[/dim]")
+            parts.append(
+                t(
+                    f"window [{self.win_offset + 1}–{self.win_offset + win}] / total unknown",
+                    f"窗口 [{self.win_offset + 1}–{self.win_offset + win}] / 总行数待定",
+                )
+            )
+            parts.append(
+                t("[dim]]/[ page windows·G to end[/dim]", "[dim]]/[ 按需翻窗口·G 到末尾[/dim]")
+            )
         if self._visual_anchor is not None:  # 多选态: 醒目显示选区范围
             cur = self.query_one("#table", DataTable).cursor_row
             lo, hi = sorted((self._visual_anchor, cur))
             parts.append(
-                f"[reverse] VISUAL {lo + 1}–{hi + 1} ({hi - lo + 1}条) y复制 Esc取消 [/reverse]"
+                t(
+                    f"[reverse] VISUAL {lo + 1}–{hi + 1} ({hi - lo + 1}) y copy Esc cancel"
+                    " [/reverse]",
+                    f"[reverse] VISUAL {lo + 1}–{hi + 1} ({hi - lo + 1}条) y复制 Esc取消 [/reverse]",
+                )
             )
         # 子集态但无筛选约束 = 纯排序: 行集没变, 报"命中 N/N (100%)"是误导
         if self._subset is not None and self._filter_label:
             pct = 100 * len(self._subset) / total if total else 0
             parts.append(
-                f"[green]{escape(self._filter_label)}: "
-                f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]"
+                t(
+                    f"[green]{escape(self._filter_label)}: "
+                    f"{len(self._subset)}/{total} hits ({pct:.1f}%)[/green]",
+                    f"[green]{escape(self._filter_label)}: "
+                    f"命中 {len(self._subset)}/{total} ({pct:.1f}%)[/green]",
+                )
             )
-            parts.append("[dim]r 清筛选[/dim]")
+            parts.append(t("[dim]r clears filters[/dim]", "[dim]r 清筛选[/dim]"))
         if seq_total > win and self.source.total_known:  # 多窗口
-            parts.append(f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}")
-            parts.append("[dim]]/[ 翻窗口·: 跳行[/dim]")
+            parts.append(
+                t(
+                    f"window [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}",
+                    f"窗口 [{self.win_offset + 1}–{self.win_offset + win}]/{seq_total}",
+                )
+            )
+            parts.append(t("[dim]]/[ page windows·: jump[/dim]", "[dim]]/[ 翻窗口·: 跳行[/dim]"))
         elif not self._filter_label and self.source.total_known:
-            parts.append(f"{total} 行")
+            parts.append(t(f"{total} rows", f"{total} 行"))
         if self._sort_label:
-            parts.append(f"排序:{escape(self._sort_label)}")
+            parts.append(t(f"sort:{escape(self._sort_label)}", f"排序:{escape(self._sort_label)}"))
         # 详情当前字段 (滚动同步顶部字段, n/N 精确接管)
         cur_field = self._current_field()
         if cur_field:
-            parts.append(f"[cyan]字段:{escape(cur_field)}[/cyan]")
+            parts.append(
+                t(
+                    f"[cyan]field:{escape(cur_field)}[/cyan]",
+                    f"[cyan]字段:{escape(cur_field)}[/cyan]",
+                )
+            )
         status.update(Text.from_markup("  ·  ".join(parts)))
 
     def _unlock_follow_move(self) -> None:
@@ -1562,7 +1715,11 @@ class ViewApp(App):
 
     def _on_follow_error(self, message: str) -> None:
         self._follow_polling = False
-        self.notify(escape(f"追尾读取失败: {message}"), severity="error", timeout=10)
+        self.notify(
+            escape(t(f"Follow read failed: {message}", f"追尾读取失败: {message}")),
+            severity="error",
+            timeout=10,
+        )
 
     def _row_matches_constraints(self, row) -> bool:
         """follow 新行是否落进当前子集。谓词取已落地那版 (轮询与扫描互斥, 二者一致)。"""
@@ -1580,14 +1737,20 @@ class ViewApp(App):
             return
         if update.kind == "restored":
             self._follow_missing = False
-            self.notify("日志路径已恢复")
+            self.notify(t("Log path is back", "日志路径已恢复"))
         if update.kind == "rotation":
             self._follow_missing = False
             self._follow_generation = update.generation
             self._subset = None
             self._follow_sort_snapshot = self._sort_spec is not None
             refresh_rotation_subset = self._has_filters() and self._sort_spec is None
-            self.notify("检测到日志轮转，已跟随新文件；旧尾窗将逐步淘汰", timeout=8)
+            self.notify(
+                t(
+                    "Log rotated; now following the new file, the old tail will phase out",
+                    "检测到日志轮转，已跟随新文件；旧尾窗将逐步淘汰",
+                ),
+                timeout=8,
+            )
 
         if not update.rows:
             self._update_status()
@@ -1771,13 +1934,17 @@ class ViewApp(App):
         cancel, gen = self._begin_scan()
         self._index_navigation = True
         self._set_scan_msg(
-            "统计总行数并读取尾窗 (Esc 取消)" if tail else "读取行索引 0 行 (Esc 取消)"
+            t("Counting rows and reading the tail (Esc cancels)", "统计总行数并读取尾窗 (Esc 取消)")
+            if tail
+            else t("Indexing rows: 0 (Esc cancels)", "读取行索引 0 行 (Esc 取消)")
         )
 
         def progress(n: int) -> None:
             def update() -> None:
                 if not self._scan_superseded(gen):
-                    self._set_scan_msg(f"读取行索引 {n} 行 (Esc 取消)")
+                    self._set_scan_msg(
+                        t(f"Indexing rows: {n} (Esc cancels)", f"读取行索引 {n} 行 (Esc 取消)")
+                    )
 
             self.call_from_thread(update)
 
@@ -1801,7 +1968,7 @@ class ViewApp(App):
             return
         self._end_scan()
         if not ok:
-            self.notify("已取消行索引")
+            self.notify(t("Row indexing cancelled", "已取消行索引"))
             self._update_status()
             return
         after()
@@ -1849,7 +2016,13 @@ class ViewApp(App):
                 self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
 
     def action_sort(self) -> None:
-        self._open_prompt("sort", "全量排序列名 (加 - 反向, 如 -chars; 扫全文件):")
+        self._open_prompt(
+            "sort",
+            t(
+                "Sort by column (prefix - to reverse, e.g. -chars; scans the whole file):",
+                "全量排序列名 (加 - 反向, 如 -chars; 扫全文件):",
+            ),
+        )
 
     def _set_sort_spec(self, text: str) -> bool:
         """校验并记下排序列; 列名非法返回 False。"""
@@ -1857,7 +2030,13 @@ class ViewApp(App):
         name = text.lstrip("-").strip()
         if name not in self.columns:
             self.notify(
-                escape(f"无此列: {name} (可选: {', '.join(self.columns)})"), severity="error"
+                escape(
+                    t(
+                        f"No such column: {name} (available: {', '.join(self.columns)})",
+                        f"无此列: {name} (可选: {', '.join(self.columns)})",
+                    )
+                ),
+                severity="error",
             )
             return False
         self._sort_spec = (name, desc)
@@ -1911,7 +2090,10 @@ class ViewApp(App):
             self._load_window(0, rebuild_columns=True)
         table = self.query_one("#table", DataTable)
         table.scroll_x = table.scroll_target_x = 0  # r 是"回到起点", 横向也一并回最左
-        self.notify("已重置" + (" (退出筛选子集)" if was_filtered else ""))
+        self.notify(
+            t("Reset", "已重置")
+            + (t(" (left the filtered subset)", " (退出筛选子集)") if was_filtered else "")
+        )
 
     # ------------------------------------------------------------------ #
     # 复制到剪贴板 (Ctrl+c 鼠标选区; y 当前样本; v 多选后 y 复制多条)
@@ -1949,11 +2131,21 @@ class ViewApp(App):
             focused = self.focused
             if isinstance(focused, Input) and focused.selected_text:
                 raise SkipAction()
-            self.notify("没有选中内容: 详情区拖选文本后再按 Ctrl+c 复制 · 退出按 q")
+            self.notify(
+                t(
+                    "Nothing selected: drag over text in detail, then Ctrl+c to copy · q quits",
+                    "没有选中内容: 详情区拖选文本后再按 Ctrl+c 复制 · 退出按 q",
+                )
+            )
             return
         used = self._copy_clipboard(text)
         self.screen.clear_selection()
-        self.notify(f"已复制选中的 {len(text)} 字符 ({used or 'OSC52'})")
+        self.notify(
+            t(
+                f"Copied {len(text)} selected chars ({used or 'OSC52'})",
+                f"已复制选中的 {len(text)} 字符 ({used or 'OSC52'})",
+            )
+        )
 
     def on_click(self, event: events.Click) -> None:
         """双击两区分界: 回默认比例 (同双击列分隔线恢复自适应)。"""
@@ -1971,7 +2163,12 @@ class ViewApp(App):
         if not lines:
             return
         self._copy_clipboard("\n".join(lines))
-        self.notify(f"已复制 {len(lines)} 条样本到剪贴板")
+        self.notify(
+            t(
+                f"Copied {len(lines)} sample(s) to the clipboard",
+                f"已复制 {len(lines)} 条样本到剪贴板",
+            )
+        )
 
     def action_yank(self) -> None:
         table = self.query_one("#table", DataTable)
@@ -2027,16 +2224,31 @@ class ViewApp(App):
         import shlex
 
         if not self.filepath:  # stdin 模式: 源数据是管道, 没有可复现的输入
-            return None, ["管道输入 (dt view -) 无法复现, 请用 w 导出结果文件"]
+            return None, [
+                t(
+                    "Piped input (dt view -) can't be reproduced; export the result with w",
+                    "管道输入 (dt view -) 无法复现, 请用 w 导出结果文件",
+                )
+            ]
 
         skipped: List[str] = []
         if self._follow:
-            skipped.append("实时模式只复现观察条件，不固定历史字节快照")
+            skipped.append(
+                t(
+                    "follow mode reproduces the conditions, not a fixed byte snapshot",
+                    "实时模式只复现观察条件，不固定历史字节快照",
+                )
+            )
         wheres = list(self._wheres)
         for col, kept in self._col_value_filters.items():
             bad = [v for v in kept if self._UNSAFE_VALUE.search(v)]
             if bad:
-                skipped.append(f"{col} 的 {len(bad)} 个值含特殊字符/被截断, 无法写进命令")
+                skipped.append(
+                    t(
+                        f"{len(bad)} value(s) of {col} are truncated and can't go into a command",
+                        f"{col} 的 {len(bad)} 个值含特殊字符/被截断, 无法写进命令",
+                    )
+                )
                 continue
             # 多列值筛选之间是 AND, 各写一条 --where; 单列内多值是 in (...)
             wheres.append(self._value_filter_expr(col, kept))
@@ -2061,9 +2273,16 @@ class ViewApp(App):
             self.notify(escape(skipped[0]), severity="warning")
             return
         self._copy_clipboard(cmd)
-        msg = f"已复制命令: {cmd}"
+        msg = t(f"Copied command: {cmd}", f"已复制命令: {cmd}")
         if skipped:
-            msg += "\n未纳入: " + "; ".join(skipped) + " (完整条件见导出文件的血缘记录)"
+            msg += (
+                t("\nNot included: ", "\n未纳入: ")
+                + "; ".join(skipped)
+                + t(
+                    " (full conditions are in an exported file's lineage)",
+                    " (完整条件见导出文件的血缘记录)",
+                )
+            )
         self.notify(escape(msg), timeout=10, severity="warning" if skipped else "information")
 
     # ------------------------------------------------------------------ #
@@ -2074,18 +2293,29 @@ class ViewApp(App):
         """(范围说明, 行数): 多选态导出选区, 否则导出整个当前浏览序列。"""
         if self._visual_anchor is not None:
             lo, hi = sorted((self._visual_anchor, self.query_one("#table", DataTable).cursor_row))
-            return "选区", hi - lo + 1
+            return t("selection", "选区"), hi - lo + 1
         if not self.source.total_known:
-            return "全部（将按需补全索引，行数待定）", -1
-        return ("筛选子集" if self._filter_label else "全部"), self._seq_total()
+            return (
+                t("all (index built on demand, row count TBD)", "全部（将按需补全索引，行数待定）"),
+                -1,
+            )
+        return (
+            t("filtered subset", "筛选子集") if self._filter_label else t("all", "全部")
+        ), self._seq_total()
 
     def action_export(self) -> None:
         scope, n = self._export_scope()
         if n == 0:
-            self.notify("没有可导出的行")
+            self.notify(t("No rows to export", "没有可导出的行"))
             return
-        count = "" if n < 0 else f" {n} 行"
-        self._open_prompt("export", f"导出{scope}{count}到 (按扩展名定格式, 如 out.jsonl):")
+        count = "" if n < 0 else t(f" ({n} rows)", f" {n} 行")
+        self._open_prompt(
+            "export",
+            t(
+                f"Export {scope}{count} to (format by extension, e.g. out.jsonl):",
+                f"导出{scope}{count}到 (按扩展名定格式, 如 out.jsonl):",
+            ),
+        )
 
     def _apply_export(self, path_str: str) -> None:
         from pathlib import Path
@@ -2094,10 +2324,16 @@ class ViewApp(App):
             return
         out = Path(path_str).expanduser()
         if out.exists():  # 不静默覆盖: 导出目标多半是新文件, 覆盖了没法撤
-            self.notify(escape(f"已存在, 换个名字: {out}"), severity="error")
+            self.notify(
+                escape(t(f"Already exists, pick another name: {out}", f"已存在, 换个名字: {out}")),
+                severity="error",
+            )
             return
         if not out.parent.exists():
-            self.notify(escape(f"目录不存在: {out.parent}"), severity="error")
+            self.notify(
+                escape(t(f"No such directory: {out.parent}", f"目录不存在: {out.parent}")),
+                severity="error",
+            )
             return
 
         scope, n = self._export_scope()
@@ -2111,15 +2347,18 @@ class ViewApp(App):
         if not streaming and (n < 0 or n > 200_000):
             self.notify(
                 escape(
-                    f"{out.suffix} 需在索引后全量载入内存"
-                    + (f" ({n} 行)" if n >= 0 else "")
-                    + ", 建议导出 .jsonl"
+                    t(
+                        f"{out.suffix} loads everything into memory after indexing",
+                        f"{out.suffix} 需在索引后全量载入内存",
+                    )
+                    + (t(f" ({n} rows)", f" ({n} 行)") if n >= 0 else "")
+                    + t("; consider exporting .jsonl", ", 建议导出 .jsonl")
                 ),
                 severity="warning",
             )
 
         cancel, gen = self._begin_scan()
-        self._set_scan_msg("准备导出 (Esc 取消)")
+        self._set_scan_msg(t("Preparing export (Esc cancels)", "准备导出 (Esc 取消)"))
 
         def worker():
             # 导出的失败 (磁盘满/权限/格式后端缺失) 有自己的文案, 不并进 _on_scan_crashed
@@ -2127,7 +2366,10 @@ class ViewApp(App):
                 if self._visual_anchor is None and not self._prepare_full_scan(cancel):
                     return self._on_export_done, (out, None, None, gen)
                 total = self._export_scope()[1]
-                self.call_from_thread(self._set_scan_msg, f"导出中 0/{total} (Esc 取消)")
+                self.call_from_thread(
+                    self._set_scan_msg,
+                    t(f"Exporting 0/{total} (Esc cancels)", f"导出中 0/{total} (Esc 取消)"),
+                )
                 written = self._write_export(out, rows_iter, cancel, total, streaming)
             except Exception as e:  # noqa: BLE001
                 return self._on_export_done, (out, None, str(e), gen)
@@ -2151,7 +2393,13 @@ class ViewApp(App):
                     f.write(b"\n")
                     n += 1
                     if n % 5000 == 0:
-                        self.call_from_thread(self._set_scan_msg, f"导出中 {n}/{total} (Esc 取消)")
+                        self.call_from_thread(
+                            self._set_scan_msg,
+                            t(
+                                f"Exporting {n}/{total} (Esc cancels)",
+                                f"导出中 {n}/{total} (Esc 取消)",
+                            ),
+                        )
             if cancel.is_set():
                 out.unlink(missing_ok=True)  # 半截文件比没有更坏, 直接删掉
                 return None
@@ -2164,10 +2412,16 @@ class ViewApp(App):
             data.append(row)
             n += 1
             if n % 5000 == 0:
-                self.call_from_thread(self._set_scan_msg, f"收集中 {n}/{total} (Esc 取消)")
+                self.call_from_thread(
+                    self._set_scan_msg,
+                    t(f"Collecting {n}/{total} (Esc cancels)", f"收集中 {n}/{total} (Esc 取消)"),
+                )
         from ...storage.io import save_data
 
-        self.call_from_thread(self._set_scan_msg, f"写入 {out.suffix} ({n} 行)…")
+        self.call_from_thread(
+            self._set_scan_msg,
+            t(f"Writing {out.suffix} ({n} rows)…", f"写入 {out.suffix} ({n} 行)…"),
+        )
         save_data(data, str(out))
         return n
 
@@ -2205,17 +2459,29 @@ class ViewApp(App):
         self._rebase_tail_after_index()
         self._update_status()
         if error is not None:
-            self.notify(escape(f"导出失败: {error}"), severity="error", timeout=10)
+            self.notify(
+                escape(t(f"Export failed: {error}", f"导出失败: {error}")),
+                severity="error",
+                timeout=10,
+            )
             return
         if written is None:
-            self.notify("已取消导出")
+            self.notify(t("Export cancelled", "已取消导出"))
             return
         try:
             lineage_path = self._save_lineage(out, written)
-            extra = f"\n血缘: {lineage_path} (dt history {out} 可查)"
+            extra = t(
+                f"\nLineage: {lineage_path} (see dt history {out})",
+                f"\n血缘: {lineage_path} (dt history {out} 可查)",
+            )
         except Exception as e:  # noqa: BLE001  血缘是附加信息, 写不成不该让导出显示为失败
-            extra = f"\n(血缘未写成: {e})"
-        self.notify(escape(f"已导出 {written} 行 → {out}{extra}"), timeout=10)
+            extra = t(f"\n(lineage not written: {e})", f"\n(血缘未写成: {e})")
+        self.notify(
+            escape(
+                t(f"Exported {written} rows → {out}{extra}", f"已导出 {written} 行 → {out}{extra}")
+            ),
+            timeout=10,
+        )
 
     # ------------------------------------------------------------------ #
     # 大文件窗口翻页 (偏移索引 → 任意位置秒开, 内存 O(窗口))
@@ -2232,7 +2498,13 @@ class ViewApp(App):
         if self._follow and self._follow_sort_snapshot and self._subset is None:
             # 轮转后旧排序快照的全局索引已经不再指向当前文件；当前可见窗口仍安全，
             # 但不能拿旧索引去读取新 inode。r 会显式回到新文件的实时顺序。
-            self.notify("日志已轮转，排序快照只能查看当前窗口；按 r 回到实时", severity="warning")
+            self.notify(
+                t(
+                    "Log rotated; the sorted snapshot is limited to this window. r returns to live",
+                    "日志已轮转，排序快照只能查看当前窗口；按 r 回到实时",
+                ),
+                severity="warning",
+            )
             return
         if not self.source.window_is_indexed(offset, self.cap):
             self._start_history_index(
@@ -2258,7 +2530,12 @@ class ViewApp(App):
                 nos = picked
         except OSError as e:
             self.notify(
-                escape(f"文件已变化，当前快照无法继续读取: {e}"),
+                escape(
+                    t(
+                        f"File changed; this snapshot can no longer be read: {e}",
+                        f"文件已变化，当前快照无法继续读取: {e}",
+                    )
+                ),
                 severity="error",
                 timeout=10,
             )
@@ -2287,7 +2564,7 @@ class ViewApp(App):
 
     def _show_next_window(self, nxt: int) -> None:
         if nxt >= self._seq_total():
-            self.notify("已是最后一个窗口")
+            self.notify(t("Already at the last window", "已是最后一个窗口"))
             return
         self._load_window(nxt)
 
@@ -2302,28 +2579,41 @@ class ViewApp(App):
 
                 self._start_history_index(load_previous_tail)
                 return
-            self.notify("已是第一个窗口")
+            self.notify(t("Already at the first window", "已是第一个窗口"))
             return
         if self._follow:
             self._follow_pinned = False
         self._load_window(max(0, self.win_offset - self.cap))
 
     def action_jump(self) -> None:
-        where = "子集内序号" if self._subset is not None else "行号"
+        where = (
+            t("position in subset", "子集内序号") if self._subset is not None else t("row", "行号")
+        )
         if self.source.has_unindexed_history:
-            hint = "负数从尾窗末尾数，正数会按需建历史索引"
+            hint = t(
+                "negative counts from the tail end; positive builds the history index",
+                "负数从尾窗末尾数，正数会按需建历史索引",
+            )
         elif self.source.has_unindexed_tail:
-            hint = "正数按需读取，负数快速计数后从末尾数"
+            hint = t(
+                "positive reads on demand; negative counts rows, then from the end",
+                "正数按需读取，负数快速计数后从末尾数",
+            )
         else:
-            hint = f"1-{self._seq_total()}, 负数从末尾数"
-        self._open_prompt("jump", f"跳到{where} ({hint}):")
+            hint = t(
+                f"1-{self._seq_total()}, negative counts from the end",
+                f"1-{self._seq_total()}, 负数从末尾数",
+            )
+        self._open_prompt("jump", t(f"Jump to {where} ({hint}):", f"跳到{where} ({hint}):"))
 
     def _apply_jump(self, text: str) -> None:
         """跳到当前浏览序列的第 n 个位置 (原始态=文件行号, 子集态=子集内序号)。"""
         try:
             n = int(text)
         except ValueError:
-            self.notify(escape(f"无效行号: {text}"), severity="error")
+            self.notify(
+                escape(t(f"Invalid row number: {text}", f"无效行号: {text}")), severity="error"
+            )
             return
         self._supersede_index_navigation()
         if self.source.has_unindexed_tail and n < 0:
@@ -2355,7 +2645,9 @@ class ViewApp(App):
             if local in self.view_indices:
                 self.query_one("#table", DataTable).move_cursor(row=self.view_indices.index(local))
             else:
-                self.notify("该行不在当前筛选结果中")
+                self.notify(
+                    t("That row is not in the current filter result", "该行不在当前筛选结果中")
+                )
         else:
             self._load_window(g)  # 跳出窗口: 以目标位置为窗口首行加载
 
@@ -2423,7 +2715,7 @@ class ViewApp(App):
         table = self.query_one("#table", FastDataTable)
         for i, w in enumerate(self._column_widths(vis)):
             table.set_column_width(i, w)
-        self.notify(f"{name} 列宽已恢复自适应")
+        self.notify(t(f"{name}: width back to auto-fit", f"{name} 列宽已恢复自适应"))
 
     def _rebuild_columns(self) -> None:
         """列可见集变化后重建表头并重填。"""
@@ -2447,17 +2739,33 @@ class ViewApp(App):
         table.scroll_target_x = table.scroll_x
 
     def action_search(self) -> None:
-        self._open_prompt("search", "全量搜索 (整条记录, 不分大小写; re: 前缀走正则):")
+        self._open_prompt(
+            "search",
+            t(
+                "Search all records (whole record, case-insensitive; re: prefix for regex):",
+                "全量搜索 (整条记录, 不分大小写; re: 前缀走正则):",
+            ),
+        )
 
     def action_filter(self) -> None:
         self._open_prompt(
             "filter",
-            "全量筛选 (Python 表达式, 当前行 x; 派生列名直接用) "
-            "如 turns>=6 and '退款' in first_user · x.source=='a':",
+            t(
+                "Filter (Python, row is x; derived columns by name) "
+                "e.g. turns>=6 and 'refund' in first_user · x.source=='a':",
+                "全量筛选 (Python 表达式, 当前行 x; 派生列名直接用) "
+                "如 turns>=6 and '退款' in first_user · x.source=='a':",
+            ),
         )
 
     def action_value_filter(self) -> None:
-        self._open_prompt("value_filter", "按列值勾选筛选: 输入列名 (亦可直接点表头):")
+        self._open_prompt(
+            "value_filter",
+            t(
+                "Filter by column values: enter a column name (or click its header):",
+                "按列值勾选筛选: 输入列名 (亦可直接点表头):",
+            ),
+        )
 
     def _open_prompt(self, mode: str, placeholder: str) -> None:
         self._prompt_mode = mode
@@ -2500,7 +2808,7 @@ class ViewApp(App):
         try:
             self._search_re = compile_search(text)
         except re.error as e:
-            self.notify(escape(f"正则无效: {e}"), severity="error")
+            self.notify(escape(t(f"Invalid regex: {e}", f"正则无效: {e}")), severity="error")
             return
         self._search_text = text
         self._recompute_subset(snap)
@@ -2530,9 +2838,11 @@ class ViewApp(App):
         """状态栏/血缘里的约束说明。"""
         parts = []
         if self._search_text:
-            parts.append(f"搜索'{self._search_text}'")
-        parts += [f"筛选'{e}'" for e in self._wheres]
-        parts += [f"{c}∈{len(v)}值" for c, v in self._col_value_filters.items()]
+            parts.append(t(f"search '{self._search_text}'", f"搜索'{self._search_text}'"))
+        parts += [t(f"where '{e}'", f"筛选'{e}'") for e in self._wheres]
+        parts += [
+            t(f"{c}∈{len(v)} values", f"{c}∈{len(v)}值") for c, v in self._col_value_filters.items()
+        ]
         return " · ".join(parts)
 
     def _recompute_subset(self, rollback=None, preserve_window: bool = False) -> None:
@@ -2569,12 +2879,20 @@ class ViewApp(App):
         self._scan_rollback = rollback
         base = scan.refine_base(self._applied_spec, spec, self._subset, self.source.total)
         self._set_scan_msg(
-            "准备收紧子集 (Esc 取消)" if base is not None else "准备全量扫描 (Esc 取消)"
+            t("Preparing to narrow the subset (Esc cancels)", "准备收紧子集 (Esc 取消)")
+            if base is not None
+            else t("Preparing full scan (Esc cancels)", "准备全量扫描 (Esc 取消)")
         )
 
         def progress(done: int, total: int) -> None:
             if not self._scan_superseded(gen):
-                self.call_from_thread(self._set_scan_msg, f"扫描中 {done}/{total} (Esc 取消)")
+                self.call_from_thread(
+                    self._set_scan_msg,
+                    t(
+                        f"Scanning {done}/{total} (Esc cancels)",
+                        f"扫描中 {done}/{total} (Esc 取消)",
+                    ),
+                )
 
         def worker():
             cancelled = (None, spec, label, True, gen, preserve_window)
@@ -2596,15 +2914,19 @@ class ViewApp(App):
         self._scan_msg = msg
         self._update_status()
 
-    def _prepare_full_scan(self, cancel, label: str = "补全行索引") -> bool:
+    def _prepare_full_scan(self, cancel, label: str = t("Indexing rows:", "补全行索引")) -> bool:
         """全量操作的统一高水位入口；首窗和尾窗源均在此补全索引。"""
         if self.source.fully_indexed:
             return True
 
-        self.call_from_thread(self._set_scan_msg, f"{label} 0 行 (Esc 取消)")
+        self.call_from_thread(
+            self._set_scan_msg, t(f"{label} 0 (Esc cancels)", f"{label} 0 行 (Esc 取消)")
+        )
 
         def progress(n: int) -> None:
-            self.call_from_thread(self._set_scan_msg, f"{label} {n} 行 (Esc 取消)")
+            self.call_from_thread(
+                self._set_scan_msg, t(f"{label} {n} (Esc cancels)", f"{label} {n} 行 (Esc 取消)")
+            )
 
         return self.source.ensure_index(progress_cb=progress, cancel=cancel)
 
@@ -2624,7 +2946,7 @@ class ViewApp(App):
             self._rollback_constraints()  # 取消 = 什么都没发生, 条件不生效
             if self._sort_spec is None:
                 self._follow_sort_snapshot = False
-            self.notify("已取消扫描 (条件未生效)")
+            self.notify(t("Scan cancelled (conditions not applied)", "已取消扫描 (条件未生效)"))
             self._rebuild_columns()  # 值筛选的 ▾ 标记随之回退
             return
         self._scan_rollback = None  # 结果落地: 约束就此提交
@@ -2635,15 +2957,44 @@ class ViewApp(App):
             self._commit_spec(spec)
             self.win_offset = max(0, len(matches) - len(self.all_rows))
             self._update_status()
-            self.notify(escape(f"日志轮转后已刷新筛选索引（当前文件命中 {len(matches)} 行）"))
+            self.notify(
+                escape(
+                    t(
+                        f"Filter index refreshed after log rotation"
+                        f" ({len(matches)} hits in the new file)",
+                        f"日志轮转后已刷新筛选索引（当前文件命中 {len(matches)} 行）",
+                    )
+                )
+            )
             return
         self._commit_subset(matches, label, spec)
         if not label:  # 纯排序 (无筛选): 行集没变, 说排序而不是"命中"
-            self.notify(escape(f"已按 {self._sort_label} 全量排序 ({len(matches)} 行)"))
+            self.notify(
+                escape(
+                    t(
+                        f"Sorted all by {self._sort_label} ({len(matches)} rows)",
+                        f"已按 {self._sort_label} 全量排序 ({len(matches)} 行)",
+                    )
+                )
+            )
         elif matches:
-            self.notify(escape(f"{label}: {len(matches)} 命中 (全量) · r 清筛选"))
+            self.notify(
+                escape(
+                    t(
+                        f"{label}: {len(matches)} hits (full file) · r clears filters",
+                        f"{label}: {len(matches)} 命中 (全量) · r 清筛选",
+                    )
+                )
+            )
         else:
-            self.notify(escape(f"{label}: 0 命中 (r 重置, 或点列头/F 放宽该列)"))
+            self.notify(
+                escape(
+                    t(
+                        f"{label}: 0 hits (r resets; or click a header/F to loosen that column)",
+                        f"{label}: 0 命中 (r 重置, 或点列头/F 放宽该列)",
+                    )
+                )
+            )
 
     def _commit_subset(self, matches: List[int], label: str, spec: ScanSpec) -> None:
         """子集落地: 记下这一版约束, 定位到窗口并刷新列头标记。"""
@@ -2721,11 +3072,17 @@ class ViewApp(App):
     def _start_value_scan(self, col: str) -> None:
         col = col.strip()
         if col == "#":
-            self.notify("行号列不支持值筛选")
+            self.notify(t("The row-number column can't be value-filtered", "行号列不支持值筛选"))
             return
         if col not in self.columns:
             self.notify(
-                escape(f"无此列: {col} (可选: {', '.join(self.columns)})"), severity="error"
+                escape(
+                    t(
+                        f"No such column: {col} (available: {', '.join(self.columns)})",
+                        f"无此列: {col} (可选: {', '.join(self.columns)})",
+                    )
+                ),
+                severity="error",
             )
             return
         if self._busy():
@@ -2733,12 +3090,18 @@ class ViewApp(App):
         # 关键: 算该列候选值时应用"除本列外"的其他约束 → 本列自己筛掉的值仍在列表里, 可加回
         spec = self._spec().without_column(col)
         cancel, gen = self._begin_scan()
-        self._set_scan_msg(f"准备扫描 {col} 值 (Esc 取消)")
+        self._set_scan_msg(
+            t(f"Preparing to scan {col} values (Esc cancels)", f"准备扫描 {col} 值 (Esc 取消)")
+        )
 
         def progress(done: int, total: int) -> None:
             if not self._scan_superseded(gen):
                 self.call_from_thread(
-                    self._set_scan_msg, f"扫描 {col} 值 {done}/{total} (Esc 取消)"
+                    self._set_scan_msg,
+                    t(
+                        f"Scanning {col} values {done}/{total} (Esc cancels)",
+                        f"扫描 {col} 值 {done}/{total} (Esc 取消)",
+                    ),
                 )
 
         def worker():
@@ -2756,7 +3119,7 @@ class ViewApp(App):
         self._rebase_tail_after_index()
         self._update_status()
         if value_rows is None:
-            self.notify("已取消扫描")
+            self.notify(t("Scan cancelled", "已取消扫描"))
             return
         # 值 → 行号表随闭包留给 apply: 勾完 (其他约束没变且未排序) 直接拼子集, 免二次全扫
         items = sorted(value_rows.items(), key=lambda kv: -len(kv[1]))  # [(值, 频次)] 频次降序
@@ -2798,7 +3161,14 @@ class ViewApp(App):
         matches = scan.merge_value_rows(value_rows, picked)
         self._commit_subset(matches, self._constraint_label(), new_spec)
         label = self._filter_label or ""
-        self.notify(escape(f"{label}: {len(matches)} 命中 (全量) · r 清筛选"))
+        self.notify(
+            escape(
+                t(
+                    f"{label}: {len(matches)} hits (full file) · r clears filters",
+                    f"{label}: {len(matches)} 命中 (全量) · r 清筛选",
+                )
+            )
+        )
         return True
 
     def _column_anchor(self, col: str):
@@ -2816,13 +3186,25 @@ class ViewApp(App):
 
     def action_snapshot(self) -> None:
         default = next((c for c in self._visible_columns() if c not in ("#",)), "chars")
-        self._open_prompt("snapshot", f"列快照 (列名, 默认 {default}; 完整分布用 dt stats):")
+        self._open_prompt(
+            "snapshot",
+            t(
+                f"Column snapshot (column name, default {default}; full distribution: dt stats):",
+                f"列快照 (列名, 默认 {default}; 完整分布用 dt stats):",
+            ),
+        )
 
     def _apply_snapshot(self, col: str) -> None:
         col = col.strip() or next((c for c in self._visible_columns() if c != "#"), "")
         if col not in self.columns:
             self.notify(
-                escape(f"无此列: {col} (可选: {', '.join(self.columns)})"), severity="error"
+                escape(
+                    t(
+                        f"No such column: {col} (available: {', '.join(self.columns)})",
+                        f"无此列: {col} (可选: {', '.join(self.columns)})",
+                    )
+                ),
+                severity="error",
             )
             return
         if self._busy():
@@ -2831,13 +3213,19 @@ class ViewApp(App):
         cols = self.columns
         fmt = self.fmt
         cancel, gen = self._begin_scan()
-        self._set_scan_msg("准备快照扫描 (Esc 取消)")
+        self._set_scan_msg(t("Preparing snapshot scan (Esc cancels)", "准备快照扫描 (Esc 取消)"))
 
         def worker():
             if not self._prepare_full_scan(cancel):
                 return self._on_snapshot_done, (col, None, True, gen)
             seq_total = self._seq_total()
-            self.call_from_thread(self._set_scan_msg, f"快照扫描中 0/{seq_total} (Esc 取消)")
+            self.call_from_thread(
+                self._set_scan_msg,
+                t(
+                    f"Snapshot scan 0/{seq_total} (Esc cancels)",
+                    f"快照扫描中 0/{seq_total} (Esc 取消)",
+                ),
+            )
             n = nonempty = nnum = 0
             vmin = vmax = vsum = None
             for row in self._iter_sequence(cancel):
@@ -2858,7 +3246,11 @@ class ViewApp(App):
                     vmax = x if vmax is None else max(vmax, x)
                 if n % 5000 == 0:
                     self.call_from_thread(
-                        self._set_scan_msg, f"快照扫描中 {n}/{seq_total} (Esc 取消)"
+                        self._set_scan_msg,
+                        t(
+                            f"Snapshot scan {n}/{seq_total} (Esc cancels)",
+                            f"快照扫描中 {n}/{seq_total} (Esc 取消)",
+                        ),
                     )
             stats = (n, nonempty, nnum, vmin, vmax, vsum)
             return self._on_snapshot_done, (col, stats, False, gen)
@@ -2871,19 +3263,23 @@ class ViewApp(App):
         self._end_scan()
         self._rebase_tail_after_index()
         if cancelled:
-            self.notify("已取消快照")
+            self.notify(t("Snapshot cancelled", "已取消快照"))
             self._update_status()
             return
         n, nonempty, nnum, vmin, vmax, vsum = stats
-        scope = "子集" if self._subset is not None else "全量"
+        scope = t("subset", "子集") if self._subset is not None else t("all", "全量")
         rate = f"{100 * nonempty / n:.1f}%" if n else "-"
         if nnum:
             mean = vsum / nnum
             body = (
                 f"{col} [{scope} n={n}]  min={_fmt_num(vmin)}  max={_fmt_num(vmax)}  "
-                f"mean={_fmt_num(mean)}  非空 {rate}"
+                f"mean={_fmt_num(mean)}  " + t(f"non-empty {rate}", f"非空 {rate}")
             )
         else:  # 非数值列: 无 min/max/mean, 引导去 dt stats 看分布
-            body = f"{col} [{scope} n={n}]  非数值列, 非空 {rate} · 完整分布用 dt stats"
+            body = t(
+                f"{col} [{scope} n={n}]  non-numeric, non-empty {rate}"
+                " · full distribution: dt stats",
+                f"{col} [{scope} n={n}]  非数值列, 非空 {rate} · 完整分布用 dt stats",
+            )
         self.notify(escape(body), timeout=8)
         self._update_status()
