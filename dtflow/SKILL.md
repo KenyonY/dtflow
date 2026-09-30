@@ -3,10 +3,11 @@ name: dtflow
 description: >
   处理结构化数据文件 (JSONL/NDJSON/JSON/CSV/TSV/Parquet/Arrow/Excel) 时使用此 skill。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
-  典型场景：数据预览/交互式浏览 (dt view，含全量搜索筛选排序/导出子集)/统计/清洗/去重/Schema 验证、
-  filter/select/map/sort/group/join 等数据原语 (Python 表达式, 可管道拼接)、格式转换
-  (openai_chat/alpaca/sharegpt/dpo)、数据集切分、导出到训练框架
-  (llama-factory/swift/axolotl)、Token 统计、大文件流式处理。
+  典型场景：数据预览/交互式浏览 (dt view，含全量搜索筛选排序/导出子集/view 内跑管道)/统计与分布
+  (stats/describe/token-stats)/清洗/去重/Schema 验证、filter/select/map/sort/group/join(含 --anti)
+  等数据原语 (Python 表达式 + 行函数 turns(x)/roles(x)/calls(x)/search(x,…), 可管道拼接, FILE 可为
+  目录或 glob)、格式转换 (openai_chat/alpaca/sharegpt/dpo)、数据集切分、导出到训练框架
+  (llama-factory/swift/axolotl)、大文件流式处理。
   不涉及 LLM 调用（LLM 调用用 flexllm）。
 ---
 
@@ -129,6 +130,23 @@ dt join   train.jsonl test.jsonl --on "first_user(x)" --anti           # 去掉�
 | `stats FILE --schema` | 嵌套 schema 推断 | 前 1000 行 |
 
 所有数据命令：`FILE` 可为 `-`，也可为**目录**（其中全部数据文件，按名排序首尾相接）或**加引号的 glob**（`'shards/*.jsonl'`）；无 `-o` 写 stdout（终端直出只预览前 50 行）；`clean`/`dedupe` 用 `-i` 原地写回（需单个文件）。`.jsonl.gz` 透明读写。`dt concat a.jsonl -o a.parquet` 单文件即格式转换。
+
+## 其他命令一览
+
+| 命令 | 作用 |
+|------|------|
+| `head/tail/sample/slice FILE [N]` | 预览与采样；`sample --by=字段` 分层、`-w EXPR` 先筛后采；TTY 加 `--pretty` 按格式渲染 |
+| `transform FILE --preset P` | 格式转换 (openai_chat/alpaca/sharegpt/dpo_pair/simple_qa)，按输入形态自动识别；不给 preset 则生成配置模板 |
+| `clean FILE …` | 声明式清洗：`--drop-empty/--min-len/--max-len/--strip/--rename old:new/--keep/--drop/--min-tokens` 等 |
+| `dedupe FILE --key K [--similar=0.9]` | 精确去重流式；`--similar` 为相似度阈值的近似去重 |
+| `concat FILES… \| split FILE --ratio` | 拼接（单文件即格式转换）/ 按比例切 train/test(/val)，`--seed` 可复现 |
+| `validate FILE --preset P [--filter]` | schema 校验；纯校验有无效记录退出码 1，`--filter` 只输出有效行 |
+| `stats [--schema\|--full] · token-stats · describe · diff` | 结构/分布/Token(分角色含 tool)/两版本差异，非 TTY 均输出 JSON |
+| `export FILE -f llama-factory\|swift\|axolotl` | 数据 + 训练配置一起生成，`--check` 只查兼容性 |
+| `run pipeline.yaml` | YAML 固化多步流程，step = CLI 命令名 |
+| `history FILE` | 查看血缘（view 导出/写回、Python API 都会写 sidecar） |
+| `eval RESULT --source=input.jsonl` | 解析模型输出（去 think 标签/取代码块）并算指标（需 `pip install dtflow[eval]`） |
+| `lang · schema · install-skill` | 界面语言 / 机器可读命令树 / 给 Claude Code·Codex 装本 skill |
 
 ## 字段路径语法（指定单个字段的参数用）
 

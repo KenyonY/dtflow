@@ -36,8 +36,8 @@ pip install dtflow                      # or, without installing: uvx --from dtf
 
 dt view data.jsonl                                              # browse (press ? for keys)
 dt stats data.jsonl --schema                                    # nested schema: types, null rates, values
-dt filter data.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'" \
-  | dt select - "id,turns=len(x.messages),last=x.messages[-1].content" \
+dt filter data.jsonl "turns(x) >= 2 and search(x, 'refund')" \
+  | dt select - "id,turns=turns(x),last=x.messages[-1].content" \
   | dt sort - --by x.turns --desc | dt head - 5
 dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alpaca / dpo → OpenAI messages
 ```
@@ -47,7 +47,7 @@ Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every 
 ## Why dtflow
 
 - **It knows what a training sample is.** Generic table tools show `messages` as `{3}` or a truncated string. `dt view` detects `openai_chat` / `sharegpt` / `dpo` / `alpaca` and renders one complete sample per screen: turns colored by role, code highlighted, `tool_calls` and `reasoning_content` unpacked, malformed tool arguments flagged.
-- **Conditions are Python, not a DSL.** `x.score > 0.8 and 'wiki' in x.meta.source`, `any('refund' in m.content for m in x.messages)`. One expression language across `filter`, `select`, `map`, `sort`, `group`, `join`, the viewer and YAML pipelines.
+- **Conditions are Python, not a DSL.** `x.score > 0.8 and 'wiki' in x.meta.source`, `any('refund' in m.content for m in x.messages)`, plus row helpers that know what a conversation is: `turns(x)`, `roles(x)`, `calls(x)`, `search(x, 'refund')`. One expression language across `filter`, `select`, `map`, `sort`, `group`, `join`, the viewer and YAML pipelines.
 - **Built for agents as much as humans.** stdout carries only data, stderr carries messages, exit codes are contractual, `dt schema` prints the machine-readable command tree, and `dt install-skill` teaches Claude Code or Codex the whole tool in one command.
 - **Streams by default.** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` never load the file; the viewer opens a 910k-row JSONL at ~90 MB RSS with parallel full-file scans.
 
@@ -118,16 +118,21 @@ Every data command follows one contract: `FILE` may be `-` (NDJSON from stdin), 
 ```bash
 # primitives
 dt filter  data.jsonl "x.score > 0.5 and 'wiki' in x.meta.source"
+dt filter  data.jsonl "turns(x) >= 6 and 'get_weather' in calls(x)"    # row helpers: turns/roles/first_user/chars/calls/search
 dt select  data.jsonl "id,text,n=len(x.messages),src=x.meta.source"     # project / rename / derive
 dt map     data.jsonl "x.text = x.text.strip(); del x.debug"            # edit in place
 dt explode data.jsonl --field messages --index-as turn                  # one row per list element
 dt sort    data.jsonl --by "len(x.messages)" --desc
-dt group   data.jsonl --by x.meta.source                                # {"key","count"} sorted by count
+dt group   data.jsonl --by "roles(x)" --top 10                         # {"key","count","pct"}, ten largest groups
 dt group   data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"
+dt describe data.jsonl "turns(x)" "chars(x)" "x.score"                  # quantiles + histogram per expression
 dt join    data.jsonl meta.jsonl --on x.id --prefix m_                  # left join, right side in memory
+dt join    train.jsonl test.jsonl --on "first_user(x)" --anti           # drop rows that overlap the test set
 dt dedupe  data.jsonl --key=messages[0].content -i                      # exact dedupe, in place
 dt clean   data.jsonl --drop-empty=text --min-len=messages.#:2 -o clean.jsonl
 dt split   data.jsonl --ratio=0.9 --seed=42                             # train/test files
+dt concat  data.jsonl -o data.parquet                                   # one file in = format conversion
+dt filter  shards/ "x.lang == 'zh'" -o zh.jsonl                         # a directory or 'shards/*.jsonl' reads every file
 dt stats   data.jsonl --schema                                          # look before you write expressions
 
 # pipes
@@ -144,7 +149,7 @@ dt export data.jsonl -f llama-factory           # data + config for LLaMA-Factor
 dt run pipeline.yaml                            # reproducible pipeline, steps = CLI commands
 ```
 
-Rows whose expression fails (missing field, `None > 0.5`) don't abort the run: `filter` drops them, `select` sets the item to `null`, `map` keeps the row, and stderr prints one summary at the end. `--strict` turns the first failure into exit code 1. A bare field name without `x.` is rejected at compile time instead of silently matching nothing.
+Rows whose expression fails (missing field, `None > 0.5`) don't abort the run: `filter` drops them, `select` sets the item to `null`, `map` keeps the row, and stderr prints one summary at the end. `--strict` turns the first failure into exit code 1. A bare field name without `x.` is rejected at compile time instead of silently matching nothing. In a terminal, data commands preview the first 50 rows as a table with the same columns as `dt view`; piped, they emit NDJSON.
 
 Command reference: [docs/cli.md](docs/cli.md) · expressions and field paths: [docs/expressions.md](docs/expressions.md) · pipelines: [docs/pipeline.md](docs/pipeline.md).
 

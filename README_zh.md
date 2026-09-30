@@ -36,8 +36,8 @@ pip install dtflow                      # 或不装直接跑: uvx --from dtflow 
 
 dt view data.jsonl                                              # 浏览（按 ? 看快捷键）
 dt stats data.jsonl --schema                                    # 嵌套 schema：类型 / 非空率 / 取值
-dt filter data.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'" \
-  | dt select - "id,turns=len(x.messages),last=x.messages[-1].content" \
+dt filter data.jsonl "turns(x) >= 2 and search(x, '退款')" \
+  | dt select - "id,turns=turns(x),last=x.messages[-1].content" \
   | dt sort - --by x.turns --desc | dt head - 5
 dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alpaca / dpo → OpenAI messages
 ```
@@ -47,7 +47,7 @@ dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alp
 ## 为什么是 dtflow
 
 - **它知道什么是一条训练样本。** 通用表格工具把 `messages` 显示成 `{3}` 或截断的字符串；`dt view` 先识别 `openai_chat` / `sharegpt` / `dpo` / `alpaca`，一屏画一条完整样本：按 role 上色、代码高亮、`tool_calls` 与 `reasoning_content` 展开、坏参数标红。
-- **条件是 Python，不是自造 DSL。** `x.score > 0.8 and 'wiki' in x.meta.source`、`any('退款' in m.content for m in x.messages)`。同一套表达式贯穿 `filter`、`select`、`map`、`sort`、`group`、`join`、viewer 和 YAML pipeline。
+- **条件是 Python，不是自造 DSL。** `x.score > 0.8 and 'wiki' in x.meta.source`、`any('退款' in m.content for m in x.messages)`，再加几个懂对话的行函数：`turns(x)`、`roles(x)`、`calls(x)`、`search(x, '退款')`。同一套表达式贯穿 `filter`、`select`、`map`、`sort`、`group`、`join`、viewer 和 YAML pipeline。
 - **给 agent 用和给人用同等重要。** stdout 只有数据，stderr 只有消息，退出码有契约，`dt schema` 输出机器可读的命令树，`dt install-skill` 一条命令把用法教给 Claude Code 或 Codex。
 - **默认流式。** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` 从不整文件加载；viewer 打开 91 万行 JSONL 约 90 MB 内存，全量扫描并行。
 
@@ -118,16 +118,21 @@ VisiData / tabiew 是通用表格工具，jless / fx 是 JSON 树查看器，csv
 ```bash
 # 数据原语
 dt filter  data.jsonl "x.score > 0.5 and 'wiki' in x.meta.source"
+dt filter  data.jsonl "turns(x) >= 6 and 'get_weather' in calls(x)"    # 行函数：turns/roles/first_user/chars/calls/search
 dt select  data.jsonl "id,text,n=len(x.messages),src=x.meta.source"     # 投影 / 重命名 / 派生
 dt map     data.jsonl "x.text = x.text.strip(); del x.debug"            # 原地修改
 dt explode data.jsonl --field messages --index-as turn                  # list 展开成多行
 dt sort    data.jsonl --by "len(x.messages)" --desc
-dt group   data.jsonl --by x.meta.source                                # {"key","count"} 按 count 降序
+dt group   data.jsonl --by "roles(x)" --top 10                         # {"key","count","pct"}，只留最大 10 组
 dt group   data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"
+dt describe data.jsonl "turns(x)" "chars(x)" "x.score"                  # 每个表达式的分位数 + 直方图
 dt join    data.jsonl meta.jsonl --on x.id --prefix m_                  # 左连接，右表入内存
+dt join    train.jsonl test.jsonl --on "first_user(x)" --anti           # 去掉与测试集重合的样本
 dt dedupe  data.jsonl --key=messages[0].content -i                      # 精确去重，原地写回
 dt clean   data.jsonl --drop-empty=text --min-len=messages.#:2 -o clean.jsonl
 dt split   data.jsonl --ratio=0.9 --seed=42                             # train/test
+dt concat  data.jsonl -o data.parquet                                   # 单文件即格式转换
+dt filter  shards/ "x.lang == 'zh'" -o zh.jsonl                         # 目录或 'shards/*.jsonl' 读全部文件
 dt stats   data.jsonl --schema                                          # 先看全貌再写表达式
 
 # 管道拼接
@@ -144,7 +149,7 @@ dt export data.jsonl -f llama-factory           # 数据 + 配置，LLaMA-Factor
 dt run pipeline.yaml                            # 可复现 pipeline，step 即 CLI 命令
 ```
 
-表达式求值失败的行（缺字段、`None > 0.5`）不中断运行：`filter` 丢弃、`select` 该项置 `null`、`map` 原样保留，结束时 stderr 汇总一次；`--strict` 首错即退出码 1。漏写 `x.` 的裸字段名在编译期就报错，不会静默 0 命中。
+表达式求值失败的行（缺字段、`None > 0.5`）不中断运行：`filter` 丢弃、`select` 该项置 `null`、`map` 原样保留，结束时 stderr 汇总一次；`--strict` 首错即退出码 1。漏写 `x.` 的裸字段名在编译期就报错，不会静默 0 命中。在终端里，数据命令默认把前 50 行画成和 `dt view` 同款的表格；接管道时输出 NDJSON。
 
 命令参考：[docs/cli.md](docs/cli.md) · 表达式与字段路径（含 0.9 迁移表）：[docs/expressions.md](docs/expressions.md) · pipeline：[docs/pipeline.md](docs/pipeline.md)。
 
