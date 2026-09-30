@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.10.0] - 2026-09-30
+
+### Bug Fixes
+
+- QA 验收修复 —— 单文件目录/glob 不再被当成 flaxkv; describe 表格转置; help 文案同步; 若干校验
+- **i18n**: 语言解析与语言无关的机器输出
+- **presets**: 并行工具调用互转不丢不错配; HF 风格 DPO 的消息列表按对话处理; 文档链式示例改用 transform
+
+### CI
+
+- **release**: Changelog 与 release 正文末尾附 Full Changelog 对比链接
+- **release**: Release 正文改由 git-cliff 生成, 不再依赖只统计 PR 的自动说明
+
+### Documentation
+
+- 修正 README 链式示例与 SKILL 预设说明; 示例数据加入并行工具调用样本
+- README 缩到首屏与导航, 参考内容拆到 docs/ (cli/view/expressions/pipeline/python-api)
+- README 改为英文主文档, 中文移至 README_zh.md; 定位改为 dt view 主打
+- **README**: Dt view 增加与 VisiData/tabiew/jless/fx/csvlens 的对比表
+
+### Features
+
+- **input**: FILE 接受目录与引号 glob (逐文件校验后首尾相接); concat 放宽为单文件即格式转换
+- **join**: --anti 反连接; --strict; 左表键求值失败计数汇总而非静默
+- **describe,group,stats**: 看分布 —— 新命令 dt describe; group 输出 pct 与 --top; stats 修两个 bug; token-stats 计 tool 角色
+- **pipe**: --format table 真正渲染, 终端默认预览改表格; 统一 sample/split 落盘与 validate 退出码
+- **i18n**: 界面支持中英双语, 默认英文, dt lang 切换
+- **presets**: 预设按输入形态自动转换; schema 预设接受工具调用; 新增 examples/ 示例数据
+
+### Miscellaneous
+
+- 忽略本地传播文案草稿目录 .launch-drafts/
+- **changelog**: 重生成完整的已发布版本记录 (上一提交误生成为空)
+- **changelog**: 模板跳过无提交的版本段, 去掉误生成的空 Unreleased
+- **changelog**: 只保留已发布版本, 去掉误生成的 Unreleased 段
+- **changelog**: 去掉误生成的 Unreleased 段; ci 提交归入 CI 分组
+- **scripts**: Release.sh 归一 changelog 末尾空行, 避免 end-of-file-fixer 打断发版
+
+### Refactor
+
+- **expr**: 行函数 turns/roles/first_user/chars/calls/fulltext/search 进表达式命名空间; view 派生列共用实现
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.9.0...v0.10.0
+
+
 ## [0.9.0] - 2026-09-29
 
 ### Bug Fixes
