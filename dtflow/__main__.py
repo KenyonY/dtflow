@@ -462,7 +462,7 @@ def tail(
         "    dt view big.jsonl --offset=20000         # start at row 20,000 (default window: 10,000 rows)\n"
         "    dt view big.jsonl --cap=50000            # load 50,000 rows per window\n"
         "    dt view data.jsonl -S -chars             # sort by length, descending (-S=--sort)\n"
-        '    dt view data.jsonl -w "turns>=6" -w "source==alpaca"   # multiple filters are ANDed\n'
+        '    dt view data.jsonl -w "turns(x)>=6" -w "x.source==\'alpaca\'"   # multiple filters are ANDed\n'
         "    dt view data.jsonl -s error              # search everything, highlight hits (-s=--search)\n"
         "    dt sample data.jsonl 500 | dt view -     # pipe: inspect sampled/filtered results",
         "交互式浏览数据（表格 + 详情联动，Textual TUI）\n\n"
@@ -483,7 +483,7 @@ def tail(
         "    dt view big.jsonl --offset=20000         # 从第 2 万行开始（默认每窗口 1 万行）\n"
         "    dt view big.jsonl --cap=50000            # 每窗口加载 5 万行\n"
         "    dt view data.jsonl -S -chars             # 按长度降序 (-S=--sort)\n"
-        '    dt view data.jsonl -w "turns>=6" -w "source==alpaca"   # 多条为与关系\n'
+        '    dt view data.jsonl -w "turns(x)>=6" -w "x.source==\'alpaca\'"   # 多条为与关系\n'
         "    dt view data.jsonl -s 报错               # 全量搜索并高亮 (-s=--search)\n"
         "    dt sample data.jsonl 500 | dt view -     # 管道: 看采样/筛选等处理后结果",
     ),
@@ -533,8 +533,8 @@ def view(
         "--where",
         "-w",
         help=t(
-            "Filter on startup (Python expression, current row is x; derived columns like turns/chars are available); repeatable (ANDed)",
-            "启动即筛选 (Python 表达式, 当前行为 x, 派生列名 turns/chars 等可直接用), 可多次 (与关系)",
+            "Filter on startup (Python expression, current row is x, same as dt filter: turns(x)>=6); repeatable (ANDed)",
+            "启动即筛选 (Python 表达式, 当前行为 x, 与 dt filter 同一套: turns(x)>=6), 可多次 (与关系)",
         ),
     ),
     search: Optional[str] = typer.Option(

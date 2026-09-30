@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, NamedTuple, Optional, Pattern, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Tuple
 
 import orjson
 from rich.console import Group, RenderableType
@@ -22,6 +22,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from ...i18n import t
+from ...rowfn import Turn, _as_text, _calls_sig, _normalize_turns, _roles_sig
 
 # 搜索命中的高亮样式 (表格单元格与详情共用; 黄底黑字在明暗主题下都醒目)
 HIGHLIGHT_STYLE = "black on yellow"
@@ -61,151 +62,12 @@ def detect_format(rows: List[Dict]) -> str:
     return "generic"
 
 
-class ToolCall(NamedTuple):
-    name: str
-    arguments: str  # 原样保留: 是否合法 JSON 正是要检查的东西, 渲染时再判断
-    call_id: str
-
-
-class Turn(NamedTuple):
-    """一条消息归一化后的样子, 供表格摘要与详情渲染共用。"""
-
-    role: str
-    content: str
-    reasoning: str = ""  # reasoning_content / reasoning (思维链)
-    tool_calls: Tuple[ToolCall, ...] = ()
-    call_id: str = ""  # tool 消息回应的 tool_call_id
-
-    @property
-    def chars(self) -> int:
-        """模型实际读/写的字符数: 正文 + 思维链 + 工具调用参数。"""
-        return (
-            len(self.content)
-            + len(self.reasoning)
-            + sum(len(c.name) + len(c.arguments) for c in self.tool_calls)
-        )
-
-
-def _parse_tool_calls(raw: Any) -> Tuple[ToolCall, ...]:
-    """tool_calls 列表 (或旧版 function_call 单个 dict) → ToolCall 元组。
-
-    结构不对的条目不丢: name 缺失记 "?", arguments 缺失/为 null 记空串 (渲染时会标红),
-    坏掉的调用恰恰是要找的东西。
-    """
-    if isinstance(raw, dict):  # 旧版 OpenAI: "function_call": {"name", "arguments"}
-        raw = [raw]
-    if not isinstance(raw, list):
-        return ()
-    out = []
-    for tc in raw:
-        if not isinstance(tc, dict):
-            out.append(ToolCall("?", str(tc), ""))
-            continue
-        fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
-        args = fn.get("arguments")
-        if args is None:
-            args = ""
-        elif not isinstance(args, str):  # 有的数据直接放 dict
-            args = orjson.dumps(args).decode()
-        out.append(ToolCall(str(fn.get("name") or "?"), args, str(tc.get("id") or "")))
-    return tuple(out)
-
-
-def _normalize_turns(row: Dict, fmt: str) -> List[Turn]:
-    """统一抽取消息列表, 供表格摘要和详情渲染共用。
-
-    openai_chat: content 为 null 的 tool_calls 消息不再显示成 "None", 调用本身进 tool_calls;
-    sharegpt: LLaMA-Factory 约定 from=function_call 的 value 是 {"name","arguments"} JSON。
-    """
-    if fmt == "openai_chat":
-        msgs = row.get("messages") or []
-        return [
-            Turn(
-                role=str(m.get("role", "")),
-                content=_as_text(m.get("content")),
-                reasoning=_as_text(m.get("reasoning_content") or m.get("reasoning")),
-                tool_calls=_parse_tool_calls(m.get("tool_calls") or m.get("function_call")),
-                call_id=str(m.get("tool_call_id") or ""),
-            )
-            for m in msgs
-        ]
-    if fmt == "sharegpt":
-        turns = []
-        for m in row.get("conversations") or []:
-            role, value = str(m.get("from", "")), m.get("value")
-            calls: Tuple[ToolCall, ...] = ()
-            if role == "function_call":
-                try:
-                    fc = orjson.loads(value) if isinstance(value, str) else value
-                except orjson.JSONDecodeError:
-                    fc = None
-                if isinstance(fc, dict) and "name" in fc:
-                    calls = _parse_tool_calls([fc])
-                else:  # 解析不了/没有 name: 原文当参数, 渲染时标红, 别让坏样本混过 calls 筛选
-                    raw = value if isinstance(value, str) else orjson.dumps(value).decode()
-                    calls = (ToolCall("?", raw, ""),)
-                value = None
-            turns.append(Turn(role=role, content=_as_text(value), tool_calls=calls))
-        return turns
-    return []
-
-
-def _as_text(v: Any) -> str:
-    """content 可能是 str/None, 也可能是多模态 list, 统一成字符串。"""
-    if v is None:
-        return ""
-    if isinstance(v, str):
-        return v
-    if isinstance(v, list):
-        parts = []
-        for seg in v:
-            if isinstance(seg, dict):
-                parts.append(seg.get("text") or seg.get("type") or "")
-            else:
-                parts.append(str(seg))
-        return " ".join(p for p in parts if p)
-    return str(v)
-
-
 def _preview(text: str, n: Optional[int] = 40) -> str:
     """压平成单行; n=None 表示不截断 (搜索/包含筛选用全文, 不能只看可见前缀)。"""
     text = text.replace("\n", " ").strip()
     if n is None:
         return text
     return text[:n] + "…" if len(text) > n else text
-
-
-def _roles_sig(turns: List[Turn]) -> str:
-    """角色序列签名, 如 u→a→t→a; 长了截断。工具返回记 t, 发起调用的仍是 a。"""
-    abbr = {
-        "system": "sys",
-        "user": "u",
-        "human": "u",
-        "assistant": "a",
-        "gpt": "a",
-        "tool": "t",
-        "function": "t",
-        "observation": "t",
-        "function_call": "a",  # sharegpt 里发起调用的是模型自己
-    }
-    seq = [abbr.get(t.role, t.role[:3]) for t in turns]
-    if len(seq) > 5:
-        seq = seq[:4] + ["…"]
-    return "→".join(seq)
-
-
-def _calls_sig(turns: List[Turn]) -> str:
-    """样本里调用过的函数名 (按首次出现顺序去重), 无工具调用为空。
-
-    列名叫 calls 而不是 tools: 顶层 ``tools`` 是 OpenAI/LLaMA-Factory 存工具定义的标准字段,
-    派生列撞名会把它从列目录里挤掉。
-    """
-    seen: List[str] = []
-    for turn in turns:
-        for c in turn.tool_calls:
-            if c.name not in seen:
-                seen.append(c.name)
-    return ",".join(seen)
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +93,8 @@ def _top_level_fields(rows: List[Dict], skip: set, reserved: set) -> List[str]:
 
 
 # 各格式的"派生列"名 (计算列, 无对应字段路径; 与标量元数据列区分)。
-# where 表达式里派生列名可直接当变量用 (derived_values 注入, 原始类型), 其余走 x.字段。
+# 表达式里不注入这些名字: 对话列对应 rowfn 的同名行函数 (turns(x)), 其余是字段的简单变换,
+# 翻译规则见 DERIVED_EXPR。
 _DERIVED_COLUMNS = {
     "openai_chat": ["turns", "roles", "first_user", "chars", "calls"],
     "sharegpt": ["turns", "roles", "first_user", "chars", "calls"],
@@ -240,6 +103,21 @@ _DERIVED_COLUMNS = {
 }
 # 数值型派生列: 值筛选翻译回 --where 时直接比数, 其余按字符串
 NUMERIC_DERIVED = frozenset({"turns", "chars", "chosen_chars", "rejected_chars", "out_chars"})
+# 派生列 → 取值表达式 (把表格上的列翻译成 dt filter / dt sort 能吃的 Python 表达式)。
+# 对话列是 rowfn 行函数; dpo/alpaca 的列只是字段的简单变换, 直接写出来。
+DERIVED_EXPR = {
+    "turns": "turns(x)",
+    "roles": "roles(x)",
+    "first_user": "first_user(x)",
+    "chars": "chars(x)",
+    "calls": "calls(x)",
+    "prompt": "x.get('prompt')",
+    "chosen_chars": "len(x.get('chosen') or '')",
+    "rejected_chars": "len(x.get('rejected') or '')",
+    "instruction": "x.get('instruction')",
+    "has_input": "bool(x.get('input'))",
+    "out_chars": "len(x.get('output') or x.get('response') or '')",
+}
 
 _TRAINING_FORMATS = frozenset(_DERIVED_COLUMNS)
 _TRAINING_META_LIMIT = 8
@@ -252,13 +130,13 @@ def derived_columns(fmt: str) -> set:
 
 
 def derived_values(row: Dict, fmt: str) -> Dict[str, Any]:
-    """该格式全部派生列的**原始值** (int/bool/全文, 不截断): 表格显示与 where 表达式共用。
+    """该格式全部派生列的**原始值** (int/bool/全文, 不截断)。
 
-    表达式里 ``turns>=6`` 要的是 int, ``'退款' in first_user`` 要的是全文 —— 表格的
-    字符串/预览形态只在 row_cells 里最后一步生成, 免得两处各算一遍还算不一样。
+    对话列与 rowfn 的行函数同源, 但这里只归一化一次、五列共享 (逐个调 turns(x)/roles(x)
+    会把每行归一化五遍, 值筛选/排序扫描慢五倍)。字符串/预览形态只在 row_cells 最后一步生成。
     """
     if fmt in ("openai_chat", "sharegpt"):
-        turns = _normalize_turns(row, fmt)
+        turns = _normalize_turns(row)
         first_user = next((t.content for t in turns if t.role in ("user", "human")), "")
         return {
             "turns": len(turns),
@@ -352,29 +230,6 @@ def row_cells(
             v = row.get(col) if isinstance(row, dict) else None
             cells.append("" if v is None else _preview(str(v), n_meta))
     return cells
-
-
-def row_text(row: Any) -> str:
-    """把一行里所有标量值拼成可搜索的纯文本 (只取值, 不含键名)。
-
-    ``/`` 问的是"这条样本里有没有这个词", 所以必须看整条记录: 表格列只是派生摘要
-    (first_user 只是第一条用户消息), 靠列搜会把 assistant 回复、后续轮次整个漏掉 ——
-    而那恰恰是最常要找的地方。不含键名, 免得搜 "content" 命中每一行。
-    """
-    out: List[str] = []
-
-    def walk(v: Any) -> None:
-        if isinstance(v, dict):
-            for x in v.values():
-                walk(x)
-        elif isinstance(v, (list, tuple)):
-            for x in v:
-                walk(x)
-        elif v is not None:
-            out.append(str(v))
-
-    walk(row)
-    return "\n".join(out)
 
 
 # --------------------------------------------------------------------------- #
@@ -521,7 +376,7 @@ def render_detail_sections(
     hidden = hidden or set()
 
     if fmt in ("openai_chat", "sharegpt"):
-        turns = _normalize_turns(row, fmt)
+        turns = _normalize_turns(row)
         secs: List[Tuple[str, RenderableType, str]] = []
         if split_turns:
             for i, turn in enumerate(turns):

@@ -134,7 +134,7 @@ async def test_value_filter_stacks_with_expr():
     # 表达式约束 + 列值约束叠加: 先 f 筛, 再值筛选, 子集为二者交集
     app = _chat_app(30)
     async with app.run_test() as pilot:
-        app._apply_filter("turns>=2")  # 全部 30 条 (每条 2 turns)
+        app._apply_filter("turns(x)>=2")  # 全部 30 条 (每条 2 turns)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(app._subset) == 30
@@ -183,7 +183,7 @@ async def test_refined_subset_equals_full_rescan():
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._applied_spec is not None
-        app._apply_filter("chars>=2")
+        app._apply_filter("chars(x)>=2")
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == scan.scan_rows(app.source, app._applied_spec)
@@ -935,7 +935,7 @@ async def test_markup_like_content_does_not_crash():
 
 
 def test_compile_where_derived_vs_field_path():
-    # 派生列名 (chars/turns) 直接当变量 (原始 int); 其余字段走 x.
+    # 派生列对应行函数 (chars(x)/turns(x), 原始 int); 其余字段走 x.
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {
@@ -945,19 +945,19 @@ def test_compile_where_derived_vs_field_path():
         ],
         "source": "alpaca",
     }
-    assert _compile_where("chars>2000", "openai_chat")(row) is True  # chars=3001
-    assert _compile_where("chars<2000", "openai_chat")(row) is False
-    assert _compile_where("turns>=2", "openai_chat")(row) is True
-    assert _compile_where("x.source=='alpaca'", "openai_chat")(row) is True
-    assert _compile_where("x.source=='other'", "openai_chat")(row) is False
-    assert _compile_where("len(x.messages)>=2", "openai_chat")(row) is True
-    assert _compile_where("x.messages[-1].role=='assistant'", "openai_chat")(row) is True
+    assert _compile_where("chars(x)>2000")(row) is True  # chars=3001
+    assert _compile_where("chars(x)<2000")(row) is False
+    assert _compile_where("turns(x)>=2")(row) is True
+    assert _compile_where("x.source=='alpaca'")(row) is True
+    assert _compile_where("x.source=='other'")(row) is False
+    assert _compile_where("len(x.messages)>=2")(row) is True
+    assert _compile_where("x.messages[-1].role=='assistant'")(row) is True
     # 缺字段 / 非 dict 行: 不命中而不是炸
-    assert _compile_where("x.nope>1", "openai_chat")(row) is False
-    assert _compile_where("turns>=2", "openai_chat")("not a row") is False
+    assert _compile_where("x.nope>1")(row) is False
+    assert _compile_where("turns(x)>=2")("not a row") is False
     # 语法错误在编译期就抛 ValueError (TUI 靠它提示)
     with pytest.raises(ValueError):
-        _compile_where("chars >", "openai_chat")
+        _compile_where("chars(x) >")
 
 
 def test_compile_where_and_or_parens():
@@ -973,11 +973,11 @@ def test_compile_where_and_or_parens():
         }
 
     long_a, short_a, long_b = mk(3000, "alpaca"), mk(10, "alpaca"), mk(3000, "android")
-    p_and = _compile_where("chars>2000 and x.source=='alpaca'", "openai_chat")
+    p_and = _compile_where("chars(x)>2000 and x.source=='alpaca'")
     assert (p_and(long_a), p_and(short_a), p_and(long_b)) == (True, False, False)
-    p_or = _compile_where("chars>2000 or x.source=='alpaca'", "openai_chat")
+    p_or = _compile_where("chars(x)>2000 or x.source=='alpaca'")
     assert (p_or(short_a), p_or(long_b)) == (True, True)
-    p_mix = _compile_where("(chars<100 or chars>2000) and x.source=='alpaca'", "openai_chat")
+    p_mix = _compile_where("(chars(x)<100 or chars(x)>2000) and x.source=='alpaca'")
     assert (p_mix(short_a), p_mix(long_a), p_mix(long_b)) == (True, True, False)
 
 
@@ -995,7 +995,7 @@ async def test_global_filter_by_derived_column():
     ]
     app = _make_app(rows, cap=50)
     async with app.run_test() as pilot:
-        app._apply_filter("chars>1000")  # chars = i*100 + 1, 见下方 expected
+        app._apply_filter("chars(x)>1000")  # chars = i*100 + 1, 见下方 expected
         await app.workers.wait_for_complete()
         await pilot.pause()
         expected = [i for i in range(20) if i * 100 + 1 > 1000]
@@ -1091,14 +1091,13 @@ def test_derived_text_column_is_full_text_in_expr():
         ],
         "source": "alpaca_zh",
     }
-    assert _compile_where("'尾部关键词' in first_user", "openai_chat")(row)  # 预览截断外
-    assert not _compile_where("'不存在的词' in first_user", "openai_chat")(row)
-    assert _compile_where("'alpaca' in x.source", "openai_chat")(row)
-    assert _compile_where("'ok' in x.messages[-1].content", "openai_chat")(row)
-    assert _compile_where("turns==2 and '尾部' in first_user", "openai_chat")(row)
-    assert not _compile_where("turns==3 and '尾部' in first_user", "openai_chat")(row)
-    # 派生列只在被引用时才计算: 不引用也不影响结果
-    assert _compile_where("x.source.endswith('zh')", "openai_chat")(row)
+    assert _compile_where("'尾部关键词' in first_user(x)")(row)  # 预览截断外
+    assert not _compile_where("'不存在的词' in first_user(x)")(row)
+    assert _compile_where("'alpaca' in x.source")(row)
+    assert _compile_where("'ok' in x.messages[-1].content")(row)
+    assert _compile_where("turns(x)==2 and '尾部' in first_user(x)")(row)
+    assert not _compile_where("turns(x)==3 and '尾部' in first_user(x)")(row)
+    assert _compile_where("x.source.endswith('zh')")(row)
 
 
 @pytest.mark.asyncio
@@ -1308,10 +1307,10 @@ def test_expr_contains_is_case_sensitive_unless_lowered():
     from dtflow.cli.view.scan import compile_where as _compile_where
 
     row = {"messages": [{"role": "user", "content": "A" * 100 + "TAIL_Key"}], "source": "Alpaca_ZH"}
-    assert _compile_where("'TAIL_Key' in first_user", "openai_chat")(row)
-    assert not _compile_where("'tail_key' in first_user", "openai_chat")(row)
-    assert _compile_where("'tail_key' in first_user.lower()", "openai_chat")(row)
-    assert _compile_where("'alpaca' in x.source.lower()", "openai_chat")(row)
+    assert _compile_where("'TAIL_Key' in first_user(x)")(row)
+    assert not _compile_where("'tail_key' in first_user(x)")(row)
+    assert _compile_where("'tail_key' in first_user(x).lower()")(row)
+    assert _compile_where("'alpaca' in x.source.lower()")(row)
 
 
 @pytest.mark.asyncio
@@ -1351,7 +1350,7 @@ async def test_multiple_filters_stack_with_and():
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app._subset == list(range(1, 30, 2))
-        app._apply_filter("chars>=6")  # 再叠一条
+        app._apply_filter("chars(x)>=6")  # 再叠一条
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert len(app._wheres) == 2
@@ -1511,7 +1510,7 @@ async def test_build_command_translates_all_constraints():
     app = _make_app(_chat_rows(30))
     app.filepath = "data.jsonl"
     async with app.run_test() as pilot:
-        app._apply_filter("turns>=2")
+        app._apply_filter("turns(x)>=2")
         await app.workers.wait_for_complete()
         app._search_text, app._search_re = "报错", __import__("re").compile("报错")
         app._col_value_filters = {"source": {"a", "b"}}
@@ -1521,7 +1520,7 @@ async def test_build_command_translates_all_constraints():
         assert not skipped
         # 单列多值 → 一条 where 内 in (...); 多条 where 之间 AND
         # 值经 shlex.quote, 含 > 或空格的会带引号 —— 粘回终端才不会被 shell 当重定向
-        assert "--where='turns>=2'" in cmd
+        assert "--where='turns(x)>=2'" in cmd
         assert (
             "--where='str(x.get('\"'\"'source'\"'\"')) in ('\"'\"'a'\"'\"', '\"'\"'b'\"'\"',)'"
             in cmd
@@ -1530,8 +1529,71 @@ async def test_build_command_translates_all_constraints():
         # 翻译出的表达式本身必须可编译 (吃回去不报错)
         from dtflow.cli.view.scan import compile_where as _cw
 
-        pred = _cw(app._value_filter_expr("source", {"a", "b"}), "openai_chat")
+        pred = _cw(app._value_filter_expr("source", {"a", "b"}))
         assert pred({"source": "a"}) and not pred({"source": "c"})
+
+
+@pytest.mark.asyncio
+async def test_bare_derived_name_is_rejected_with_hint():
+    """老语法 turns>=2 (裸派生列名) 编译期报错并提示 turns(x), 条件不入栈。"""
+    app = _make_app(_chat_rows(5))
+    async with app.run_test() as pilot:
+        notes = []
+        app.notify = lambda msg, **kw: notes.append((msg, kw.get("severity")))
+        app._apply_filter("turns>=2")
+        await pilot.pause()
+        assert app._wheres == []
+        assert notes and notes[0][1] == "error" and "turns(x)" in notes[0][0]
+
+
+@pytest.mark.asyncio
+async def test_build_pipeline_command_translates_to_dt_filter_and_sort():
+    """P: 同一套条件写成 dt filter … | dt sort …, 且翻译出的表达式能被 dt filter 编译。"""
+    import shlex
+
+    from dtflow.expr import compile_where as _plain
+
+    app = _make_app(_chat_rows(30))
+    app.filepath = "data.jsonl"
+    async with app.run_test() as pilot:
+        assert app._build_pipeline_command()[0] is None  # 没有任何条件: 无可翻译
+        app._apply_filter("turns(x)>=2")
+        await app.workers.wait_for_complete()
+        app._search_text, app._search_re = "报错", __import__("re").compile("报错")
+        app._col_value_filters = {"source": {"a", "b"}}
+        app._sort_spec = ("chars", True)
+        await pilot.pause()
+        cmd, skipped = app._build_pipeline_command()
+        assert not skipped
+        head, tail = cmd.split(" | ")
+        assert head.startswith("dt filter data.jsonl ")
+        expr = shlex.split(head)[3]
+        assert expr == (
+            "(turns(x)>=2) and (str(x.get('source')) in ('a', 'b',)) and (search(x, '报错'))"
+        )
+        assert tail == "dt sort - --by 'chars(x)' --desc"
+        pred = _plain(expr)
+        row = {
+            "messages": [
+                {"role": "user", "content": "报错了"},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "source": "a",
+        }
+        assert pred(row) and not pred({**row, "source": "c"})
+        # 只排序: dt sort 直接吃文件; 按行号排序没有表达式
+        app._wheres, app._search_text, app._col_value_filters = [], None, {}
+        app._sort_spec = ("id", False)
+        assert app._build_pipeline_command() == (
+            "dt sort data.jsonl --by 'x.get('\"'\"'id'\"'\"')'",
+            [],
+        )
+        app._sort_spec = ("#", False)
+        cmd, skipped = app._build_pipeline_command()
+        assert cmd is None and skipped
+    # stdin 模式没有可复现的输入
+    app.filepath = None
+    assert app._build_pipeline_command()[0] is None
 
 
 def test_value_filter_expr_by_column_type():
@@ -1539,13 +1601,25 @@ def test_value_filter_expr_by_column_type():
     app = _chat_app(3)
     from dtflow.cli.view.scan import compile_where as _cw
 
-    assert app._value_filter_expr("turns", {"2", "3"}) == "turns in (2, 3,)"
+    assert app._value_filter_expr("turns", {"2", "3"}) == "turns(x) in (2, 3,)"
+    assert (
+        app._value_filter_expr("calls", {"get_weather", ""}) == "calls(x) in ('', 'get_weather',)"
+    )
     e = app._value_filter_expr("id", {"5", ""})
-    p = _cw(e, "openai_chat")
+    p = _cw(e)
     assert p({"id": 5}) and p({"id": None}) and p({}) and not p({"id": 6})
     app.fmt = "alpaca"
-    assert app._value_filter_expr("has_input", {"✓"}) == "has_input"
-    assert app._value_filter_expr("has_input", {""}) == "not has_input"
+    assert app._value_filter_expr("has_input", {"✓"}) == "bool(x.get('input'))"
+    assert app._value_filter_expr("has_input", {""}) == "not bool(x.get('input'))"
+    assert (
+        app._value_filter_expr("out_chars", {"3"})
+        == "len(x.get('output') or x.get('response') or '') in (3,)"
+    )
+    # 翻译出的表达式必须能被 dt filter 吃 (与 view 同一套语言)
+    from dtflow.expr import compile_where as _plain
+
+    assert _plain(app._value_filter_expr("out_chars", {"3"}))({"output": "abc"})
+    assert not _plain(app._value_filter_expr("has_input", {""}))({"input": "x"})
 
 
 @pytest.mark.asyncio

@@ -77,15 +77,15 @@ dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alp
 ```bash
 dt view data.jsonl                          # 打开即用，? 看快捷键
 dt view app.jsonl -100 -f                   # 追尾最新 100 行（日志模式）
-dt view data.jsonl -w "turns>=6" -s 报错    # 启动即筛选 + 搜索
+dt view data.jsonl -w "turns(x)>=6" -s 报错 # 启动即筛选 + 搜索
 dt sample data.jsonl 500 | dt view -        # 管道：看采样/处理后的结果
 ```
 
 | 按键 | 作用 |
 |------|------|
-| `/` `f` `F` `s` | 全量搜索 · 表达式筛选（`turns>=6 and x.source=='alpaca'`，Python 表达式）· 列值勾选 · 排序，可叠加，`r` 一键清空 |
+| `/` `f` `F` `s` | 全量搜索 · 表达式筛选（`turns(x)>=6 and x.source=='alpaca'`，与 `dt filter` 同一套 Python 表达式）· 列值勾选 · 排序，可叠加，`r` 一键清空 |
 | `Enter` `n/N` `*` | 放大当前样本 · 逐字段跳 · 只在搜索命中间跳 |
-| `w` `C` | 把筛出的子集导出成文件（自动写血缘）· 复制一条能复现当前视图的 `dt view` 命令 |
+| `w` `C` `P` | 把筛出的子集导出成文件（自动写血缘）· 复制一条能复现当前视图的 `dt view` 命令 · 把同一套条件复制成 `dt filter … \| dt sort …` 去处理 |
 | `y` / 鼠标拖选 + `Ctrl+c` | 复制整条样本 JSON / 复制详情里任意一段文字（SSH/tmux 下也进本机剪贴板） |
 
 完整快捷键、筛选语法、大文件与 follow 模式：[docs/view.md](docs/view.md)（英文）。

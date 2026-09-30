@@ -87,7 +87,7 @@ def test_memory_source_has_no_ranges(tmp_path):
         ScanSpec(fmt=FMT, search="ans"),
         ScanSpec(fmt=FMT, search="re:q1[0-9] "),
         ScanSpec(fmt=FMT, wheres=("x.source=='a'",)),
-        ScanSpec(fmt=FMT, wheres=("turns>=2", "chars>5")),
+        ScanSpec(fmt=FMT, wheres=("turns(x)>=2", "chars(x)>5")),
         ScanSpec(fmt=FMT, value_filters=(("source", ("a",)),)),
         ScanSpec(
             fmt=FMT, search="ans", wheres=("x.source=='b'",), sort_col="chars", sort_desc=True

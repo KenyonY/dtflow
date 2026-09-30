@@ -14,7 +14,7 @@ dt view data.csv                                  # CSV / Parquet / any table
 dt view data.jsonl --format=dpo                   # force the detail format
 dt view big.jsonl --cap=50000                     # raise the window size (default 10k rows)
 dt view data.jsonl -S -chars                      # start sorted (longest first)
-dt view data.jsonl -w "turns>=6" -s error         # start filtered + searched (-w repeatable, -s = --search)
+dt view data.jsonl -w "turns(x)>=6" -s error      # start filtered + searched (-w repeatable, -s = --search)
 dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memory)
 ```
 
@@ -32,6 +32,7 @@ dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memor
 | `n/N` `*` | Move field by field in the detail pane (conversations go turn by turn as `msg0/msg1…`); `*` jumps only between fields **containing a search hit** |
 | `w` | **Export** the current subset (or the `v` selection) to a file, format by extension; a lineage sidecar is written alongside |
 | `C` | Copy a `dt view` command that reproduces the current view |
+| `P` | Copy the same conditions as a **processing chain**: `dt filter FILE '…' \| dt sort - --by '…'`; append `-o out.jsonl` or more pipes to process what you are looking at |
 | `S` | Column snapshot: `n·min·max·mean·non-null rate` of one column over the current sequence (full distributions: `dt stats`) |
 | `c` | Choose columns (a tick panel that applies to both table columns and detail fields) |
 | Drag a header `│` | **Resize columns** (Excel style): the `│` to the right of every header (last column included) is a handle, it turns into `┃` under the mouse with a status-bar hint, drag to resize; double-click restores auto width. Widths are remembered per column name across windows, filters and column sets |
@@ -43,20 +44,21 @@ dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memor
 
 ## Filter syntax
 
-**The `f` filter (and `--where`) is plain Python**, with the current row named `x`. **Derived column names** from the header (`chars`/`turns`/`roles`/`first_user`/`calls`…) are variables with their raw types (`turns` is an int, `first_user` is the **full text**, not the 160-character table preview); everything else goes through `x.`:
+**The `f` filter (and `--where`) is plain Python**, with the current row named `x`, and it is **exactly the language of `dt filter`**. The header's derived columns (`chars`/`turns`/`roles`/`first_user`/`calls`) are **row helpers**, called on `x`: `turns(x)` is an int, `first_user(x)` is the **full text** (not the 160-character table preview). Everything else goes through `x.`:
 
 ```
-turns>=6 and chars<2000
+turns(x)>=6 and chars(x)<2000
 x.source=='alpaca'
 len(x.messages)>=2 and x.messages[-1].role=='assistant'
-'refund' in first_user                       # contains, on the full first user message
-'get_weather' in calls                       # samples that called this function (non-empty calls = has tool calls)
+'refund' in first_user(x)                    # contains, on the full first user message
+'get_weather' in calls(x)                    # samples that called this function (non-empty calls = has tool calls)
+search(x, 'refund')                          # the whole record, case-insensitive, same as /
 'error' in x.messages[0].content
 any('keyword' in m.content for m in x.messages)   # whole conversation
-'word' in first_user.lower()                 # case-insensitive
+'word' in first_user(x).lower()              # case-insensitive
 ```
 
-`and`/`or`/`not` and parentheses work as usual. `in` is case-sensitive; `/` search and the value-picker search box are always case-insensitive. Rows whose expression fails (missing field) simply do not match. See [expressions.md](expressions.md) for the full language.
+`and`/`or`/`not` and parentheses work as usual. `in` is case-sensitive; `search()`, `/` and the value-picker search box are case-insensitive. Rows whose expression fails (missing field) simply do not match. A bare `turns>=6` (the old form) is rejected with the hint `write turns(x)`. See [expressions.md](expressions.md) for the full language and the helper table.
 
 ## Search, filter and sort stack, and they are full-file
 
@@ -68,7 +70,7 @@ any('keyword' in m.content for m in x.messages)   # whole conversation
 
 ## Closing the loop
 
-Export the filtered subset with `w` (`.jsonl` streams, so hundreds of thousands of rows do not touch memory; other extensions go through the normal writers). A lineage sidecar is written automatically, so `dt history <out>` shows the source file and every condition in effect. `C` translates the current view back into a `dt view ... --where=... --search=... --sort=...` command that restores it when pasted (value-picker filters become expressions like `str(x.get('col')) in (...)`; when a truncated table value cannot be restored the command says so and the lineage file is authoritative).
+Export the filtered subset with `w` (`.jsonl` streams, so hundreds of thousands of rows do not touch memory; other extensions go through the normal writers). A lineage sidecar is written automatically, so `dt history <out>` shows the source file and every condition in effect. `C` translates the current view back into a `dt view ... --where=... --search=... --sort=...` command that restores it when pasted (value-picker filters become expressions like `str(x.get('col')) in (...)`; when a truncated table value cannot be restored the command says so and the lineage file is authoritative). `P` translates the same conditions into the processing form, `dt filter FILE '…' | dt sort - --by '…'`: paste it, append `-o out.jsonl` or another pipe, and the subset you were looking at goes through the rest of the toolkit. That works because the browser and the CLI share one expression language (see [expressions.md](expressions.md#row-helpers)).
 
 Instant filtering while browsing belongs to view; full distributions (histograms, quantiles, value counts, tokens) belong to `dt stats` / `dt token-stats`.
 

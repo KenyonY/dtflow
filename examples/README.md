@@ -23,7 +23,7 @@ Small, fully synthetic datasets in the formats `dt` understands, so every comman
 ```bash
 cd examples
 
-dt view chat.jsonl                                        # ? for keys; try  f  turns>=4   /  退款   F on source
+dt view chat.jsonl                                        # ? for keys; try  f  turns(x)>=4   /  退款   F on source
 dt view dpo.jsonl                                         # chosen / rejected side by side
 dt stats chat.jsonl --schema
 

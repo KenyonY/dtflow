@@ -16,6 +16,7 @@ from click.core import Argument as ClickArgument
 from click.core import Option as ClickOption
 
 from ..i18n import t
+from ..rowfn import HELPER_DOCS
 from .output import ExitCode, die, emit_json
 
 # 匹配 docstring 中的"示例:"段落标题（中英文均可）
@@ -182,6 +183,13 @@ def schema(
             "stderr": t("progress / warnings / error messages", "进度 / 警告 / 错误消息"),
             "default_format_tty": "table",
             "default_format_non_tty": "ndjson",
+        },
+        "expression": {
+            "row_var": "x",
+            "namespace": ["re", "json", "math", "get"],
+            "helpers": [
+                {"name": name, "signature": sig, "doc": doc} for name, sig, doc in HELPER_DOCS
+            ],
         },
         "global_options": [
             {"flag": "--format", "choices": ["json", "ndjson", "csv", "table"]},

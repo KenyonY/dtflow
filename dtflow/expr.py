@@ -7,7 +7,9 @@
     len(x.messages) >= 2 and x.messages[-1].role == 'assistant'
     any('退款' in m.content for m in x.messages)
 
-命名空间另有 re / json / math, 以及 ``get(x, "messages[*].role:join")`` 通向旧的字段路径 DSL。
+命名空间另有 re / json / math, ``get(x, "messages[*].role:join")`` 通向旧的字段路径 DSL,
+以及 rowfn 的行函数 turns(x) / roles(x) / first_user(x) / chars(x) / calls(x) / fulltext(x) /
+search(x, pat) —— 与 dt view 表头上的派生列同一实现, 于是 view 里筛出来的条件能原样交给 dt filter。
 不做沙箱: 这是用户自己 shell 里跑的本地工具, dt transform 早就在执行 .dt/*.py 了。
 
 本模块不 import typer/output: view 的 fork 子进程和 pipeline 都要用。
@@ -22,14 +24,14 @@ import json
 import math
 import re
 from functools import lru_cache
-from typing import Any, Callable, Dict, FrozenSet, Iterable, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable
 
 from .core import DictWrapper, unwrap
 from .i18n import t
+from .rowfn import HELPERS
 from .utils.field_path import get_field_with_spec
 
 Row = Dict[str, Any]
-ExtraFn = Callable[[Row], Dict[str, Any]]
 
 
 def _get(obj: Any, spec: str, default: Any = None) -> Any:
@@ -37,9 +39,10 @@ def _get(obj: Any, spec: str, default: Any = None) -> Any:
     return get_field_with_spec(unwrap(obj), spec, default)
 
 
-_BASE: Dict[str, Any] = {"re": re, "json": json, "math": math, "get": _get}
+_BASE: Dict[str, Any] = {"re": re, "json": json, "math": math, "get": _get, **HELPERS}
 _BUILTIN_NAMES = frozenset(dir(builtins))
 _ALWAYS = frozenset(_BASE) | {"x"}
+_HELPER_NAMES = frozenset(HELPERS)
 
 
 class ExprSyntaxError(ValueError):
@@ -79,6 +82,37 @@ def _free_names(tree: ast.AST) -> Dict[str, int]:
     return free
 
 
+def _check_helper_misuse(tree: ast.AST, expr: str) -> None:
+    """裸用行函数名 (``turns >= 6``, 老 view 语法) 直接报错并提示 ``turns(x)``。
+
+    不拦的话它能编译通过, 每行拿函数对象和 6 比较抛 TypeError: CLI 报 N 行求值失败,
+    view 静默 0 命中 —— 都比一条明确的语法错误糟。合法的裸引用只有作为被调用者
+    (``turns(x)``) 与作为别的调用的参数 (``sorted(g, key=turns)`` / ``map(turns, g)``)。
+    """
+    ok_ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            ok_ids.add(id(node.func))
+            ok_ids.update(id(a) for a in node.args)
+        elif isinstance(node, ast.keyword):
+            ok_ids.add(id(node.value))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in _HELPER_NAMES
+            and id(node) not in ok_ids
+        ):
+            raise ExprSyntaxError(
+                expr,
+                t(
+                    f"{node.id} is a row function: write {node.id}(x)",
+                    f"{node.id} 是行函数, 请写 {node.id}(x)",
+                ),
+                node.col_offset + 1,
+            )
+
+
 @lru_cache(maxsize=256)
 def _compile(expr: str, mode: str, allowed: FrozenSet[str] = frozenset()):
     """编译 + 名字检查: 除 x / re / json / math / get / 内置名 / allowed 外的裸名字直接报错,
@@ -103,6 +137,7 @@ def _compile(expr: str, mode: str, allowed: FrozenSet[str] = frozenset()):
                 ),
                 col,
             )
+    _check_helper_misuse(tree, expr)
     # 整个表达式就是一个内置函数名 (id / type / input …): 十有八九是想写字段
     body = tree.body if mode == "eval" else None
     if (
@@ -126,50 +161,29 @@ def check_syntax(expr: str, mode: str = "eval", allowed: Iterable[str] = ()) -> 
     _compile(expr, mode, frozenset(allowed))
 
 
-def _namespace(row: Row, extra: Optional[ExtraFn]) -> Dict[str, Any]:
+def _namespace(row: Row) -> Dict[str, Any]:
     # 单个 dict 同时作 globals 和 locals: 3.10/3.11 的推导式作用域只看 globals
     ns = dict(_BASE)
     ns["x"] = DictWrapper(row)
-    if extra is not None:
-        ns.update(extra(row))
     return ns
 
 
-def _pick_extra(code, extra: Optional[ExtraFn], extra_names: Optional[FrozenSet[str]]):
-    """extra (如 view 派生列) 只在表达式真的引用到那些名字时才每行计算"""
-    if extra is None:
-        return None
-    if extra_names is not None and not (set(code.co_names) & extra_names):
-        return None
-    return extra
-
-
-def compile_value(
-    expr: str,
-    extra: Optional[ExtraFn] = None,
-    extra_names: Optional[FrozenSet[str]] = None,
-) -> Callable[[Row], Any]:
+def compile_value(expr: str) -> Callable[[Row], Any]:
     """表达式 → 取值函数 (sort/group --by、select 的派生列)。返回值已 unwrap。"""
-    code = _compile(expr.strip(), "eval", extra_names or frozenset())
-    use_extra = _pick_extra(code, extra, extra_names)
+    code = _compile(expr.strip(), "eval")
 
     def value_fn(row: Row) -> Any:
-        return unwrap(eval(code, _namespace(row, use_extra)))
+        return unwrap(eval(code, _namespace(row)))
 
     return value_fn
 
 
-def compile_where(
-    expr: str,
-    extra: Optional[ExtraFn] = None,
-    extra_names: Optional[FrozenSet[str]] = None,
-) -> Callable[[Row], bool]:
-    """表达式 → 谓词。extra(row) 可注入额外名字 (view 的 turns/chars 等派生列)。"""
-    code = _compile(expr.strip(), "eval", extra_names or frozenset())
-    use_extra = _pick_extra(code, extra, extra_names)
+def compile_where(expr: str) -> Callable[[Row], bool]:
+    """表达式 → 谓词。"""
+    code = _compile(expr.strip(), "eval")
 
     def predicate(row: Row) -> bool:
-        return bool(eval(code, _namespace(row, use_extra)))
+        return bool(eval(code, _namespace(row)))
 
     return predicate
 
@@ -198,7 +212,7 @@ def compile_map(code_str: str) -> Callable[[Row], Row]:
     code = _compile(code_str.strip(), "exec")
 
     def map_fn(row: Row) -> Row:
-        ns = _namespace(row, None)
+        ns = _namespace(row)
         exec(code, ns)
         return unwrap(ns["x"])
 

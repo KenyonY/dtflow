@@ -77,15 +77,15 @@ Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every 
 ```bash
 dt view data.jsonl                          # open, press ? for keys
 dt view app.jsonl -100 -f                   # follow the last 100 lines (log mode)
-dt view data.jsonl -w "turns>=6" -s error   # start filtered + searched
+dt view data.jsonl -w "turns(x)>=6" -s error   # start filtered + searched
 dt sample data.jsonl 500 | dt view -        # pipe: inspect sampled / processed output
 ```
 
 | Keys | What they do |
 |------|------|
-| `/` `f` `F` `s` | Full-file search · expression filter (`turns>=6 and x.source=='alpaca'`, plain Python) · column value picker · sort. They stack; `r` clears all |
+| `/` `f` `F` `s` | Full-file search · expression filter (`turns(x)>=6 and x.source=='alpaca'`, the same Python as `dt filter`) · column value picker · sort. They stack; `r` clears all |
 | `Enter` `n/N` `*` | Zoom into the sample · jump field by field · jump only between search hits |
-| `w` `C` | Export the filtered subset to a file (lineage written automatically) · copy a `dt view` command that reproduces the current view |
+| `w` `C` `P` | Export the filtered subset to a file (lineage written automatically) · copy a `dt view` command that reproduces the current view · copy the same conditions as `dt filter … \| dt sort …` to process them |
 | `y` / drag + `Ctrl+c` | Copy the whole sample as JSON / copy any text you drag-select in the detail pane (works over SSH and inside tmux) |
 
 Full key list, filter syntax, large-file and follow-mode details: [docs/view.md](docs/view.md).

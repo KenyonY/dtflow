@@ -9,7 +9,7 @@ Writing a field path where an expression is expected (or the reverse) is rejecte
 
 ## Expressions
 
-The current row is **`x`**. Attribute access works through nested dicts and lists (`x.messages[-1].role`, `x.meta.source`); dict-style access returns raw values (`x["meta"]["source"]`, `x.get("score")`). The namespace also has `re`, `json`, `math`, and `get(x, "<field path>")` for the path DSL. Python builtins are available.
+The current row is **`x`**. Attribute access works through nested dicts and lists (`x.messages[-1].role`, `x.meta.source`); dict-style access returns raw values (`x["meta"]["source"]`, `x.get("score")`). The namespace also has `re`, `json`, `math`, `get(x, "<field path>")` for the path DSL, and the [row helpers](#row-helpers) below. Python builtins are available.
 
 ```bash
 dt filter d.jsonl "x.score > 0.8 and 'wiki' in x.meta.source"
@@ -27,7 +27,31 @@ dt group  d.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g),ids=[r.id
 - `select FIELDS`: comma-separated at depth 0 (commas inside brackets and quotes are fine). A bare name is a literal top-level field, copied if present. `name=expr` is a derived field. Output keys follow the spec order; renaming is `new=x.old`.
 - `map CODE`: statements, executed with `x` bound to the row; `x.f = ...`, `del x.f`, `x.list.append(...)` all write through. Separate statements with `;` or newlines.
 - `group --agg SPEC`: each `name=expr` is evaluated once per group with `g` (the rows of the group, attribute access works on each), `key`, `n`, and `mean` / `median` in scope.
-- In `dt view`, the header's derived column names (`turns`, `chars`, `roles`, `first_user`, `calls`, …) are variables with their raw types.
+- `dt view`'s `f` prompt and `--where` take exactly this language; the header's derived columns are the row helpers below (`turns(x)`, not `turns`).
+
+### Row helpers
+
+Functions of the current row that summarize a training sample. They are the same code that computes `dt view`'s derived columns, so a condition written in the browser can be pasted into `dt filter` (and `P` in the browser does that for you).
+
+| Helper | Returns | Notes |
+|------|------|------|
+| `turns(x)` | `int` | number of messages (`messages` or sharegpt `conversations`); 0 for non-chat rows |
+| `roles(x)` | `str` | role signature such as `u→a→t→a` (tool results are `t`), truncated after 5 |
+| `first_user(x)` | `str` | full text of the first user message |
+| `chars(x)` | `int` | characters of all messages, including reasoning and tool-call arguments |
+| `calls(x)` | `str` | called function names, comma-joined, in first-seen order; empty when there are none |
+| `fulltext(x)` | `str` | every scalar value of the record joined as text (no keys); works on a sub-structure too: `fulltext(x.messages)` |
+| `search(x, pattern)` | `bool` | case-insensitive substring over the whole record, `re:` prefix for a regex; identical to `/` in `dt view` |
+
+```bash
+dt filter d.jsonl "turns(x) >= 6 and chars(x) < 4000"
+dt filter d.jsonl "'get_weather' in calls(x)"                 # rows that called this tool
+dt filter d.jsonl "search(x, 'refund') and not search(x, 're:^system')"
+dt group  d.jsonl --by "roles(x)"
+dt sort   d.jsonl --by "chars(x)" --desc
+```
+
+A helper used without a call (`turns >= 6`, the pre-0.10 `dt view` form) is a syntax error with the hint `write turns(x)`; passing one as a function (`sorted(g, key=turns)`) is fine.
 
 ### What happens when an expression fails on a row
 
@@ -94,6 +118,6 @@ The `field op value` filter form (`category=tech`, `content~=word`, `messages.#>
 | `score>0.8` / `messages.#>=2` | `x.score>0.8` / `len(x.messages)>=2` |
 | `messages[0].role=user` | `x.messages[0].role=='user'` |
 | `messages[*].content:join~=word` | `any('word' in m.content for m in x.messages)` |
-| in view: `turns>=6 and chars<2000` | unchanged; `source==alpaca` → `x.source=='alpaca'`; `first_user~=refund` → `'refund' in first_user` |
+| in view: `turns>=6 and chars<2000` | `turns(x)>=6 and chars(x)<2000` (since 0.10 derived columns are row helpers); `source==alpaca` → `x.source=='alpaca'`; `first_user~=refund` → `'refund' in first_user(x)` |
 | pipeline `condition: "len(text) > 10"` / `field: text` | `expr: "len(x.text) > 10"` / `expr: "x.text"` |
 | `dt clean f.jsonl --strip` (used to overwrite the file) | `dt clean f.jsonl --strip -i`; without `-i`/`-o` output goes to stdout |

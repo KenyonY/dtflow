@@ -1,16 +1,21 @@
 """统一表达式引擎 dtflow/expr.py 的测试"""
 
 import multiprocessing
+import re
 
 import pytest
 
+from dtflow import rowfn
+from dtflow.core import DictWrapper
 from dtflow.expr import (
     ExprSyntaxError,
     check_syntax,
+    compile_in,
     compile_map,
     compile_value,
     compile_where,
 )
+from dtflow.rowfn import HELPERS
 
 ROW = {
     "id": 7,
@@ -118,22 +123,7 @@ class TestMap:
             compile_map("x.a = = 1")
 
 
-class TestExtra:
-    def test_extra_names_used_lazily(self):
-        calls = []
-
-        def extra(row):
-            calls.append(1)
-            return {"turns": len(row["messages"])}
-
-        names = frozenset({"turns", "chars"})
-        pred = compile_where("turns >= 2", extra=extra, extra_names=names)
-        assert pred(ROW) is True
-        assert calls == [1]
-        pred2 = compile_where("x.id == 7", extra=extra, extra_names=names)
-        assert pred2(ROW) is True
-        assert calls == [1], "未引用派生名时不应计算 extra"
-
+class TestNames:
     def test_unknown_bare_name_is_syntax_error(self):
         # 漏写 x. 的裸字段名不能每行 NameError 却退出码 0
         with pytest.raises(ExprSyntaxError, match="x.score"):
@@ -143,14 +133,89 @@ class TestExtra:
         assert compile_value("len(x.messages)")(ROW) == 2  # 内置函数照常
         assert compile_where("[m for m in x.messages if m.role == 'user']")(ROW)  # 推导式变量
         assert compile_where("(lambda y: y > 1)(len(x.messages))")(ROW)
-        # extra 的名字必须通过 extra_names 声明
-        with pytest.raises(ExprSyntaxError):
-            compile_where("turns == 2", extra=lambda r: {"turns": 2})
 
     def test_incomplete_expr_caret_at_end(self):
         with pytest.raises(ExprSyntaxError) as ei:
             compile_where("x.a >")
         assert ei.value.offset == len("x.a >") + 1
+
+
+SHAREGPT_ROW = {
+    "id": 1,
+    "conversations": [
+        {"from": "human", "value": "查天气 Beijing"},
+        {"from": "function_call", "value": '{"name": "get_weather", "arguments": "{}"}'},
+        {"from": "observation", "value": "22"},
+        {"from": "gpt", "value": "22 度"},
+    ],
+}
+
+
+class TestRowHelpers:
+    """行函数与 dt view 的派生列同源: 见 dtflow/rowfn.py。"""
+
+    def test_helpers_on_dict_and_wrapper_agree_and_do_not_copy(self):
+        w = DictWrapper(ROW)
+        for name in ("turns", "roles", "first_user", "chars", "calls", "fulltext"):
+            assert HELPERS[name](ROW) == HELPERS[name](w), name
+        assert rowfn._raw(w) is ROW and rowfn._raw(w.messages) is ROW["messages"]
+
+    def test_chat_helpers(self):
+        assert compile_value("turns(x)")(ROW) == 2
+        assert compile_value("roles(x)")(ROW) == "u→a"
+        assert compile_value("first_user(x)")(ROW) == "退款怎么办"
+        assert compile_value("chars(x)")(ROW) == len("退款怎么办") + len("请联系客服")
+        assert compile_value("calls(x)")(ROW) == ""
+        assert compile_where("turns(x) >= 2 and '退款' in first_user(x)")(ROW)
+
+    def test_autodetects_sharegpt_and_non_chat(self):
+        assert compile_value("turns(x)")(SHAREGPT_ROW) == 4
+        assert compile_value("roles(x)")(SHAREGPT_ROW) == "u→a→t→a"
+        assert compile_value("calls(x)")(SHAREGPT_ROW) == "get_weather"
+        assert compile_where("'get_weather' in calls(x)")(SHAREGPT_ROW)
+        plain = {"text": "hello"}
+        assert compile_value("(turns(x), roles(x), first_user(x), chars(x), calls(x))")(plain) == (
+            0,
+            "",
+            "",
+            0,
+            "",
+        )
+
+    def test_search_and_fulltext(self):
+        assert compile_where("search(x, '退款')")(ROW)
+        assert compile_where("search(x, 'WIKI')")(ROW)  # 不分大小写, 搜所有标量值
+        assert not compile_where("search(x, 'messages')")(ROW)  # 不含键名
+        assert compile_where(r"search(x, r're:wiki-\w+')")(ROW)
+        assert not compile_where("search(x, 're:^wiki$')")(ROW)
+        assert compile_where("search(x.messages, '客服') and not search(x.meta, '客服')")(ROW)
+        assert "退款怎么办" in compile_value("fulltext(x)")(ROW)
+        assert rowfn.compile_search("a.b") is rowfn.compile_search("a.b")  # 缓存
+        with pytest.raises(re.error):
+            compile_where("search(x, 're:(')")(ROW)
+
+    def test_bare_helper_name_is_syntax_error_with_hint(self):
+        # 老 view 语法 turns>=6: 不能编译通过后每行 TypeError (CLI 报失败, view 静默 0 命中)
+        with pytest.raises(ExprSyntaxError, match=r"turns\(x\)") as ei:
+            compile_where("turns >= 2")
+        assert ei.value.offset == 1
+        with pytest.raises(ExprSyntaxError, match=r"first_user\(x\)"):
+            compile_where("'退款' in first_user")
+        with pytest.raises(ExprSyntaxError, match=r"chars\(x\)"):
+            compile_value("len(x.messages) + chars")
+        # 合法的裸引用: 被调用 / 当高阶函数参数
+        assert compile_value("sorted([x], key=turns)")(ROW) == [ROW]
+        assert compile_value("list(map(turns, [x]))")(ROW) == [2]
+
+    def test_helpers_available_in_compile_in(self):
+        fn = compile_in("mean(turns(r) for r in g)", allowed=("g", "mean"))
+        assert (
+            fn({"g": [DictWrapper(ROW), DictWrapper(SHAREGPT_ROW)], "mean": lambda it: sum(it) / 2})
+            == 3
+        )
+
+    def test_schema_lists_helpers(self):
+        assert [d[0] for d in rowfn.HELPER_DOCS] == list(HELPERS)
 
 
 def _eval_in_child(args):

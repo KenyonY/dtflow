@@ -277,6 +277,8 @@ _HELP = t(
                  the extension. .jsonl streams, so 100k+ rows use no memory; lineage is
                  written too, so dt history shows the source and conditions
   C            copy a dt view command that reproduces this view (with filter/search/sort)
+  P            copy the processing-chain form: dt filter FILE '…' | dt sort - --by '…'
+                 (same conditions; append -o FILE or more pipes to process the subset)
   s            full sort (enter a column name, prefix - to reverse; scans the whole file,
                  holds across windows)
   S            column snapshot (n·min·max·mean·non-empty rate of a column over the current
@@ -285,11 +287,13 @@ _HELP = t(
                  case-insensitive, re: prefix for regex)
                  → hit subset + yellow highlights in table/detail; * hops between hits
   f            full filter (scans the whole file → hit subset): Python expr, row is x
-                 derived columns by name: chars>2000 · turns>=6 · 'refund' in first_user
+                 same language as dt filter: derived columns are row functions
+                       chars(x)>2000 · turns(x)>=6 · 'refund' in first_user(x)
+                       search(x, 'refund') (whole record, like /) · 'get_weather' in calls(x)
                  other fields via x.: x.source=='alpaca' · len(x.messages)>=2
-                       x.messages[-1].role=='assistant' · 'get_weather' in calls
+                       x.messages[-1].role=='assistant'
                        any('error' in m.content for m in x.messages)   (whole chat)
-                 and/or/not/parentheses: turns>=6 and (chars<2000 or x.source=='a')
+                 and/or/not/parentheses: turns(x)>=6 and (chars(x)<2000 or x.source=='a')
                  press f again to stack more conditions (combined with and)
   F / header   value filter (Excel-style): lists the column's unique values + counts,
                  check the ones to keep → subset
@@ -332,16 +336,20 @@ _HELP = t(
   w            导出当前浏览序列 (或多选选区) 到文件, 按扩展名定格式
                  .jsonl 流式写, 几十万行不占内存; 同时写血缘, dt history 可查来源与条件
   C            复制"复现当前视图"的 dt view 命令到剪贴板 (筛选/搜索/排序全带上)
+  P            复制"处理链"形式: dt filter FILE '…' | dt sort - --by '…'
+                 (同一套条件; 接 -o FILE 或继续管道即可处理这个子集)
   s            全量排序 (输入列名, 加 - 反向; 扫全文件, 跨窗口有效)
   S            列快照 (某列的 n·min·max·mean·非空率, 当前浏览序列; 完整分布用 dt stats)
   /            全量搜索 (整条记录的每个值, 含 assistant 回复; 不分大小写, re: 前缀走正则)
                  → 命中子集 + 表格/详情里黄底高亮, 再用 * 逐个跳过去
   f            全量筛选 (扫全文件 → 命中子集): 表达式即 Python, 当前行叫 x
-                 派生列名直接用: chars>2000 · turns>=6 · '退款' in first_user
+                 与 dt filter 同一套语言: 派生列是行函数
+                       chars(x)>2000 · turns(x)>=6 · '退款' in first_user(x)
+                       search(x, '退款') (搜整条记录, 同 /) · 'get_weather' in calls(x)
                  其余字段走 x.: x.source=='alpaca' · len(x.messages)>=2
-                       x.messages[-1].role=='assistant' · 'get_weather' in calls
+                       x.messages[-1].role=='assistant'
                        any('报错' in m.content for m in x.messages)   (搜整段对话)
-                 and/or/not/括号随意: turns>=6 and (chars<2000 or x.source=='a')
+                 and/or/not/括号随意: turns(x)>=6 and (chars(x)<2000 or x.source=='a')
                  可反复按 f 叠加多条 (多条之间是 and)
   F / 点列头   列值勾选筛选 (Excel 式): 列出该列唯一值+频次, 勾选保留哪些 → 子集
                  顶部搜索框按子串过滤候选值; 有搜索词时应用 = 只保留勾选的匹配项
@@ -890,6 +898,7 @@ class ViewApp(App):
         # 落地: w 导出当前子集到文件, C 复制可复现当前视图的命令
         Binding("w", "export", t("Export", "导出"), show=False),
         Binding("C", "copy_command", t("Copy command", "复制命令"), show=False),
+        Binding("P", "copy_pipeline", t("Copy pipeline", "复制处理链"), show=False),
     ]
 
     def __init__(
@@ -1155,7 +1164,7 @@ class ViewApp(App):
         empty = self._constraints_snapshot()
         for expr in self._init_where:
             try:
-                scan.compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
+                scan.compile_where(expr)  # 只为校验: 谓词由 spec 现编
                 self._wheres.append(expr)
             except ValueError as e:
                 self.notify(escape(f"--where {expr}: {e}"), severity="error")
@@ -2207,21 +2216,20 @@ class ViewApp(App):
     _UNSAFE_VALUE = re.compile("…")
 
     def _value_filter_expr(self, col: str, kept: set) -> str:
-        """列值勾选 → 等价的 where 表达式 (值筛选比的是表格单元格字符串, 翻译要按列的类型)。"""
+        """列值勾选 → 等价的 where 表达式 (值筛选比的是表格单元格字符串, 翻译要按列的类型)。
+
+        派生列翻译成 render.DERIVED_EXPR 里的取值表达式 (对话列即行函数 turns(x)…),
+        于是这条 where 同时能喂给 dt view 与 dt filter。
+        """
         vals = sorted(kept)
         if col in render.derived_columns(self.fmt):
+            get = render.DERIVED_EXPR[col]
             if col in render.NUMERIC_DERIVED:
-                return f"{col} in ({', '.join(vals)},)"
+                return f"{get} in ({', '.join(vals)},)"
             if col == "has_input":
                 want = {v == "✓" for v in vals}
-                return (
-                    "has_input"
-                    if want == {True}
-                    else "not has_input"
-                    if want == {False}
-                    else "True"
-                )
-            return f"{col} in ({', '.join(map(repr, vals))},)"
+                return get if want == {True} else f"not {get}" if want == {False} else "True"
+            return f"{get} in ({', '.join(map(repr, vals))},)"
         parts = []
         nonempty = [v for v in vals if v != ""]
         if nonempty:
@@ -2230,26 +2238,17 @@ class ViewApp(App):
             parts.append(f"x.get({col!r}) in (None, '')")
         return " or ".join(parts)
 
-    def _build_command(self) -> Tuple[Optional[str], List[str]]:
-        """(可复现当前视图的 dt view 命令, 无法表达的部分说明)。"""
-        import shlex
-
-        if not self.filepath:  # stdin 模式: 源数据是管道, 没有可复现的输入
-            return None, [
-                t(
-                    "Piped input (dt view -) can't be reproduced; export the result with w",
-                    "管道输入 (dt view -) 无法复现, 请用 w 导出结果文件",
-                )
-            ]
-
-        skipped: List[str] = []
-        if self._follow:
-            skipped.append(
-                t(
-                    "follow mode reproduces the conditions, not a fixed byte snapshot",
-                    "实时模式只复现观察条件，不固定历史字节快照",
-                )
+    def _stdin_unreproducible(self) -> List[str]:
+        return [
+            t(
+                "Piped input (dt view -) can't be reproduced; export the result with w",
+                "管道输入 (dt view -) 无法复现, 请用 w 导出结果文件",
             )
+        ]
+
+    def _collect_wheres(self) -> Tuple[List[str], List[str]]:
+        """(全部 where 条件 = 手输的 + 列值勾选翻译出的, 无法表达的说明)。"""
+        skipped: List[str] = []
         wheres = list(self._wheres)
         for col, kept in self._col_value_filters.items():
             bad = [v for v in kept if self._UNSAFE_VALUE.search(v)]
@@ -2263,6 +2262,24 @@ class ViewApp(App):
                 continue
             # 多列值筛选之间是 AND, 各写一条 --where; 单列内多值是 in (...)
             wheres.append(self._value_filter_expr(col, kept))
+        return wheres, skipped
+
+    def _build_command(self) -> Tuple[Optional[str], List[str]]:
+        """(可复现当前视图的 dt view 命令, 无法表达的部分说明)。"""
+        import shlex
+
+        if not self.filepath:  # stdin 模式: 源数据是管道, 没有可复现的输入
+            return None, self._stdin_unreproducible()
+
+        wheres, skipped = self._collect_wheres()
+        if self._follow:
+            skipped.insert(
+                0,
+                t(
+                    "follow mode reproduces the conditions, not a fixed byte snapshot",
+                    "实时模式只复现观察条件，不固定历史字节快照",
+                ),
+            )
 
         parts = ["dt", "view", shlex.quote(self.filepath)]
         if self._start_at_end:
@@ -2278,8 +2295,50 @@ class ViewApp(App):
             parts.append(f"--sort={shlex.quote(('-' if desc else '') + name)}")
         return " ".join(parts), skipped
 
-    def action_copy_command(self) -> None:
-        cmd, skipped = self._build_command()
+    def _sort_key_expr(self, col: str) -> Optional[str]:
+        """排序列名 → dt sort --by 的表达式; ``#`` (行号) 没有对应表达式。"""
+        if col == "#":
+            return None
+        if col in render.derived_columns(self.fmt):
+            return render.DERIVED_EXPR[col]
+        return f"x.get({col!r})"
+
+    def _build_pipeline_command(self) -> Tuple[Optional[str], List[str]]:
+        """(把当前约束写成处理链 ``dt filter … | dt sort …``, 无法表达的部分说明)。
+
+        与 C 的区别: C 复现"看", P 复现"处理" —— 同一套条件喂给 dt filter, 后面接 -o 或
+        更多管道就能对这个子集做事。这正是 view 与 CLI 共用一种表达式语言的意义。
+        """
+        import shlex
+
+        if not self.filepath:
+            return None, self._stdin_unreproducible()
+
+        wheres, skipped = self._collect_wheres()
+        if self._search_text:
+            wheres.append(f"search(x, {self._search_text!r})")
+        stages: List[str] = []
+        src = shlex.quote(self.filepath)
+        if wheres:
+            expr = " and ".join(f"({w})" for w in wheres) if len(wheres) > 1 else wheres[0]
+            stages.append(f"dt filter {src} {shlex.quote(expr)}")
+        if self._sort_spec:
+            name, desc = self._sort_spec
+            key = self._sort_key_expr(name)
+            if key is None:
+                skipped.append(
+                    t("sorting by row number # has no expression", "按行号 # 排序没有对应表达式")
+                )
+            else:
+                head = "dt sort - " if stages else f"dt sort {src} "
+                stages.append(head + f"--by {shlex.quote(key)}" + (" --desc" if desc else ""))
+        if not stages:
+            return None, [
+                t("no filter/search/sort to translate", "当前没有筛选/搜索/排序条件可翻译")
+            ]
+        return " | ".join(stages), skipped
+
+    def _notify_copied(self, cmd: Optional[str], skipped: List[str]) -> None:
         if cmd is None:
             self.notify(escape(skipped[0]), severity="warning")
             return
@@ -2295,6 +2354,12 @@ class ViewApp(App):
                 )
             )
         self.notify(escape(msg), timeout=10, severity="warning" if skipped else "information")
+
+    def action_copy_command(self) -> None:
+        self._notify_copied(*self._build_command())
+
+    def action_copy_pipeline(self) -> None:
+        self._notify_copied(*self._build_pipeline_command())
 
     # ------------------------------------------------------------------ #
     # 导出: 把当前浏览序列 (或多选选区) 落盘。剪贴板走 OSC52 有长度上限, 几千条根本装不下,
@@ -2455,6 +2520,7 @@ class ViewApp(App):
             "sort": self._sort_label,
             "scope": self._export_scope()[0],
             "command": cmd,
+            "pipeline_command": self._build_pipeline_command()[0],
             "source_snapshot": self.source.snapshot_info(),
         }
         if skipped:
@@ -2764,10 +2830,10 @@ class ViewApp(App):
         self._open_prompt(
             "filter",
             t(
-                "Filter (Python, row is x; derived columns by name) "
-                "e.g. turns>=6 and 'refund' in first_user · x.source=='a':",
-                "全量筛选 (Python 表达式, 当前行 x; 派生列名直接用) "
-                "如 turns>=6 and '退款' in first_user · x.source=='a':",
+                "Filter (Python, row is x; same as dt filter) "
+                "e.g. turns(x)>=6 and 'refund' in first_user(x) · x.source=='a':",
+                "全量筛选 (Python 表达式, 当前行 x; 与 dt filter 同一套) "
+                "如 turns(x)>=6 and '退款' in first_user(x) · x.source=='a':",
             ),
         )
 
@@ -2836,7 +2902,7 @@ class ViewApp(App):
             return
         snap = self._constraints_snapshot()
         try:
-            scan.compile_where(expr, self.fmt)  # 只为校验: 谓词由 spec 现编
+            scan.compile_where(expr)  # 只为校验: 谓词由 spec 现编
         except ValueError as e:
             self.notify(escape(str(e)), severity="error")
             return

@@ -17,12 +17,12 @@ from __future__ import annotations
 import atexit
 import multiprocessing
 import os
-import re
 from array import array
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterator, List, Optional, Pattern, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from ... import rowfn
 from ...i18n import t
 from . import render
 from .source import SourceChangedError, _identity, _loads
@@ -40,19 +40,17 @@ REFINE_MAX_RATIO = 0.1
 # --------------------------------------------------------------------------- #
 # 表达式编译 (主进程校验用户输入、子进程重建谓词, 同一套代码)
 # --------------------------------------------------------------------------- #
-def compile_where(expr: str, fmt: str):
+def compile_where(expr: str):
     """where 表达式 → predicate(row)->bool。
 
-    表达式即 Python (见 dtflow.expr), 当前行为 ``x``; 表头上的**派生列名**
-    (turns/chars/first_user/… 见 render.derived_columns) 可直接当变量用, 值为原始类型
-    (int / 全文不截断), 其余字段走 ``x.source`` / ``x.messages[-1].role``。
+    表达式即 Python (见 dtflow.expr), 当前行为 ``x``; 表头上的派生列对应同名行函数
+    (``turns(x)>=6``, ``'退款' in first_user(x)``), 与 dt filter 完全同一套。
     语法错误抛 ExprSyntaxError (ValueError 子类) 给调用方提示; 行内求值失败 (缺字段等)
     判为不命中 —— TUI 没有逐行报错的通道, 静默过滤是这里唯一合理的选择。
     """
     from ...expr import compile_where as _compile
 
-    names = frozenset(render.derived_columns(fmt))
-    pred = _compile(expr, extra=lambda row: render.derived_values(row, fmt), extra_names=names)
+    pred = _compile(expr)
 
     def predicate(row) -> bool:
         if not isinstance(row, dict):
@@ -65,15 +63,8 @@ def compile_where(expr: str, fmt: str):
     return predicate
 
 
-def compile_search(text: str) -> Pattern:
-    """搜索词 → 正则。默认按字面子串 (转义), ``re:`` 前缀走正则; 一律不分大小写。
-
-    编译出的 pattern 同时用于两处, 必须同源: 筛选出命中子集, 以及给命中处画黄底。
-    非法正则原样抛 re.error, 由调用方提示用户。
-    """
-    if text.startswith("re:"):
-        return re.compile(text[3:], re.IGNORECASE)
-    return re.compile(re.escape(text), re.IGNORECASE)
+# 搜索词 → 正则, 与表达式里的 search(x, pat) 同源 (筛命中子集与画黄底用同一个 pattern)
+compile_search = rowfn.compile_search
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +125,7 @@ def build_row_ok(spec: ScanSpec) -> Optional[Callable]:
     if not spec.has_filters:
         return None
     pat = compile_search(spec.search) if spec.search else None
-    wheres = [compile_where(e, spec.fmt) for e in spec.wheres]
+    wheres = [compile_where(e) for e in spec.wheres]
     cols = [c for c, _ in spec.value_filters]
     kept = [set(v) for _, v in spec.value_filters]
     fmt = spec.fmt
@@ -142,7 +133,7 @@ def build_row_ok(spec: ScanSpec) -> Optional[Callable]:
     def row_ok(row) -> bool:
         if not isinstance(row, dict):
             return False
-        if pat is not None and not pat.search(render.row_text(row)):
+        if pat is not None and not pat.search(rowfn.row_text(row)):
             return False
         for w in wheres:
             if not w(row):

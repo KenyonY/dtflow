@@ -91,12 +91,14 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 ## 表达式语法（filter / select / map / sort / group / join / --where / pipeline 共用）
 
 表达式就是 Python，当前行叫 **`x`**（属性访问：`x.messages[-1].role`、`x.meta.source`；缺字段抛 AttributeError）。
-命名空间另有 `re` / `json` / `math`，以及 `get(x, "messages[*].role:join")` 通向字段路径 DSL。
+命名空间另有 `re` / `json` / `math`、`get(x, "messages[*].role:join")` 通向字段路径 DSL，以及**行函数**（与 `dt view` 派生列同一实现）：`turns(x)` 消息条数、`roles(x)` 角色签名如 `u→a→t→a`、`first_user(x)` 首条 user 全文、`chars(x)` 全部消息字符数（含思维链与工具参数）、`calls(x)` 调用过的函数名（逗号分隔，无则空串）、`fulltext(x)` 整条记录所有值拼成的文本、`search(x, 词)` 整条记录不分大小写子串（`re:` 前缀正则，同 view 的 `/`）。裸写 `turns>=6` 是语法错误（提示改 `turns(x)`）。
 
 ```bash
 dt filter d.jsonl "x.score > 0.8 and 'wiki' in x.meta.source"
 dt filter d.jsonl "len(x.messages) >= 2 and x.messages[-1].role == 'assistant'"
 dt filter d.jsonl "any('退款' in m.content for m in x.messages)"
+dt filter d.jsonl "turns(x) >= 6 and 'get_weather' in calls(x) and search(x, '退款')"   # 行函数
+dt group  d.jsonl --by "roles(x)"                                        # 角色序列分布
 dt select d.jsonl "id,n=len(x.messages),last=x.messages[-1].content"     # 字面字段名 | 新名=表达式
 dt map    d.jsonl "x.text = x.text.strip(); del x.debug"                # 语句, 原地改 x
 dt sort   d.jsonl --by "(x.source, -x.score)"
@@ -147,15 +149,15 @@ dt join   d.jsonl meta.jsonl --on x.id --prefix m_
 - **实时追尾**：`dt view app.jsonl -f`（`--follow`） 从最新尾窗开始，只提交已换行的完整记录，并自动跟随日志轮转。上移光标后界面暂停并累计新行，`G` 回到最新处；全量搜索/筛选对固定高水位扫描后继续增量应用到新行。可用 `-100 -f` 把尾窗限为 100 行
 - **非等字段列头**：当前窗口的全部记录参与列发现，翻页/跳转时按首次出现顺序增量补列（不为 schema 预先 parse 全文件）；generic 的顶层对象/数组也算列。训练格式只默认展开前 8 个元数据列，其余仍在 `c` 列面板中，详情不因自动收起而缺字段
 - **管道模式** `... | dt view -`：从 stdin 读 NDJSON 全量入内存（流不可 seek），适合看处理结果的一小撮，如 `dt sample data.jsonl 500 | dt view -`（大文件仍用 `dt view file` 走窗口化）
-- **启动即带条件**：`--where=<Python 表达式>`(可重复，多条为**与**关系)、`--search=<词>`、`--sort=[-]列名`；与 TUI 内按 `f`/`/`/`s` 完全同义（同一条扫描管线）。如 `dt view d.jsonl --where="turns>=6 and x.source=='a'" --sort=-chars`
+- **启动即带条件**：`--where=<Python 表达式>`(可重复，多条为**与**关系)、`--search=<词>`、`--sort=[-]列名`；与 TUI 内按 `f`/`/`/`s` 完全同义（同一条扫描管线）。如 `dt view d.jsonl --where="turns(x)>=6 and x.source=='a'" --sort=-chars`
 - **详情字段定位**：切样本时详情自动停在同名字段位置（字段绑定，非绝对像素）；对话**按条拆段**(`msg0`/`msg1`…)，`n`/`N` 因此是逐条消息导航（底部字段滚动条到不了时也可达），亦可鼠标点击选中；状态栏实时显示当前字段
 - **全量搜索/筛选/排序，三者可叠加**：`/` 搜索、`f` where、`F` 列值勾选、`s` 排序 —— 一律**扫描整个文件**(worker 线程，带进度，`Esc` 取消)，得到的全局行号序列即新浏览序列（翻窗口不失效）；状态栏显示「命中 M/N (占比%)」；`r` 清空全部。完整分布统计(直方图/分位数/value_counts)用 `dt stats`/`dt token-stats`
   - 三类约束各占独立槽位：`/` 一个(新搜索覆盖旧的)、`f` **可反复叠加**(多条之间 and)、`F` 按列独立记「保留值集」故可反复调整/加回
-  - where 就是 **Python 表达式**（当前行 `x`）：表头上的**派生列名** `turns`/`chars`/`roles`/`first_user`/`calls` 可直接当变量用（原始类型：`turns` 是 int，`first_user` 是全文），其余字段走 `x.`：`turns>=6 and chars<2000`、`x.source=='alpaca'`、`len(x.messages)>=2`；`and`/`or`/`not`/括号随意
-  - **按内容包含**：`'退款' in first_user`(全文，非 160 字预览)、`'get_weather' in calls`(调用过该函数的样本; `calls` 非空即带工具调用)、`'报错' in x.messages[0].content`、`any('词' in m.content for m in x.messages)`(搜整段对话)。`in` 区分大小写，不分写 `.lower()`
+  - where 就是 **Python 表达式**（当前行 `x`），**与 `dt filter` 同一套语言**：表头上的派生列是行函数 `turns(x)`/`chars(x)`/`roles(x)`/`first_user(x)`/`calls(x)`（原始类型：`turns(x)` 是 int，`first_user(x)` 是全文），其余字段走 `x.`：`turns(x)>=6 and chars(x)<2000`、`x.source=='alpaca'`、`len(x.messages)>=2`；`and`/`or`/`not`/括号随意。裸写 `turns>=6` 报错并提示 `turns(x)`
+  - **按内容包含**：`'退款' in first_user(x)`(全文，非 160 字预览)、`'get_weather' in calls(x)`(调用过该函数的样本; `calls(x)` 非空即带工具调用)、`search(x, '退款')`(整条记录，同 `/`)、`'报错' in x.messages[0].content`、`any('词' in m.content for m in x.messages)`(搜整段对话)。`in` 区分大小写，不分写 `.lower()`
   - `/` 搜的是**整条记录的每个值**（含 assistant 回复、后续轮次），不是表格列——表格列只是派生摘要，`first_user` 只是第一条用户消息。`re:` 前缀走正则，一律不分大小写。命中处在表格与详情里画**黄底**，`*` 只在含命中的字段间跳
   - `s` 排序是**全量**的：扫全文件产生排序后的序列，跨窗口有效（不是只排当前窗口）
-- **列值勾选筛选** `F` 或**点列头**（Excel AutoFilter 式）：全量列出该列唯一值+频次 → 勾选保留哪些（默认全不选）→ 子集。面板顶部搜索框按子串过滤候选值，有搜索词时「应用」= 只保留勾选∩匹配，匹配项全没勾 = 全部匹配项（「某列包含某子串」= 打字 → Enter 两步完成）；跨搜索词累积勾选：搜A全选→搜B全选→清空搜索词→应用 = A∪B。高基数列不受限（面板只渲染频次最高的 1000 项，搜索仍在全量值上过滤）；「列包含某子串」也可用 `f` 的 `'子串' in first_user`（匹配全文而非 160 字预览）
+- **列值勾选筛选** `F` 或**点列头**（Excel AutoFilter 式）：全量列出该列唯一值+频次 → 勾选保留哪些（默认全不选）→ 子集。面板顶部搜索框按子串过滤候选值，有搜索词时「应用」= 只保留勾选∩匹配，匹配项全没勾 = 全部匹配项（「某列包含某子串」= 打字 → Enter 两步完成）；跨搜索词累积勾选：搜A全选→搜B全选→清空搜索词→应用 = A∪B。高基数列不受限（面板只渲染频次最高的 1000 项，搜索仍在全量值上过滤）；「列包含某子串」也可用 `f` 的 `'子串' in first_user(x)`（匹配全文而非 160 字预览）
 - **拖拽列宽**：表头每列右侧 (含末列) 画有 `│` 分隔线，鼠标压上去变 `┃` 高亮 + 状态栏提示，按住左右拖即改该列宽度（Excel 式，拖动中实时重绘）；**双击分隔线**该列恢复自适应、让出的宽度回流给其它列。宽度记在**列名**上，翻窗口/改筛选/换可见列后仍保留；拖宽超出屏幕则横向滚动（`←/→`、`h/l`）。只点分隔线不拖不会误触发点列头的值筛选面板
 - **详情区鼠标拖选 + `Ctrl+c`**：在详情区里按住左键拖出高亮即选中任意文本（所见即所选，自动换行/中文宽字符处不错位），按 `Ctrl+c` 复制并清除选区；连击逐级放大：**双击取词**（id/字段值，`-`/`_` 算词内，中文按标点空格断）、三击整行、四击整个字段块、五击整屏详情，点一下或 `Esc` 清除。复制走 **OSC52 + 本地 wl-copy/xclip/xsel 双通道**（tmux/screen 自动 passthrough，SSH 下也到本机），通知里会说明用的哪条。表格区不参与（那里的拖拽是改列宽/选行），整条样本 JSON 用 `y`
 - **拖两区分界调大小**：表格与详情之间那两行边框（横排时是两列）即分界，鼠标压上去边框变亮 + 状态栏提示，按住拖到哪分界就到哪（按格连续），双击恢复默认 65:35；键盘 `+/-` 仍是 5% 一档，`z` 切左右/上下布局（默认左右）
