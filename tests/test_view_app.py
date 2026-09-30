@@ -43,6 +43,11 @@ def _chat_rows(n=30):
     ]
 
 
+def _rendered_row(app, row_index):
+    """表格某行渲染时的单元格 (行里只存字符串, 样式在渲染时才套上)。"""
+    return app.query_one("#table")._get_row_renderables(row_index).cells
+
+
 def _chat_app(n=30):
     return _make_app(_chat_rows(n))
 
@@ -1389,7 +1394,7 @@ async def test_search_highlights_cells_and_detail():
         await app.workers.wait_for_complete()
         await pilot.pause()
         # 表格单元格: first_user 列命中处带黄底
-        cell = app.query_one("#table").get_cell_at((0, app._visible_columns().index("first_user")))
+        cell = _rendered_row(app, 0)[app._visible_columns().index("first_user")]
         assert any(HIGHLIGHT_STYLE in str(sp.style) for sp in cell.spans)
 
 
@@ -3735,11 +3740,10 @@ async def test_numeric_columns_right_aligned():
         await pilot.pause()
         assert {"n", "score"} <= app._numeric_cols
         assert "mixed" not in app._numeric_cols
-        table = app.query_one("#table")
         vis = app._visible_columns()
-        cell = table.get_row_at(0)[vis.index("n")]
-        assert cell.renderable.justify == "right"  # Padding 包着右对齐的 Text
-        assert table.get_row_at(0)[vis.index("mixed")].justify != "right"
+        cells = _rendered_row(app, 0)
+        assert cells[vis.index("n")].renderable.justify == "right"  # Padding 包着右对齐的 Text
+        assert cells[vis.index("mixed")].justify != "right"
 
 
 @pytest.mark.asyncio
@@ -3772,7 +3776,7 @@ async def test_search_highlight_skips_generated_columns():
         app._populate()
         await pilot.pause()
         vis = app._visible_columns()
-        row = app.query_one("#table").get_row_at(0)
+        row = _rendered_row(app, 0)
 
         def spans(col):
             cell = row[vis.index(col)]
@@ -3781,3 +3785,25 @@ async def test_search_highlight_skips_generated_columns():
 
         assert not spans("#") and not spans("turns") and not spans("chars")
         assert spans("first_user") and spans("score")
+
+
+@pytest.mark.asyncio
+async def test_search_highlights_data_columns_named_like_derived():
+    # 派生列按当前格式判断: generic 数据里叫 chars / turns / has_input 的是真实数据, 照画命中
+    import re
+
+    from rich.padding import Padding
+
+    rows = [{"id": i, "chars": 11, "turns": 1, "has_input": "a1"} for i in range(3)]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        app._search_re = re.compile("1")
+        app._populate()
+        await pilot.pause()
+        vis = app._visible_columns()
+        row = _rendered_row(app, 0)
+        for col in ("chars", "turns", "has_input"):
+            cell = row[vis.index(col)]
+            assert (cell.renderable if isinstance(cell, Padding) else cell).spans, col
+        assert not row[vis.index("#")].renderable.spans  # 行号仍不画

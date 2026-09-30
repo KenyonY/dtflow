@@ -28,6 +28,7 @@ from textual.screen import ModalScreen
 from textual.selection import Selection as TextSelection  # 与勾选面板的 Selection 同名
 from textual.strip import Strip
 from textual.widgets import Button, DataTable, Input, SelectionList, Static
+from textual.widgets._data_table import RowRenderables
 from textual.widgets.selection_list import Selection
 
 from ...i18n import t
@@ -59,9 +60,22 @@ class FastDataTable(DataTable):
     height=1 非 auto_height。若引入 auto_width 列或 auto_height 行, 需回退父类实现。
     """
 
+    # 每列一个 单元格字符串 → renderable (对齐/着色/截断/高亮), 由 app 填表时给定。
+    # 行里只存字符串, 渲染某行时才套格式 (_compute_row_renderables): DataTable 只画可见的
+    # 几十行, 填表时给 10k 行逐格造 Text/Padding 是白花 (还拖慢 GC)。
+    cell_formatters: List[Callable[[str], RenderableType]] = []
+
     # DataTable 自带 enter→select_cursor, 焦点在表格时会先于 App 层的 enter→zoom 吃掉按键;
     # 在这里同键覆盖, 直接转给 app 的放大动作 (弹窗/输入框里的 Enter 焦点不在表格, 不受影响)。
     BINDINGS = [Binding("enter", "app.zoom", t("Zoom", "放大"))]
+
+    def _compute_row_renderables(self, row_index: int) -> RowRenderables:
+        if row_index < 0:  # 表头
+            return super()._compute_row_renderables(row_index)
+        cells = self.get_row_at(row_index)
+        return RowRenderables(
+            None, [f(c) for f, c in zip(self.cell_formatters, cells, strict=True)]
+        )
 
     def _update_dimensions(self, new_rows) -> None:
         for row_key in new_rows:
@@ -1713,56 +1727,34 @@ class ViewApp(App):
     # 表格填充 / 详情刷新
     # ------------------------------------------------------------------ #
     def _cell_formatters(self, vis: List[str]) -> List[Callable[[str], RenderableType]]:
-        """每列一个 单元格字符串 → renderable 的函数, 填表前按列定好 (10k 行 × 列数的热路径,
-        逐格判断列类型要多花 10%+)。
+        """每列一个 单元格字符串 → renderable 的函数, 交给 FastDataTable 在渲染可见行时套用。
 
         一律包成 Text 绕过 DataTable 的 markup 解析 (数据含 [/xxx] 会 MarkupError); 列宽装不下
         以 … 收尾; 行号列暗色、数值列右对齐、roles 按角色着色; 有搜索时命中处画上黄底 ——
         只画数据列: 行号、轮数/字数、roles 签名这些是算出来的, 搜数字时画上去全是假命中。
         """
-        hl = self._search_re
+        derived = render.derived_columns(self.fmt)
+        # 算出来的列: 按当前格式判断 (generic 里叫 chars 的就是数据列, 照画命中)
+        computed = {"#"} | (derived & (render.NUMERIC_DERIVED | {"roles", "has_input"}))
+        return [self._cell_formatter(name, name in derived, name in computed) for name in vis]
 
-        def plain(s: str) -> Text:
-            return render._hl(Text(s, no_wrap=True, overflow="ellipsis"), hl)
+    def _cell_formatter(
+        self, name: str, is_derived: bool, is_computed: bool
+    ) -> Callable[[str], RenderableType]:
+        hl = None if is_computed else self._search_re
+        if name == "roles" and is_derived:
+            return render.roles_text
+        if not self._right_aligned(name):
+            return lambda s: render._hl(Text(s, no_wrap=True, overflow="ellipsis"), hl)
+        style = "dim" if name == "#" else ""
 
-        def plain_nohl(s: str) -> Text:
-            return Text(s, no_wrap=True, overflow="ellipsis")
-
-        # roles 签名种类很少 (u→a、sys→u→a…), 按签名缓存着色结果: 无搜索时各行共用同一个
-        # Text (只读), 有搜索时复制一份再叠高亮
-        roles_cache: Dict[str, Text] = {}
-
-        def roles(s: str) -> Text:
-            text = roles_cache.get(s)
-            if text is None:
-                text = roles_cache[s] = render.roles_text(s)
-            return text
-
-        def right(style: str, hl) -> Callable[[str], RenderableType]:
+        def right(s: str) -> Padding:
             # 右侧留一格: 贴着列边的数字会和表头的列分隔线 │ 粘成一团。不能用尾随空格 ——
             # rich 右对齐时先 rstrip, 空格会被吃掉
-            def fmt(s: str) -> Padding:
-                text = Text(s, style=style, no_wrap=True, overflow="ellipsis", justify="right")
-                return _pad_right(render._hl(text, hl))
+            text = Text(s, style=style, no_wrap=True, overflow="ellipsis", justify="right")
+            return _pad_right(render._hl(text, hl))
 
-            return fmt
-
-        number, number_derived = right("", hl), right("", None)
-        special = {"#": right("dim", None), "roles": roles, "has_input": plain_nohl}
-
-        def pick(name: str) -> Callable[[str], RenderableType]:
-            if name in special:
-                return special[name]
-            if name in self._numeric_cols:
-                return number_derived if name in render.NUMERIC_DERIVED else number
-            return plain
-
-        return [pick(name) for name in vis]
-
-    def _row_texts(
-        self, idx: int, vis: List[str], fmts: List[Callable[[str], RenderableType]]
-    ) -> List[RenderableType]:
-        return [f(c) for f, c in zip(fmts, self._cells(idx, vis), strict=True)]
+        return right
 
     def _populate(self) -> None:
         table = self.query_one("#table", DataTable)
@@ -1770,12 +1762,12 @@ class ViewApp(App):
         table.clear()
         self._row_keys = []
         vis = self._visible_columns()
-        fmts = self._cell_formatters(vis)
+        table.cell_formatters = self._cell_formatters(vis)
         for idx in self.view_indices:
             key = f"r{self._row_key_seq}"
             self._row_key_seq += 1
             self._row_keys.append(key)
-            table.add_row(*self._row_texts(idx, vis, fmts), key=key)
+            table.add_row(*self._cells(idx, vis), key=key)
         if self.view_indices:
             self._refresh_detail(0)
         else:  # 空视图 (0 命中): 清详情, 免残留上个样本
@@ -2297,13 +2289,12 @@ class ViewApp(App):
             if overflow:
                 del self._row_keys[:overflow]
             vis = self._visible_columns()
-            fmts = self._cell_formatters(vis)
             first = len(self.all_rows) - len(rows)
             for idx in range(max(0, first), len(self.all_rows)):
                 key = f"r{self._row_key_seq}"
                 self._row_key_seq += 1
                 self._row_keys.append(key)
-                table.add_row(*self._row_texts(idx, vis, fmts), key=key)
+                table.add_row(*self._cells(idx, vis), key=key)
             self._update_status()
 
         self.query_one("#table", DataTable).move_cursor(row=len(self.view_indices) - 1)
