@@ -3856,6 +3856,10 @@ async def test_pipe_failure_keeps_data_and_zero_rows_clears_view():
         await _pipe(app, pilot, 'dt filter - "x.a >"')  # 语法错误 → dt 退出码 2
         assert app.source is origin and app._pipe is None
         assert notes[-1][1] == "error" and "x.a >" in notes[-1][0]
+        await _pipe(app, pilot, 'dt filter - "x.a >" | dt head - 5')  # 首段错、末段好: 仍是失败
+        assert app.source is origin and notes[-1][1] == "error" and "x.a >" in notes[-1][0]
+        await _pipe(app, pilot, "jq -c .source | head -3")  # 非对象输出: 占位行, 不崩
+        assert app.source.total == 3 and "not a JSON object" in app.all_rows[0]["_parse_error"]
         await _pipe(app, pilot, 'dt filter - "False"')  # 0 行: 切到空结果并提示
         assert app.source is not origin and app.source.total == 0
         assert app.all_rows == [] and app.query_one("#table").row_count == 0

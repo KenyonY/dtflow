@@ -54,14 +54,21 @@ def _bad_row(line: bytes, err: Exception) -> Dict:
 
 
 def _loads(line: bytes) -> Dict:
-    """orjson 优先, 失败回退标准 json；两者失败时返回可见占位行。"""
+    """orjson 优先, 失败回退标准 json；解析失败或不是 JSON 对象时返回可见占位行。
+
+    非对象 (``42`` / ``"id"`` / ``[1]``, 比如 ``jq '.id'`` 的输出) 不能进表格: 渲染处
+    ``row.items()`` 会炸掉整个 TUI, 而一行"不是对象"本身就是要给人看的信息。
+    """
     try:
-        return orjson.loads(line)
+        obj = orjson.loads(line)
     except orjson.JSONDecodeError:
         try:
-            return json.loads(line)
+            obj = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
             return _bad_row(line, e)
+    if not isinstance(obj, dict):
+        return _bad_row(line, TypeError("not a JSON object"))
+    return obj
 
 
 def _identity(stat_result: os.stat_result) -> Tuple[int, int]:

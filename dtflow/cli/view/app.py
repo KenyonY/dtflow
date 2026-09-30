@@ -35,7 +35,7 @@ from textual.worker import WorkerState
 from ...i18n import t
 from ...utils import clipboard
 from . import render, scan
-from .pipe import error_message, run_pipe, shell_form
+from .pipe import dt_error, error_message, run_pipe, shell_form
 from .scan import ScanSpec, compile_search
 from .source import _MemorySource
 
@@ -3168,7 +3168,8 @@ class ViewApp(App):
             # 取消先于成败: kill 掉的子进程返回码也非 0, 但那不是失败
             self.notify(t("pipe cancelled", "已取消管道"))
             return
-        if error is not None or result.returncode != 0:
+        failed = error is not None or result.returncode != 0 or dt_error(result.stderr_tail)
+        if failed:
             msg = error if error is not None else error_message(result.stderr_tail)
             self.notify(
                 escape(t(f"pipe failed: {msg}", f"管道失败: {msg}")),
@@ -3196,6 +3197,12 @@ class ViewApp(App):
         if summary:
             msg += "\n" + summary
         self.notify(escape(msg), severity=sev, timeout=10)
+
+    def _scope_word(self) -> str:
+        """扫描范围的说法: 管道态扫的是管道结果, 不是原文件。"""
+        if self._pipe is not None:
+            return t("pipe result", "管道结果")
+        return t("full file", "全量")
 
     def _clear_constraints(self) -> None:
         """清空全部约束状态 (搜索/where/列值/排序/子集), 不动数据源与窗口。"""
@@ -3758,8 +3765,8 @@ class ViewApp(App):
             self.notify(
                 escape(
                     t(
-                        f"{label}: {len(matches)} hits (full file) · r clears filters",
-                        f"{label}: {len(matches)} 命中 (全量) · r 清筛选",
+                        f"{label}: {len(matches)} hits ({self._scope_word()}) · r clears filters",
+                        f"{label}: {len(matches)} 命中 ({self._scope_word()}) · r 清筛选",
                     )
                 )
             )
@@ -3943,8 +3950,8 @@ class ViewApp(App):
         self.notify(
             escape(
                 t(
-                    f"{label}: {len(matches)} hits (full file) · r clears filters",
-                    f"{label}: {len(matches)} 命中 (全量) · r 清筛选",
+                    f"{label}: {len(matches)} hits ({self._scope_word()}) · r clears filters",
+                    f"{label}: {len(matches)} 命中 ({self._scope_word()}) · r 清筛选",
                 )
             )
         )
