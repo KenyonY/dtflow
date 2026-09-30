@@ -46,7 +46,7 @@ dt run pipeline.yaml --dry-run                             # validate and print 
 | `sort` | `by`, `desc`, `strict` | sort (whole input) |
 | `shuffle` | `seed` | shuffle (whole input) |
 | `group` | `by`, `agg`, `strict`, `top` | group count (with `pct`) / aggregate; `top` keeps the N largest groups |
-| `join` | `right`, `on` or `left_on`+`right_on`, `inner`, `prefix` | key join, right side loaded from a file |
+| `join` | `right`, `on` or `left_on`+`right_on`, `inner`, `anti`, `prefix`, `strict` | key join (left / inner / anti), right side loaded from a file |
 | `dedupe` | `key`, `similar` | exact / near-duplicate |
 | `sample` / `head` / `tail` | `num`, `seed` | sample / first or last N |
 | `clean` | `strip`, `drop_empty`, `min_len`, `max_len`, `keep`, `drop`, `rename`, `promote`, `add_field`, `fill`, `reorder`, `min_tokens`, `max_tokens`, `model` | same as `dt clean` |

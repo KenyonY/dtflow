@@ -163,15 +163,18 @@ def join_cmd(
     right_on: Optional[str] = None,
     inner: bool = False,
     prefix: Optional[str] = None,
+    anti: bool = False,
+    strict: bool = False,
 ) -> None:
     """
-    键连接: 左表流式, 右表入内存 (右表同键多行只取首条)。默认左连接, --inner 丢弃未命中。
-    合并时左表字段优先; --prefix 则右表全部字段加前缀。
+    键连接: 左表流式, 右表入内存 (右表同键多行只取首条)。默认左连接, --inner 丢弃未命中,
+    --anti 只留未命中 (去测试集污染)。合并时左表字段优先; --prefix 则右表全部字段加前缀。
 
     Examples:
         dt join data.jsonl meta.jsonl --on x.id
         dt join data.jsonl meta.jsonl --left-on x.uid --right-on x.user_id --prefix m_
         dt join data.jsonl labels.jsonl --on x.id --inner -o labeled.jsonl
+        dt join train.jsonl test.jsonl --on "first_user(x)" --anti -o clean.jsonl   # drop rows also in test
     """
     if not (on or (left_on and right_on)):
         die_usage(
@@ -192,7 +195,17 @@ def join_cmd(
     right_rows = load_rows(right)
     result = _guard(
         "join",
-        lambda: ops.join_rows(open_input(left), right_rows, on, left_on, right_on, inner, prefix),
+        lambda: ops.join_rows(
+            open_input(left),
+            right_rows,
+            on,
+            left_on,
+            right_on,
+            inner,
+            prefix,
+            anti=anti,
+            strict=strict,
+        ),
     )
     st, dup = result
     if dup:

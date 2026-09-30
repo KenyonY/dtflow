@@ -129,6 +129,8 @@ def _s_join(st, step):
         step.get("right_on"),
         bool(step.get("inner")),
         step.get("prefix"),
+        anti=bool(step.get("anti")),
+        strict=bool(step.get("strict")),
     )
     return st
 
@@ -461,7 +463,7 @@ _ALLOWED = {
     "sort": {"by", "desc", "strict"},
     "shuffle": {"seed"},
     "group": {"by", "agg", "strict", "top"},
-    "join": {"right", "on", "left_on", "right_on", "inner", "prefix"},
+    "join": {"right", "on", "left_on", "right_on", "inner", "prefix", "anti", "strict"},
     "dedupe": {"key", "similar"},
     "sample": {"num", "seed"},
     "head": {"num"},

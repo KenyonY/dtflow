@@ -1286,8 +1286,17 @@ def join_cmd(
     prefix: Optional[str] = typer.Option(
         None, "--prefix", help=t("Prefix for all right-table fields", "右表字段统一加前缀")
     ),
+    anti: bool = typer.Option(
+        False,
+        "--anti",
+        help=t(
+            "Anti join: keep only left rows with no match on the right (e.g. drop test-set overlap)",
+            "反连接: 只保留右表无匹配的左行 (如去掉与测试集重合的样本)",
+        ),
+    ),
+    strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
 ):
-    _join(left, right, output, on, left_on, right_on, inner, prefix)
+    _join(left, right, output, on, left_on, right_on, inner, prefix, anti, strict)
 
 
 # ============ 数据统计命令 ============

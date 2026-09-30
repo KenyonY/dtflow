@@ -8,6 +8,7 @@ pipeline 共用同一份实现。表达式一律是 Python (见 dtflow.expr), �
 
 from __future__ import annotations
 
+import itertools
 import random as _random
 import statistics
 from collections import Counter, OrderedDict
@@ -351,13 +352,22 @@ def join_rows(
     right_on: Optional[str] = None,
     inner: bool = False,
     prefix: Optional[str] = None,
+    *,
+    anti: bool = False,
+    strict: bool = False,
 ) -> Tuple[StreamingTransformer, int]:
     """左表流式、右表入内存的键连接。返回 (结果流, 右表重复键数)。
 
-    默认左连接 (未命中的左行原样透传), inner 则丢弃。合并时左表字段优先;
-    给 prefix 则右表全部字段加前缀 (可预期, 不做"只对冲突字段加前缀"这种看数据才知道的规则)。
+    默认左连接 (未命中的左行原样透传), inner 则丢弃, anti 则**只留未命中的左行**
+    (去测试集污染 / 找还没处理的样本就是它)。合并时左表字段优先; 给 prefix 则右表全部字段
+    加前缀 (可预期, 不做"只对冲突字段加前缀"这种看数据才知道的规则)。
     右表同键多行只取首条 (一对多留待后续)。
+    左表键求值失败的行按"未命中"处理并计数 (stderr 汇总, 与 filter 一致), strict 则抛出。
     """
+    if inner and anti:
+        raise ValueError(
+            t("--inner and --anti are mutually exclusive", "--inner 与 --anti 只能二选一")
+        )
     lkey = compile_value(left_on or on or "")
     rkey = compile_value(right_on or on or "")
     index: Dict[Any, Row] = {}
@@ -369,14 +379,26 @@ def join_rows(
             continue
         index[hk] = row
 
+    new = st.transform(lambda r: r, raw=True, on_error="raise")
+    err = new._err  # 闭包只捕获计数对象 (见 map_rows)
+
     def merge(row: Row) -> Iterable[Row]:
         try:
-            hk = _hashable(lkey(row))
-        except Exception:
-            hk = None
-        match = index.get(hk) if hk is not None else None
+            match = index.get(_hashable(lkey(row)))
+        except Exception as e:
+            if strict:
+                raise
+            err.count += 1
+            if err.first is None:
+                err.first = t(
+                    f"left key {type(e).__name__}: {e} (row treated as unmatched)",
+                    f"左表键 {type(e).__name__}: {e} (该行按未命中处理)",
+                )
+            match = None
         if match is None:
             return () if inner else (row,)
+        if anti:
+            return ()
         out = dict(row)
         for k, v in match.items():
             if prefix:
@@ -385,7 +407,8 @@ def join_rows(
                 out.setdefault(k, v)
         return (out,)
 
-    return st.flat_map(merge, raw=True), dup
+    new._iterator = itertools.chain.from_iterable(map(merge, st))
+    return new, dup
 
 
 # --------------------------------------------------------------------------- #

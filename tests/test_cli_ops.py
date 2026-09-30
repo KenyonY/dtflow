@@ -177,6 +177,26 @@ class TestRowOps:
         st, _ = ops.join_rows(_st(), right, left_on="x.id", right_on="x.uid", inner=True)
         assert [r["id"] for r in st.collect()] == [2]
 
+    def test_join_anti(self):
+        right = [{"id": 1}, {"id": 3}]
+        st, _ = ops.join_rows(_st(), right, on="x.id", anti=True)
+        rows = st.collect()
+        assert [r["id"] for r in rows] == [2, 4] and rows == [ROWS[1], ROWS[3]]  # 原样透传
+        with pytest.raises(ValueError):
+            ops.join_rows(_st(), right, on="x.id", inner=True, anti=True)
+
+    def test_join_left_key_failure_counted_or_strict(self):
+        # 左表键求值失败: 默认按未命中处理并计数 (不再静默), strict 则抛出
+        right = [{"score": 0.5}]
+        st, _ = ops.join_rows(_st(), right, on="x.score")  # id=4 无 score
+        rows = st.collect()
+        assert len(rows) == 4 and st._err.count == 1 and "左表键" in st._err.first
+        st, _ = ops.join_rows(_st(), right, on="x.score", anti=True)
+        assert [r["id"] for r in st.collect()] == [2, 3, 4]  # 失败行无键 → 未命中 → anti 保留
+        st, _ = ops.join_rows(_st(), right, on="x.score", strict=True)
+        with pytest.raises(AttributeError):
+            st.collect()
+
 
 class TestInferSchema:
     def test_nested(self):
@@ -236,6 +256,18 @@ class TestCli:
         with pytest.raises(typer.Exit) as ei:
             join_cmd(str(data_file), str(right))
         assert ei.value.exit_code == 2
+        join_cmd(str(data_file), str(right), on="x.id", anti=True)
+        assert [r["id"] for r in _out(capsys)] == [2, 3, 4]
+        with pytest.raises(typer.Exit) as ei:
+            join_cmd(str(data_file), str(right), on="x.id", inner=True, anti=True)
+        assert ei.value.exit_code == 2
+        by_score = tmp_path / "s.jsonl"
+        by_score.write_bytes(b'{"score": 0.5, "label": "half"}\n')
+        join_cmd(str(data_file), str(by_score), on="x.score")  # id=4 无 score: 计数, 不静默
+        assert "1 条记录求值失败" in capsys.readouterr().err
+        with pytest.raises(typer.Exit) as ei:
+            join_cmd(str(data_file), str(by_score), on="x.score", strict=True)
+        assert ei.value.exit_code == 1
 
     def test_output_to_file_emits_action(self, data_file, tmp_path, capsys, not_tty):
         out = tmp_path / "o.jsonl"

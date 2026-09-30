@@ -76,6 +76,10 @@ class TestSteps:
         assert rows == [{**ROWS[0], "label": "A"}]
         with pytest.raises(ValueError, match="on"):
             _run({"type": "join", "right": str(right)})
+        anti = _run({"type": "join", "right": str(right), "on": "x.id", "anti": True})
+        assert [r["id"] for r in anti] == [2, 3, 4]
+        with pytest.raises(ValueError):
+            _run({"type": "join", "right": str(right), "on": "x.id", "inner": True, "anti": True})
 
     def test_dedupe_key_list_and_similar_needs_key(self):
         assert len(_run({"type": "dedupe", "key": ["text", "q"]})) == 3

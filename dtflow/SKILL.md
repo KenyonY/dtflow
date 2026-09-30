@@ -105,6 +105,7 @@ dt map    d.jsonl "x.text = x.text.strip(); del x.debug"                # 语句
 dt sort   d.jsonl --by "(x.source, -x.score)"
 dt group  d.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"  # g=组内行列表, key, n
 dt join   d.jsonl meta.jsonl --on x.id --prefix m_
+dt join   train.jsonl test.jsonl --on "first_user(x)" --anti           # 去掉与测试集重合的样本
 ```
 
 - 求值失败的行（缺字段、`None > 0.5`）默认不中断并在 stderr 汇总一次：filter 判不匹配、select 该项置 null、map 该行原样保留、sort 排末尾、group --agg 该项置 null（一进一出的命令不会静默少行）；`--strict` 首错即退出码 1
@@ -124,7 +125,7 @@ dt join   d.jsonl meta.jsonl --on x.id --prefix m_
 | `shuffle FILE [--seed]` | 打乱 | 全量 |
 | `group FILE --by EXPR [--agg SPEC] [--top N]` | 计数 `{"key","count","pct"}` 降序 / 自定义聚合；`--top` 只留最大 N 组 | 计数流式 |
 | `describe FILE EXPR...` | 表达式数值分布：n/null/min/max/mean/std/p25..p99，TTY 附直方图（view `S` 快照的 CLI 版） | 全量 |
-| `join LEFT RIGHT --on EXPR [--inner --prefix P]` | 左连接（左表流式，右表入内存，左表字段优先） | 右表 |
+| `join LEFT RIGHT --on EXPR [--inner\|--anti] [--prefix P]` | 左连接（默认）/ 内连接 / 反连接 `--anti`（只留右表无匹配的左行：去测试集污染、找未处理样本）；左表流式，右表入内存，左表字段优先 | 右表 |
 | `stats FILE --schema` | 嵌套 schema 推断 | 前 1000 行 |
 
 所有数据命令：`FILE` 可为 `-`；无 `-o` 写 stdout（终端直出只预览前 50 行）；`clean`/`dedupe` 用 `-i` 原地写回。`.jsonl.gz` 透明读写。

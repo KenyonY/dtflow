@@ -29,6 +29,7 @@ dt group   data.jsonl --by x.meta.source                              # {"key","
 dt group   data.jsonl --by "roles(x)" --top 10                        # ten most common role signatures
 dt group   data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g),ids=[r.id for r in g][:3]"
 dt join    data.jsonl meta.jsonl --on x.id --prefix m_                # left join, right side in memory
+dt join    train.jsonl test.jsonl --on "first_user(x)" --anti         # drop training rows whose prompt is in the test set
 dt stats   data.jsonl --schema                                        # nested schema: see the shape before writing expressions
 
 dt filter d.jsonl "x.score>0.5" | dt select - "id,n=len(x.messages)" | dt sort - --by x.n --desc | dt head - 5
@@ -46,7 +47,7 @@ cat big.jsonl.gz | dt filter - "x.lang=='zh'" | dt transform - --preset=openai_c
 | `sort FILE --by EXPR [--desc]` | sort; rows whose key fails go last | whole input |
 | `shuffle FILE [--seed]` | uniform shuffle | whole input |
 | `group FILE --by EXPR [--agg SPEC] [--top N]` | count per key with its share `pct` (sorted by count), or custom aggregates with `g` (rows of the group), `key`, `n`, `mean`, `median`; `--top` keeps the N largest groups | counts stream |
-| `join LEFT RIGHT --on EXPR [--left-on/--right-on] [--inner] [--prefix P]` | left join, left side streams, right side in memory; left fields win on conflict; duplicate right keys keep the first | right side |
+| `join LEFT RIGHT --on EXPR [--left-on/--right-on] [--inner\|--anti] [--prefix P]` | left join (default), inner join, or anti join (keep left rows with **no** match: drop test-set overlap, find unprocessed rows); left side streams, right side in memory; left fields win on conflict; duplicate right keys keep the first; a failing left key counts as unmatched (summarized on stderr, `--strict` to fail) | right side |
 | `stats FILE --schema [--sample N]` | nested schema inferred from the first N rows (types, non-null rates, list element types, low-cardinality values) | N rows |
 
 Failure policy (`--strict` to fail fast instead): `filter` drops the row, `select` sets the item to `null`, `map` keeps the row, `sort` puts the row last, `group --agg` sets the item to `null`. One summary line on stderr at the end.
