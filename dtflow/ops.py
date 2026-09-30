@@ -250,21 +250,29 @@ _AGG_ALLOWED = frozenset({"g", "key", "n", "mean", "median"})
 
 
 def group_rows(
-    st: StreamingTransformer, by: str, agg: Optional[str] = None, strict: bool = False
+    st: StreamingTransformer,
+    by: str,
+    agg: Optional[str] = None,
+    strict: bool = False,
+    top: Optional[int] = None,
 ) -> StreamingTransformer:
     """按表达式分组。
 
-    无 agg: 流式计数, 输出 {"key", "count"} 按 count 降序。
+    无 agg: 流式计数, 输出 {"key", "count", "pct"} 按 count 降序 (pct 以全部输入行为分母,
+    键求值失败的行也在分母里, 所以各组 pct 之和可能不到 1, 差额即 stderr 汇总的失败数)。
     有 agg (``n=len(g),avg=mean(len(r.text) for r in g)``): 按组收集行, 每个表达式可用
     ``g`` (该组行列表)、``key``、``n``、``mean``/``median``。
+    top: 只保留前 N 组 (计数模式按 count, agg 模式按 n)。
     """
     keyfn = compile_value(by)
     if agg is None:
         counter: Counter = Counter()
         keys: Dict[Any, Any] = {}
         failed = 0
+        seen = 0
         first_err = None
         for row in st:
+            seen += 1
             try:
                 k = keyfn(row)
             except Exception as e:
@@ -276,7 +284,10 @@ def group_rows(
             hk = _hashable(k)
             keys.setdefault(hk, k)
             counter[hk] += 1
-        rows = [{"key": keys[hk], "count": n} for hk, n in counter.most_common()]
+        rows = [
+            {"key": keys[hk], "count": n, "pct": round(n / seen, 4)}
+            for hk, n in counter.most_common(top)
+        ]
         new = _materialize(st, rows)
         new._error_count += failed
         new._first_error = new._first_error or first_err
@@ -308,6 +319,8 @@ def group_rows(
         keys.setdefault(hk, k)
         groups.setdefault(hk, []).append(row)
     out: List[Row] = []
+    if top is not None:
+        groups = OrderedDict(sorted(groups.items(), key=lambda kv: -len(kv[1]))[:top])
     for hk, members in groups.items():
         ns = {**_AGG_NS, "g": ListWrapper(members), "key": keys[hk], "n": len(members)}
         rec: Row = {"key": keys[hk], "n": len(members)}

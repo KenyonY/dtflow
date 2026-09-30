@@ -623,9 +623,34 @@ class TestMessagesTokenStats:
 
         stats = messages_token_stats(messages_data)
 
-        # user + assistant + system 应该等于或接近 total
-        role_sum = stats["user_tokens"] + stats["assistant_tokens"] + stats["system_tokens"]
+        # user + assistant + system + tool 应该等于 total
+        role_sum = (
+            stats["user_tokens"]
+            + stats["assistant_tokens"]
+            + stats["system_tokens"]
+            + stats["tool_tokens"]
+        )
         assert role_sum == stats["total_tokens"]
+
+    def test_messages_token_stats_counts_tool_role(self):
+        pytest.importorskip("tiktoken")
+
+        data = [
+            {
+                "messages": [
+                    {"role": "user", "content": "weather in Beijing?"},
+                    {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+                    {"role": "tool", "content": '{"temp": 22, "unit": "C"}', "tool_call_id": "c1"},
+                    {"role": "assistant", "content": "22 C"},
+                ]
+            }
+        ]
+        stats = messages_token_stats(data)
+        assert stats["tool_tokens"] > 0
+        assert (
+            stats["tool_tokens"] + stats["user_tokens"] + stats["assistant_tokens"]
+            == (stats["total_tokens"])
+        )
 
 
 if __name__ == "__main__":

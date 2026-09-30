@@ -16,6 +16,9 @@ CLI 命令统一导出入口
 # 清洗命令
 from .clean import clean, dedupe
 
+# 统计命令
+from .describe import describe
+
 # 评估命令
 from .eval import eval
 
@@ -49,8 +52,6 @@ from .skill import install_skill, skill_status, uninstall_skill
 
 # 切分命令
 from .split import split
-
-# 统计命令
 from .stats import stats, token_stats
 
 # 转换命令
@@ -68,6 +69,7 @@ __all__ = [
     # 转换
     "transform",
     # 统计
+    "describe",
     "stats",
     "token_stats",
     # 清洗

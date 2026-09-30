@@ -25,7 +25,8 @@ dt map     data.jsonl "x.text = x.text.strip(); del x.debug"          # mutate i
 dt explode data.jsonl --field messages --index-as turn                # one row per list element
 dt sort    data.jsonl --by "len(x.messages)" --desc
 dt shuffle data.jsonl --seed 42 -o shuffled.jsonl
-dt group   data.jsonl --by x.meta.source                              # {"key","count"} sorted by count
+dt group   data.jsonl --by x.meta.source                              # {"key","count","pct"} sorted by count
+dt group   data.jsonl --by "roles(x)" --top 10                        # ten most common role signatures
 dt group   data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g),ids=[r.id for r in g][:3]"
 dt join    data.jsonl meta.jsonl --on x.id --prefix m_                # left join, right side in memory
 dt stats   data.jsonl --schema                                        # nested schema: see the shape before writing expressions
@@ -44,7 +45,7 @@ cat big.jsonl.gz | dt filter - "x.lang=='zh'" | dt transform - --preset=openai_c
 | `explode FILE --field F [--as NAME] [--index-as I]` | one row per element of a list field; non-list rows pass through | streaming |
 | `sort FILE --by EXPR [--desc]` | sort; rows whose key fails go last | whole input |
 | `shuffle FILE [--seed]` | uniform shuffle | whole input |
-| `group FILE --by EXPR [--agg SPEC]` | count per key (sorted by count) or custom aggregates with `g` (rows of the group), `key`, `n`, `mean`, `median` | counts stream |
+| `group FILE --by EXPR [--agg SPEC] [--top N]` | count per key with its share `pct` (sorted by count), or custom aggregates with `g` (rows of the group), `key`, `n`, `mean`, `median`; `--top` keeps the N largest groups | counts stream |
 | `join LEFT RIGHT --on EXPR [--left-on/--right-on] [--inner] [--prefix P]` | left join, left side streams, right side in memory; left fields win on conflict; duplicate right keys keep the first | right side |
 | `stats FILE --schema [--sample N]` | nested schema inferred from the first N rows (types, non-null rates, list element types, low-cardinality values) | N rows |
 
@@ -139,7 +140,10 @@ dt stats data.jsonl --full                                # value distributions,
 dt stats data.jsonl --full --field=category --expand=tags
 dt stats data.jsonl --full --expand='messages[*].role'
 
-dt token-stats data.jsonl --field=messages --model=gpt-4  # per-role token distribution
+dt describe data.jsonl "turns(x)" "chars(x)" "x.score"    # n/null/min/max/mean/std/p25..p99 per expression, histogram in a terminal
+dt --format=json describe data.jsonl "x.score" | jq '.[0].p99'
+
+dt token-stats data.jsonl --field=messages --model=gpt-4  # per-role token distribution (user/assistant/system/tool)
 dt token-stats data.jsonl --field=messages[-1].content
 dt token-stats data.jsonl --field=text --detailed --workers=4
 
@@ -151,6 +155,22 @@ dt diff v1/train.jsonl v2/train.jsonl
 dt diff a.jsonl b.jsonl --key=meta.uuid                   # match rows on a (nested) key
 
 dt history processed.jsonl                                # lineage sidecar written by dt view export or the Python API
+```
+
+`stats --full` reports `null_rate` as the share of empty values (0-1); `--expand` reports `elements` (total list elements) instead.
+
+### Conversation structure recipes
+
+The row helpers turn "how are my conversations shaped?" into ordinary `group` / `describe` calls; no dedicated command needed.
+
+```bash
+dt describe chat.jsonl "turns(x)" "chars(x)"                 # turns / characters per sample
+dt group chat.jsonl --by "roles(x)"                          # role signatures (u→a, sys→u→a→t→a …) with pct
+dt group chat.jsonl --by "bool(calls(x))"                    # share of samples with tool calls
+dt group chat.jsonl --by "calls(x)" --top 10                 # most common tool combinations
+dt group chat.jsonl --by "x.messages[-1].role"               # who speaks last
+dt filter chat.jsonl "search(x, 're:refund|退款') and turns(x)>=4" | dt describe - "chars(x)"
+dt group chat.jsonl --by x.lang --agg "avg_turns=mean(turns(r) for r in g),tool_rate=mean(bool(calls(r)) for r in g)"
 ```
 
 ## Exporting to a training framework

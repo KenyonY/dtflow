@@ -45,7 +45,7 @@ dt run pipeline.yaml --dry-run                             # validate and print 
 | `explode` | `field`, `as`, `index_as` | one row per list element |
 | `sort` | `by`, `desc`, `strict` | sort (whole input) |
 | `shuffle` | `seed` | shuffle (whole input) |
-| `group` | `by`, `agg`, `strict` | group count / aggregate |
+| `group` | `by`, `agg`, `strict`, `top` | group count (with `pct`) / aggregate; `top` keeps the N largest groups |
 | `join` | `right`, `on` or `left_on`+`right_on`, `inner`, `prefix` | key join, right side loaded from a file |
 | `dedupe` | `key`, `similar` | exact / near-duplicate |
 | `sample` / `head` / `tail` | `num`, `seed` | sample / first or last N |

@@ -139,18 +139,18 @@ def group_cmd(
     output: Optional[str] = None,
     agg: Optional[str] = None,
     strict: bool = False,
+    top: Optional[int] = None,
 ) -> None:
     """
-    按表达式分组。无 --agg 流式计数 ({"key","count"} 按 count 降序);
-    有 --agg 按组收集, 表达式里可用 g (组内行列表) / key / n / mean / median。
+    按表达式分组。无 --agg 流式计数 ({"key","count","pct"} 按 count 降序);
+    有 --agg 按组收集, 表达式里可用 g (组内行列表) / key / n / mean / median。--top N 只留前 N 组。
 
     Examples:
         dt group data.jsonl --by x.meta.source
-        dt group data.jsonl --by "len(x.messages)"
+        dt group data.jsonl --by "roles(x)" --top 10
         dt group data.jsonl --by x.label --agg "avg_len=mean(len(r.text) for r in g),ids=[r.id for r in g][:3]"
-        dt group data.jsonl --by x.label | dt sort - --by x.count --desc | dt head - 5
     """
-    st = _guard("group", lambda: ops.group_rows(open_input(filename), by, agg, strict))
+    st = _guard("group", lambda: ops.group_rows(open_input(filename), by, agg, strict, top))
     _emit(st, output, "group", filename)
 
 

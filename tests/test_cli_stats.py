@@ -2,6 +2,8 @@
 Tests for CLI stats commands.
 """
 
+import json
+
 import pytest
 import typer
 
@@ -94,6 +96,14 @@ class TestStatsBasic:
 
 
 class TestComputeFieldStats:
+    def test_null_rate_is_null_share_float(self):
+        # null_rate 是空值占比 (0-1), 不是带 % 的非空率字符串
+        data = [{"a": 1}, {"a": None}, {"a": ""}, {"a": 4}]
+        (stat,) = _compute_field_stats(data, top=3)
+        assert stat["non_null"] == 2 and stat["null_rate"] == 0.5
+        (stat,) = _compute_field_stats(data, top=3, fields=["a"])
+        assert stat["null_rate"] == 0.5
+
     """Test _compute_field_stats function."""
 
     def test_compute_field_stats_basic(self, sample_data_file):
@@ -204,6 +214,21 @@ class TestQuickStats:
         captured = capsys.readouterr()
         # Should show field count (rendered to stderr via rich)
         assert "字段" in captured.err or "field" in captured.err.lower()
+
+    def test_quick_stats_ndjson_tsv_gz_have_fields(self, tmp_path, capsys):
+        """样本读取走 open_input, 不再按后缀分支: .ndjson/.tsv/.jsonl.gz 也能推断字段。"""
+        import gzip
+
+        rows = b'{"a": 1, "b": "x"}\n{"a": 2, "b": "y"}\n'
+        (tmp_path / "d.ndjson").write_bytes(rows)
+        with gzip.open(tmp_path / "d.jsonl.gz", "wb") as fh:
+            fh.write(rows)
+        (tmp_path / "d.tsv").write_text("a\tb\n1\tx\n2\ty\n")
+        for name in ("d.ndjson", "d.jsonl.gz", "d.tsv"):
+            _quick_stats(tmp_path / name, fmt="json")
+            payload = json.loads(capsys.readouterr().out)
+            assert [f["field"] for f in payload["fields"]] == ["a", "b"], name
+            assert payload["total"] == 2
 
     def test_quick_stats_csv(self, tmp_path, capsys):
         """Test quick stats for CSV file."""

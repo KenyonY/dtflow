@@ -15,7 +15,7 @@ from .common import (
     _pad_to_width,
     _truncate,
 )
-from .output import die, emit_json, log, log_panel, log_table, resolve_format
+from .output import die, die_io_error, emit_json, log, log_panel, log_table, resolve_format
 
 
 def stats(
@@ -184,51 +184,14 @@ def _quick_stats(filepath: Path, fmt: str = "table") -> None:
     # 快速统计行数（_count_rows_fast 覆盖所有支持的格式；None = 文件损坏/无法解析）
     total = _count_rows_fast(str(filepath))
 
-    # 读取前几条数据推断字段结构
-    sample_data = []
-    sample_size = 5
+    # 读取前几条数据推断字段结构: 走与其它命令相同的 open_input (.ndjson/.tsv/.gz 一并覆盖),
+    # 惰性取前 5 行, 不因格式各写一套分支
+    from .pipe import open_input
+
     try:
-        if ext in (".flaxkv", ".kv") or _is_flaxkv_path(filepath):
-            # FlaxList：O(1) 索引访问，免加载
-            from ..storage.io import _open_flaxlist
-
-            with _open_flaxlist(filepath) as lst:
-                n = min(sample_size, len(lst))
-                sample_data = lst[:n] if n > 0 else []
-        elif ext == ".jsonl":
-            with open(filepath, "rb") as f:
-                for i, line in enumerate(f):
-                    if i >= sample_size:
-                        break
-                    line = line.strip()
-                    if line:
-                        sample_data.append(orjson.loads(line))
-        elif ext == ".csv":
-            import polars as pl
-
-            df = pl.scan_csv(str(filepath)).head(sample_size).collect()
-            sample_data = df.to_dicts()
-        elif ext == ".parquet":
-            import polars as pl
-
-            df = pl.scan_parquet(str(filepath)).head(sample_size).collect()
-            sample_data = df.to_dicts()
-        elif ext in (".arrow", ".feather"):
-            import polars as pl
-
-            df = pl.scan_ipc(str(filepath)).head(sample_size).collect()
-            sample_data = df.to_dicts()
-        elif ext in (".xlsx", ".xls"):
-            import polars as pl
-
-            sample_data = pl.read_excel(str(filepath)).head(sample_size).to_dicts()
-        elif ext == ".json":
-            with open(filepath, "rb") as f:
-                data = orjson.loads(f.read())
-                if isinstance(data, list):
-                    sample_data = data[:sample_size]
-    except Exception:
-        pass
+        sample_data = open_input(str(filepath)).head(5).collect()
+    except Exception as e:
+        die_io_error(e, operation=t("Read", "读取"), path=str(filepath))
 
     # 分析字段结构
     fields = []
@@ -431,7 +394,7 @@ def _compute_field_stats(
             stat = {
                 "field": field,
                 "non_null": non_null_count,
-                "null_rate": f"{non_null_count / total * 100:.1f}%",
+                "null_rate": round(1 - non_null_count / total, 4),
                 "type": field_type,
             }
 
@@ -505,7 +468,7 @@ def _compute_field_stats(
             stat = {
                 "field": field_spec,
                 "non_null": non_null_count,
-                "null_rate": f"{non_null_count / total * 100:.1f}%",
+                "null_rate": round(1 - non_null_count / total, 4),
                 "type": field_type,
                 "is_expanded": is_expanded,
             }
@@ -617,7 +580,7 @@ def _print_stats(filename: str, total: int, field_stats: List[Dict[str, Any]]) -
             n_el = stat["elements"]
             non_null_rate = t(f"elements: {n_el}", f"总元素: {n_el}")
         elif "null_rate" in stat:
-            non_null_rate = stat["null_rate"]
+            non_null_rate = f"{(1 - stat['null_rate']) * 100:.1f}%"
         else:
             non_null_rate = f"{stat['non_null'] / total * 100:.0f}%"
         unique = str(stat.get("unique", "-"))
@@ -888,6 +851,7 @@ def _print_messages_token_stats(stats: Dict[str, Any], detailed: bool) -> None:
             ("User", "user_tokens"),
             ("Assistant", "assistant_tokens"),
             ("System", "system_tokens"),
+            ("Tool", "tool_tokens"),
         ]:
             tokens = stats.get(key, 0)
             pct = tokens / total * 100 if total > 0 else 0

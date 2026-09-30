@@ -131,7 +131,21 @@ class TestRowOps:
 
     def test_group_count(self):
         rows = ops.group_rows(_st(), "x.s").collect()
-        assert rows == [{"key": "wiki", "count": 3}, {"key": "web", "count": 1}]
+        assert rows == [
+            {"key": "wiki", "count": 3, "pct": 0.75},
+            {"key": "web", "count": 1, "pct": 0.25},
+        ]
+
+    def test_group_top_and_pct_denominator(self, data_file, capsys, not_tty):
+        # --top 只留前 N 组; 键求值失败的行仍在 pct 分母里 (stderr 汇总失败数)
+        group_cmd(str(data_file), by="x.s", top=1)
+        rows = _out(capsys)
+        assert rows == [{"key": "wiki", "count": 3, "pct": 0.75}]
+        group_cmd(str(data_file), by="x.s if x.id != 1 else x.nope")
+        rows = _out(capsys)
+        assert sum(r["pct"] for r in rows) == 0.75 and sum(r["count"] for r in rows) == 3
+        group_cmd(str(data_file), by="x.s", agg="n=len(g)", top=1)
+        assert _out(capsys) == [{"key": "wiki", "n": 3}]
 
     def test_group_unhashable_key(self):
         rows = ops.group_rows(_st(), "x.tags").collect()
@@ -212,7 +226,7 @@ class TestCli:
         shuffle_cmd(str(data_file), seed=1)
         assert sorted(r["id"] for r in _out(capsys)) == [1, 2, 3, 4]
         group_cmd(str(data_file), "x.s")
-        assert _out(capsys)[0] == {"key": "wiki", "count": 3}
+        assert _out(capsys)[0] == {"key": "wiki", "count": 3, "pct": 0.75}
 
     def test_join_cli(self, data_file, tmp_path, capsys, not_tty):
         right = tmp_path / "r.jsonl"

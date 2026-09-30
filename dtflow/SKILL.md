@@ -81,6 +81,7 @@ Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run �
 **从"未知数据"到"训练文件"的路径：**
 
 1. **探结构** — `dt stats data.jsonl --schema`（嵌套类型/非空率/list 元素/低基数取值）或 `dt head data.jsonl`
+   - **看分布** — `dt describe d.jsonl "turns(x)" "chars(x)" "x.score"`（分位数+直方图）、`dt group d.jsonl --by "roles(x)"`（角色序列占比）、`dt group d.jsonl --by "bool(calls(x))"`（带工具调用的占比）；`stats --full` 的 `null_rate` 是空值占比 (0-1)
 2. **探内容** — `dt group data.jsonl --by x.<key>` 看分布；`dt filter data.jsonl "<表达式>" | dt head -` 抽样看命中
 3. **小样本跑通** — 先在 100 条上验证转换逻辑，避免大文件反复
 4. **dry-run 预演** — `... --dry-run`，确认影响范围
@@ -121,7 +122,8 @@ dt join   d.jsonl meta.jsonl --on x.id --prefix m_
 | `explode FILE --field F [--as NAME --index-as I]` | list 展开成多行 | 流式 |
 | `sort FILE --by EXPR [--desc]` | 排序，键求值失败的行排最后 | 全量 |
 | `shuffle FILE [--seed]` | 打乱 | 全量 |
-| `group FILE --by EXPR [--agg SPEC]` | 计数 `{"key","count"}` 降序 / 自定义聚合 | 计数流式 |
+| `group FILE --by EXPR [--agg SPEC] [--top N]` | 计数 `{"key","count","pct"}` 降序 / 自定义聚合；`--top` 只留最大 N 组 | 计数流式 |
+| `describe FILE EXPR...` | 表达式数值分布：n/null/min/max/mean/std/p25..p99，TTY 附直方图（view `S` 快照的 CLI 版） | 全量 |
 | `join LEFT RIGHT --on EXPR [--inner --prefix P]` | 左连接（左表流式，右表入内存，左表字段优先） | 右表 |
 | `stats FILE --schema` | 嵌套 schema 推断 | 前 1000 行 |
 

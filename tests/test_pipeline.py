@@ -62,8 +62,11 @@ class TestSteps:
         ]
         assert sorted(r["id"] for r in _run({"type": "shuffle", "seed": 1})) == [1, 2, 3, 4]
         assert _run({"type": "group", "by": "x.m.s"}) == [
-            {"key": "w", "count": 2},
-            {"key": "b", "count": 2},
+            {"key": "w", "count": 2, "pct": 0.5},
+            {"key": "b", "count": 2, "pct": 0.5},
+        ]
+        assert _run({"type": "group", "by": "x.m.s", "top": 1}) == [
+            {"key": "w", "count": 2, "pct": 0.5}
         ]
 
     def test_join(self, tmp_path):

@@ -9,6 +9,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from .i18n import t
 from .utils.field_path import get_field_with_spec
+from .utils.stats import percentile as _percentile_f
+from .utils.stats import std as _std_f
 
 # 延迟导入，避免未安装时报错
 _tokenizer_cache = {}
@@ -301,23 +303,11 @@ def token_filter(
 
 
 def _percentile(sorted_data: List[int], p: float) -> int:
-    """计算百分位数"""
-    n = len(sorted_data)
-    if n == 0:
-        return 0
-    idx = (n - 1) * p / 100
-    lower = int(idx)
-    upper = min(lower + 1, n - 1)
-    weight = idx - lower
-    return int(sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight)
+    """计算百分位数 (取整; 实现在 utils.stats)"""
+    return int(_percentile_f(sorted_data, p))
 
 
-def _std(counts: List[int], avg: float) -> float:
-    """计算标准差"""
-    if len(counts) < 2:
-        return 0.0
-    variance = sum((x - avg) ** 2 for x in counts) / len(counts)
-    return variance**0.5
+_std = _std_f
 
 
 def _count_item_tokens(args: tuple) -> int:
@@ -456,7 +446,7 @@ def _count_messages_tokens(
     backend: str,
 ) -> Dict[str, int]:
     """统计 messages 中各角色的 token 数"""
-    role_tokens = {"user": 0, "assistant": 0, "system": 0, "other": 0}
+    role_tokens = {"user": 0, "assistant": 0, "system": 0, "tool": 0, "other": 0}
     turn_tokens = []
 
     for msg in messages:
@@ -480,6 +470,7 @@ def _count_messages_tokens(
         "user": role_tokens["user"],
         "assistant": role_tokens["assistant"],
         "system": role_tokens["system"],
+        "tool": role_tokens["tool"],
         "turns": len(turn_tokens),
         "avg_turn": total // len(turn_tokens) if turn_tokens else 0,
         "max_turn": max(turn_tokens) if turn_tokens else 0,
@@ -697,6 +688,7 @@ def messages_token_stats(
         "user_tokens": sum(s["user"] for s in all_stats),
         "assistant_tokens": sum(s["assistant"] for s in all_stats),
         "system_tokens": sum(s["system"] for s in all_stats),
+        "tool_tokens": sum(s["tool"] for s in all_stats),
         "avg_tokens": int(avg),
         "std_tokens": _std(totals, avg),
         "min_tokens": min(totals),

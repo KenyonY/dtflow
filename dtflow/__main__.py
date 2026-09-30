@@ -66,6 +66,7 @@ import typer.rich_utils as _rich_utils
 from .cli.commands import clean as _clean
 from .cli.commands import concat as _concat
 from .cli.commands import dedupe as _dedupe
+from .cli.commands import describe as _describe
 from .cli.commands import diff as _diff
 from .cli.commands import eval as _eval
 from .cli.commands import explode_cmd as _explode
@@ -1235,8 +1236,11 @@ def group_cmd(
         ),
     ),
     strict: bool = typer.Option(False, "--strict", help=_STRICT_HELP),
+    top: Optional[int] = typer.Option(
+        None, "--top", help=t("Keep only the N largest groups", "只保留最大的 N 组")
+    ),
 ):
-    _group(filename, by, output, agg, strict)
+    _group(filename, by, output, agg, strict, top)
 
 
 @app.command(
@@ -1399,6 +1403,40 @@ def token_stats(
     ),
 ):
     _token_stats(filename, field, model, detailed, workers)
+
+
+@app.command(
+    help=t(
+        "Numeric distribution of one or more expressions: n / null / min / max / mean / std / "
+        "p25 p50 p75 p90 p99, plus a histogram in a terminal (dt view's S snapshot, for the CLI)\n\n"
+        "Non-numeric, None and failing rows count as null. Non-TTY output is a JSON array.\n\n"
+        "Examples:\n"
+        '    dt describe chat.jsonl "turns(x)" "chars(x)"          # turns / characters per sample\n'
+        '    dt describe data.jsonl "x.score" "len(x.messages[-1].content)"\n'
+        '    dt filter d.jsonl "search(x, \'refund\')" | dt describe - "chars(x)"\n'
+        '    dt --format=json describe data.jsonl "x.score" | jq ".[0].p99"',
+        "一个或多个表达式的数值分布: n / null / min / max / mean / std / p25 p50 p75 p90 p99, "
+        "终端里附直方图 (dt view 的 S 列快照的 CLI 版)\n\n"
+        "非数值、None、求值失败的行计入 null。非 TTY 输出 JSON 数组。\n\n"
+        "示例:\n"
+        '    dt describe chat.jsonl "turns(x)" "chars(x)"          # 每条样本的轮数 / 字符数分布\n'
+        '    dt describe data.jsonl "x.score" "len(x.messages[-1].content)"\n'
+        '    dt filter d.jsonl "search(x, \'退款\')" | dt describe - "chars(x)"\n'
+        '    dt --format=json describe data.jsonl "x.score" | jq ".[0].p99"',
+    )
+)
+def describe(
+    filename: str = typer.Argument(
+        ..., help=t("Input file path; - for stdin", "输入文件路径; - 表示 stdin")
+    ),
+    exprs: List[str] = typer.Argument(
+        ...,
+        metavar="EXPR...",
+        help=t("Expressions (row is x), numeric", "表达式 (当前行 x), 取数值"),
+    ),
+    bins: int = typer.Option(10, "--bins", help=t("Histogram buckets", "直方图桶数")),
+):
+    _describe(filename, exprs, bins=bins)
 
 
 @app.command(

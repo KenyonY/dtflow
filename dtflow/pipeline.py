@@ -107,7 +107,9 @@ def _s_shuffle(st, step):
 
 
 def _s_group(st, step):
-    return ops.group_rows(st, str(_need(step, "by")), step.get("agg"), bool(step.get("strict")))
+    return ops.group_rows(
+        st, str(_need(step, "by")), step.get("agg"), bool(step.get("strict")), step.get("top")
+    )
 
 
 def _s_join(st, step):
@@ -458,7 +460,7 @@ _ALLOWED = {
     "explode": {"field", "as", "index_as"},
     "sort": {"by", "desc", "strict"},
     "shuffle": {"seed"},
-    "group": {"by", "agg", "strict"},
+    "group": {"by", "agg", "strict", "top"},
     "join": {"right", "on", "left_on", "right_on", "inner", "prefix"},
     "dedupe": {"key", "similar"},
     "sample": {"num", "seed"},
