@@ -448,11 +448,6 @@ def _deserialize_complex_fields(data: List[Dict[str, Any]]) -> List[Dict[str, An
     return result
 
 
-def _clean_null_fields(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """清理 Polars 添加的 null 字段，保持原始数据结构"""
-    return [{k: v for k, v in item.items() if v is not None} for item in data]
-
-
 # ============ Streaming Utilities ============
 
 
@@ -590,37 +585,28 @@ def _stream_sample(
 
 
 def _stream_head_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
-    """JSONL 流式读取前 N 行（使用 Polars ndjson）"""
-    try:
-        df = pl.scan_ndjson(filepath).head(num).collect()
-        return _clean_null_fields(df.to_dicts())
-    except Exception as e:
-        # 回退到 Python 实现
-        import sys
+    """JSONL 读取前 N 行 (orjson 逐行, 读够即停)。
 
-        print(
-            t(
-                f"[Warning] Polars ndjson parsing failed, falling back to Python: {type(e).__name__}",
-                f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
-            ),
-            file=sys.stderr,
-        )
-
-        result: List[Dict[str, Any]] = []
-        skipped: List[int] = []
-        with _open_bin(filepath, "rb") as f:
-            for i, line in enumerate(f):
-                line = line.strip()
-                if line:
-                    try:
-                        result.append(orjson.loads(line))
-                    except orjson.JSONDecodeError:
-                        skipped.append(i + 1)  # 跳过无效行, 但结束时要报出来
-                        continue
-                    if len(result) >= num:
-                        break
-        _warn_skipped_lines(filepath, skipped)
-        return result
+    不走 Polars ndjson: 它按列推断统一 schema, 而 JSONL 每行结构可以不同 —— 同一字段
+    有的行是字符串有的行是 list (OpenAI 多模态 content) 时, list 会被悄悄转成 JSON 字符串;
+    嵌套 struct 会把别的行才有的键以 null 补进来; 清理这些 null 又会误删数据里真的 null。
+    预览/导出都是原样输出记录, 改数据不可接受。
+    """
+    result: List[Dict[str, Any]] = []
+    skipped: List[int] = []
+    with _open_bin(filepath, "rb") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if line:
+                try:
+                    result.append(orjson.loads(line))
+                except orjson.JSONDecodeError:
+                    skipped.append(i + 1)  # 跳过无效行, 但结束时要报出来
+                    continue
+                if len(result) >= num:
+                    break
+    _warn_skipped_lines(filepath, skipped)
+    return result
 
 
 def _stream_head_csv(filepath: Path, num: int, separator: str = ",") -> List[Dict[str, Any]]:
@@ -649,45 +635,23 @@ def _stream_head_excel(filepath: Path, num: int) -> List[Dict[str, Any]]:
 
 
 def _stream_tail_jsonl(filepath: Path, num: int) -> List[Dict[str, Any]]:
-    """JSONL 流式读取后 N 行（使用 Polars ndjson）"""
-    try:
-        df = pl.scan_ndjson(filepath).tail(num).collect()
-        return _clean_null_fields(df.to_dicts())
-    except Exception as e:
-        # 回退到 Python 两遍遍历实现
-        import sys
+    """JSONL 读取后 N 行: 一遍扫描只留最后 N 个原始行, 再解析这 N 行 (不用 Polars, 原因同
+    _stream_head_jsonl)。空行/坏行也占位, 与"文件最后 N 行"的直觉一致; 坏行跳过并报出来。"""
+    from collections import deque
 
-        print(
-            t(
-                f"[Warning] Polars ndjson parsing failed, falling back to Python: {type(e).__name__}",
-                f"[Warning] Polars ndjson 解析失败，回退到 Python 实现: {type(e).__name__}",
-            ),
-            file=sys.stderr,
-        )
-
-        total_lines = 0
-        with _open_bin(filepath, "rb") as f:
-            for _ in f:
-                total_lines += 1
-
-        # 行数不足 N 时也走同一个循环, 不再抄近路转 _load_jsonl —— 那条路遇到坏行是抛错,
-        # 会变成"4 行的文件 tail 报错、400 行的文件 tail 只是跳过"这种同因不同果。
-        skip_count = max(0, total_lines - num)
-        result: List[Dict[str, Any]] = []
-        skipped: List[int] = []
-        with _open_bin(filepath, "rb") as f:
-            for i, line in enumerate(f):
-                if i < skip_count:
-                    continue
-                line = line.strip()
-                if line:
-                    try:
-                        result.append(orjson.loads(line))
-                    except orjson.JSONDecodeError:
-                        skipped.append(i + 1)
-                        continue
-        _warn_skipped_lines(filepath, skipped)
-        return result
+    with _open_bin(filepath, "rb") as f:
+        last = deque(enumerate(f), maxlen=num)
+    result: List[Dict[str, Any]] = []
+    skipped: List[int] = []
+    for i, line in last:
+        line = line.strip()
+        if line:
+            try:
+                result.append(orjson.loads(line))
+            except orjson.JSONDecodeError:
+                skipped.append(i + 1)
+    _warn_skipped_lines(filepath, skipped)
+    return result
 
 
 def _stream_tail_csv(filepath: Path, num: int, separator: str = ",") -> List[Dict[str, Any]]:
@@ -706,10 +670,6 @@ def _stream_tail_arrow(filepath: Path, num: int) -> List[Dict[str, Any]]:
     """Arrow 流式读取后 N 行（使用 Polars LazyFrame）"""
     df = pl.scan_ipc(filepath).tail(num).collect()
     return _deserialize_complex_fields(df.to_dicts())
-
-
-# 文件大小阈值：超过此值使用 Python 流式采样，否则使用 Polars
-_STREAM_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100MB
 
 
 def _count_sample_jsonl(
@@ -767,37 +727,9 @@ def _count_sample_jsonl(
 def _stream_random_jsonl(
     filepath: Path, num: int, seed: Optional[int] = None
 ) -> List[Dict[str, Any]]:
-    """JSONL 随机采样
-
-    策略：
-    - 小文件 (<100MB): 使用 Polars collect+sample
-    - 大文件 (>=100MB): 使用 count+sample 流式采样（更快且内存友好）
-    """
-    file_size = filepath.stat().st_size
-
-    # 大文件使用流式采样（更快）
-    if file_size >= _STREAM_THRESHOLD_BYTES:
-        return _count_sample_jsonl(filepath, num, seed)
-
-    # 小文件尝试 Polars
-    try:
-        df = pl.scan_ndjson(filepath).collect()
-        if len(df) <= num:
-            return _clean_null_fields(df.to_dicts())
-        sampled = df.sample(n=num, seed=seed)
-        return _clean_null_fields(sampled.to_dicts())
-    except Exception as e:
-        import sys
-
-        print(
-            t(
-                f"[Warning] Polars ndjson parsing failed, falling back to streaming sampling: "
-                f"{type(e).__name__}",
-                f"[Warning] Polars ndjson 解析失败，回退到流式采样: {type(e).__name__}",
-            ),
-            file=sys.stderr,
-        )
-        return _count_sample_jsonl(filepath, num, seed)
+    """JSONL 随机采样: 计行数 → 抽行号 → 只解析抽中的行 (不用 Polars 解析, 原因同
+    _stream_head_jsonl)。"""
+    return _count_sample_jsonl(filepath, num, seed)
 
 
 def _stream_random_csv(
