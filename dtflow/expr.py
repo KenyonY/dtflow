@@ -291,7 +291,9 @@ def rename_fields(expr: str, mapping: Dict[str, str]) -> str:
     def attr_form(new: str) -> str:
         import keyword
 
-        return f"x.{new}" if new.isidentifier() and not keyword.iskeyword(new) else f"x[{new!r}]"
+        # 与 DictWrapper 自身属性/方法同名 (get/keys/items…) 时 x.new 取到的是方法, 只能写下标
+        plain = new.isidentifier() and not keyword.iskeyword(new) and not hasattr(DictWrapper, new)
+        return f"x.{new}" if plain else f"x[{new!r}]"
 
     def visit(node: ast.AST, shadowed: bool) -> None:
         if isinstance(node, ast.Lambda):
@@ -311,6 +313,23 @@ def rename_fields(expr: str, mapping: Dict[str, str]) -> str:
             for part in (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,):
                 visit(part, sh)
             return
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and _is_x(node.func.value)
+        ):
+            # x.get(...) / x.keys(): 调的是方法, 不是字段; 只看参数
+            if (
+                not shadowed
+                and node.func.attr == "get"
+                and node.args
+                and _str_const(node.args[0])
+                and node.args[0].value in mapping
+            ):
+                put_str(node.args[0], mapping[node.args[0].value])
+            for child in [*node.args, *node.keywords]:
+                visit(child, shadowed)
+            return
         if not shadowed:
             if isinstance(node, ast.Attribute) and _is_x(node.value) and node.attr in mapping:
                 a, b = span(node)
@@ -323,15 +342,6 @@ def rename_fields(expr: str, mapping: Dict[str, str]) -> str:
                 and node.slice.value in mapping
             ):
                 put_str(node.slice, mapping[node.slice.value])
-            elif isinstance(node, ast.Call) and node.args and _str_const(node.args[0]):
-                f = node.func
-                if (
-                    isinstance(f, ast.Attribute)
-                    and f.attr == "get"
-                    and _is_x(f.value)
-                    and node.args[0].value in mapping
-                ):
-                    put_str(node.args[0], mapping[node.args[0].value])
             elif (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)

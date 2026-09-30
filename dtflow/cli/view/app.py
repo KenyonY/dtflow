@@ -814,11 +814,21 @@ class HeaderEditScreen(ModalScreen):
 
     BINDINGS = [Binding("escape", "cancel", t("Cancel", "取消"), show=False)]
 
-    def __init__(self, value: str, cell: Region, padding: int = 1, right: Optional[int] = None):
+    def __init__(
+        self,
+        value: str,
+        cell: Region,
+        text_x: int,
+        right_aligned: bool,
+        padding: int = 1,
+        right: Optional[int] = None,
+    ):
         super().__init__()
         self._value = value
-        self._cell = cell  # 列头格的屏幕区域 (含左右 padding)
-        self._padding = padding  # 表格的 cell padding: 输入文字与列头文字落在同一列
+        self._cell = cell  # 列头格的屏幕区域 (含左右 padding; 末格是列分隔线 │)
+        self._text_x = text_x  # 列头文字起点: 输入文字从这里开始, 看起来是列头本身变成可编辑
+        self._right_aligned = right_aligned  # 数值列: 变长时先向左长 (与右对齐的列头一致)
+        self._padding = padding
         self._right = right  # 表格内容区右缘: 加宽时不越过它压到详情区
 
     def compose(self) -> ComposeResult:
@@ -826,19 +836,29 @@ class HeaderEditScreen(ModalScreen):
 
     def on_mount(self) -> None:
         inp = self.query_one("#hdr-edit", Input)
-        # 就是列头格那么宽 (看起来是列头本身变成可编辑); 只在装不下当前文字 + 光标时向右加宽,
-        # 且不越过表格右缘。更长的名字在框内横向滚动。
-        inp.styles.offset = (self._cell.x, self._cell.y)
-        inp.styles.padding = (0, self._padding)
+        inp.styles.padding = (0, 0, 0, self._padding)  # 右侧不留 padding: 光标占列头右边距那一格
         self._fit(self._value)
         inp.focus()
         inp.action_end()
 
     def _fit(self, text: str) -> None:
-        right = self._right if self._right is not None else self.app.size.width
-        need = cell_len(text) + 2 * self._padding + 1  # +1 给行尾光标
-        width = max(1, min(max(self._cell.width, need), right - self._cell.x))
-        self.query_one("#hdr-edit", Input).styles.width = width
+        """框 = [x, 右缘): 左 padding 后接文字, 文字 + 行尾光标要放得下。
+
+        默认右缘止于列分隔线之前 (分隔线仍可见), 文字起点对齐列头文字。装不下时:
+        数值列先把左缘往左推到格子左边 (右对齐列变长本就向左长), 仍不够再向右越过
+        分隔线加宽; 文本列直接向右加宽。都不越过表格右缘, 再长就在框内横向滚动。
+        """
+        limit = self._right if self._right is not None else self.app.size.width
+        need = cell_len(text) + 1  # 文字 + 行尾光标
+        p = self._padding
+        x, right = self._text_x - p, self._cell.right - 1
+        if right - (x + p) < need and self._right_aligned:
+            x = max(self._cell.x, right - p - need)
+        if right - (x + p) < need:
+            right = min(limit, x + p + need)
+        inp = self.query_one("#hdr-edit", Input)
+        inp.styles.offset = (x, self._cell.y)
+        inp.styles.width = max(1, right - x)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._fit(event.value)  # 边打边长, 不把开头滚出框外
@@ -2638,17 +2658,54 @@ class ViewApp(App):
                 severity="error",
             )
             return
+        table = self.query_one("#table", DataTable)
+        try:
+            ci = self._visible_columns().index(col)
+        except ValueError:
+            return
+        # 列被右缘截断或藏在冻结的 # 列后面时, 先整列滚进视野, 否则框只剩几格、盖到邻列
+        fixed = table._get_fixed_offset()
+        region = table._get_column_region(ci)
+        before = table.scroll_offset
+        table.scroll_to_region(
+            Region(region.x, int(table.scroll_y), region.width, 1),
+            animate=False,
+            spacing=fixed,
+            force=True,
+            immediate=True,
+        )
+        if table.scroll_offset == before:
+            self._open_header_edit(col)
+        else:  # 等这一帧按新滚动位置重绘后再按屏幕坐标开框
+            self.call_after_refresh(self._open_header_edit, col)
+
+    def _open_header_edit(self, col: str) -> None:
         cell = self._header_cell(col)
         if cell is None:
             return
+        table = self.query_one("#table", DataTable)
+        p = table.cell_padding
+        if self._right_aligned(col):  # 列头右对齐, 右侧还多留一格 (见 _header_label)
+            text_x = cell.right - p - 1 - cell_len(self._header_plain(col))
+        else:
+            text_x = cell.x + p
+        text_x = max(cell.x + p, text_x)
 
         def done(value: Optional[str]) -> None:
             if value is not None:
                 self._rename_column(col, value)
 
-        table = self.query_one("#table", DataTable)
-        right = table.content_region.right
-        self.push_screen(HeaderEditScreen(self._shown(col), cell, table.cell_padding, right), done)
+        self.push_screen(
+            HeaderEditScreen(
+                self._shown(col),
+                cell,
+                text_x,
+                self._right_aligned(col),
+                p,
+                table.content_region.right,
+            ),
+            done,
+        )
 
     # ------------------------------------------------------------------ #
     # 动作
@@ -3067,8 +3124,9 @@ class ViewApp(App):
             if bad:
                 skipped.append(
                     t(
-                        f"{len(bad)} value(s) of {col} are truncated and can't go into a command",
-                        f"{col} 的 {len(bad)} 个值含特殊字符/被截断, 无法写进命令",
+                        f"{len(bad)} value(s) of {self._shown(col)} are truncated"
+                        " and can't go into a command",
+                        f"{self._shown(col)} 的 {len(bad)} 个值含特殊字符/被截断, 无法写进命令",
                     )
                 )
                 continue

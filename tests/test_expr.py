@@ -279,3 +279,13 @@ class TestRenameFields:
 
         assert rename_fields("x.a >", {"a": "b"}) == "x.a >"
         assert rename_fields("x.a", {}) == "x.a"
+
+    def test_method_calls_and_method_named_targets(self):
+        from dtflow.expr import rename_fields
+
+        # 新名 get: x.get(...) / x.keys() 是方法调用, 不当字段改; 显示用下标写法
+        assert rename_fields("x.get('score', 0) > 10", {"get": "src"}) == "x.get('score', 0) > 10"
+        assert rename_fields("len(x.keys()) > 1", {"keys": "src"}) == "len(x.keys()) > 1"
+        assert rename_fields("x.src == 'a'", {"src": "get"}) == "x['get'] == 'a'"
+        # x.get('a') 的参数仍按字段改
+        assert rename_fields("x.get('a') or x.get(x.a)", {"a": "b"}) == "x.get('b') or x.get(x.b)"

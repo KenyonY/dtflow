@@ -405,6 +405,13 @@ def _parse_rename_param(param: str) -> Dict[str, str]:
                     f"重命名参数格式错误: {pair}，字段名不能为空",
                 )
             )
+        if old in rename_map:
+            raise ValueError(
+                t(
+                    f"Invalid rename spec: {old} is renamed twice",
+                    f"重命名参数格式错误: {old} 出现了两次",
+                )
+            )
         rename_map[old] = new
     return rename_map
 

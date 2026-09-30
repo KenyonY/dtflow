@@ -595,3 +595,12 @@ def test_rename_item_swap_chain_and_merge():
         _rename_item(row, {"a": "b"})  # 目标已存在且未被改走
     with pytest.raises(ValueError):
         _rename_item(row, {"a": "c", "b": "c"})  # 多对一
+
+
+def test_rename_param_rejects_same_field_twice():
+    import pytest
+
+    from dtflow.cli.clean import _parse_rename_param
+
+    with pytest.raises(ValueError):
+        _parse_rename_param("a:b,a:c")

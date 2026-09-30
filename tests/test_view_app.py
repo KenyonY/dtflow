@@ -3347,6 +3347,17 @@ def _click_at(app, x: int, y: int, chain: int):
     app.screen.on_click(ev)
 
 
+def _header_text_x(app, label: str) -> int:
+    """表头行里 label 文字的屏幕 x (按实际渲染结果找, 不按列宽推算)。"""
+    from rich.cells import cell_len
+
+    table = app.query_one("#table")
+    text = "".join(seg.text for seg in table.render_line(0))
+    i = text.find(label)
+    assert i >= 0, (label, text)
+    return table.content_region.x + cell_len(text[:i])
+
+
 def _header_x(app, col: str) -> int:
     t = app.query_one("#table")
     vis = app._visible_columns()
@@ -3411,19 +3422,16 @@ async def test_header_double_click_opens_rename_prompt_single_click_delays_value
     app = _chat_app(10)
     async with app.run_test(size=(120, 30)) as pilot:
         x = _header_x(app, "source")
+        text_x = _header_text_x(app, "source")
         await pilot.click("#table", offset=(x, 1), times=2)
         await pilot.pause()
         assert isinstance(app.screen, HeaderEditScreen)
         inp = app.screen.query_one("#hdr-edit")
         assert inp.value == "source"
-        # 输入框盖在列头格上: 与列头同一行, 左边缘对齐列头格左侧 (含 padding)
-        # 列头格 = 文字起点往左一个 padding (Textual 的列区域含左右 padding), 宽度也含 padding
-        tbl = app.query_one("#table")
-        widths = app._column_widths(app._visible_columns())
-        ci = app._visible_columns().index("source")
-        assert inp.region.y == 1 and inp.region.x == x - tbl.cell_padding
-        assert inp.region.width == widths[ci] + 2 * tbl.cell_padding  # 与列头格等宽
-        assert inp.region.right <= tbl.content_region.right
+        # 输入框盖在列头格上: 同一行, 输入文字起点 = 原列头文字起点, 右缘止于列分隔线之前
+        cell = app._header_cell("source")
+        assert inp.region.y == 1 and inp.content_region.x == x == text_x
+        assert inp.region.x == cell.x and inp.region.right == cell.right - 1
         await pilot.pause(0.4)  # 定时器已被取消, 值面板不会再弹
         assert isinstance(app.screen, HeaderEditScreen)
         inp.value = "src"
@@ -4194,3 +4202,53 @@ async def test_pipe_sees_renamed_rows_and_blocks_renaming():
         app.action_reset()
         await pilot.pause()
         assert app._pipe is None and app._shown("source") == "src"
+
+
+@pytest.mark.asyncio
+async def test_rename_box_aligns_with_right_aligned_numeric_header():
+    """数值列列头右对齐: 输入文字起点仍是原列头文字起点, 变长时先向左长。"""
+    from dtflow.cli.view.app import HeaderEditScreen
+
+    rows = [{"n": 123456789 + i, "s": f"v{i}"} for i in range(5)]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert app._right_aligned("n")
+        hx = _header_text_x(app, " n ") + 1
+        cell = app._header_cell("n")
+        app._begin_rename("n")
+        await pilot.pause()
+        assert isinstance(app.screen, HeaderEditScreen)
+        inp = app.screen.query_one("#hdr-edit")
+        assert inp.content_region.x == hx and inp.region.right <= cell.right - 1
+        inp.value = "number"
+        await pilot.pause()
+        assert inp.region.right <= cell.right - 1 and inp.region.x >= cell.x  # 向左长
+        inp.value = "a_really_long_number_name"
+        await pilot.pause()
+        assert inp.region.x == cell.x and inp.region.right > cell.right  # 左边到头再向右
+
+
+@pytest.mark.asyncio
+async def test_rename_scrolls_clipped_column_into_view():
+    from dtflow.cli.view.app import HeaderEditScreen
+
+    rows = [{f"col{c}": f"value_{c}_{i}" for c in "abcdefghij"} for i in range(5)]
+    app = _make_app(rows, fmt="generic")
+    async with app.run_test(size=(100, 24)) as pilot:
+        tbl = app.query_one("#table")
+        # 找一个被表格右缘截断的列
+        vis = app._visible_columns()
+        clipped = next(
+            c
+            for c in vis
+            if (cell := app._header_cell(c)) is not None
+            and cell.x < tbl.content_region.right < cell.right
+        )
+        app._begin_rename(clipped)
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, HeaderEditScreen)
+        cell = app._header_cell(clipped)
+        assert cell.right <= tbl.content_region.right  # 已整列滚进视野
+        inp = app.screen.query_one("#hdr-edit")
+        assert inp.value == clipped and inp.region.x == cell.x
