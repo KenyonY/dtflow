@@ -2,7 +2,9 @@
 
 `dt view <file>` opens a master-detail terminal browser built for training data.
 
-**Table pane**: derived columns `turns/roles/first_user/chars/calls` plus metadata columns. **Detail pane**: the current row rendered by format. Chat turns are colored by role with code blocks highlighted; a tool call is drawn as `[assistant → fn]` followed by `⚙ fn call_id` and its formatted arguments, with a red mark when the arguments are not valid JSON; `reasoning_content` is shown dimmed; a tool result is labelled `[tool ← call_id]` with its JSON formatted; dpo rows show chosen and rejected side by side; alpaca rows are split into sections; generic rows are fully expanded. No drilling down. The layout is side by side by default; `z` switches to top/bottom.
+**Table pane**: derived columns `turns/roles/first_user/chars/calls` plus metadata columns. **Detail pane**: the current row rendered by format. Each chat turn opens with a role-colored badge and its length (`roles` in the table uses the same colors); code blocks and JSON are syntax-highlighted on a shaded background; a tool call is titled `assistant → fn` followed by `⚙ fn call_id` and its formatted arguments, with a red mark when the arguments are not valid JSON; `reasoning_content` is shown dimmed; a tool result is titled `tool ← call_id` with its JSON formatted; dpo rows show chosen and rejected side by side; alpaca rows are split into sections; generic rows are fully expanded. No drilling down. Long samples (hundreds of turns) render the first screens at once and the rest in the background, so holding `j` never stalls. The layout is side by side by default; `z` switches to top/bottom.
+
+**Pane borders** carry the identity info: table top-left `file · format`, bottom-right the cursor position `N / total`; detail top-left `#row · turns · chars`, bottom-right the current field. The status bar keeps only changing state (hits, sort, window, multi-select) on the left and the `z` / `?` hints on the right.
 
 Formats are auto-detected: `openai_chat` / `sharegpt` / `dpo` / `alpaca` / `generic` (tables such as CSV show every column). `--format` forces one.
 
