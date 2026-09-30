@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.10.2] - 2026-09-30
+
+### Bug Fixes
+
+- **view**: 缩略图 QA 修复 —— 同一 URL 并发下载临时文件唯一 (原先崩溃); 调分界/切布局/缩放时擦整屏释放 tmux 存图 (原先残影); 缩略图按比例定宽高 (原先压扁); 弹窗开着时不擦不停画 (原先大图被清空重发)
+- **view**: C 的值筛选提示中文与判定一致 (只检测被截断)
+- **view**: 看图弹窗 sixel 闪烁 —— 图读好再建弹窗、翻页整屏替换; sixel 同尺寸只发一次, 之后重画只移光标不清空 (tmux 见空格会删图重画); 翻页前清屏让 tmux 释放旧图 (否则每次重画连旧图一起重发); 连按翻页按次数累加; 文档补 tmux 下 sixel 的条件
+- **clean**: Key:value 解析报错写明是哪一项 —— CLI 为 --fill/--add-field/--rename, pipeline 为 YAML 键名 fill/add_field/rename
+- **clean**: --rename/--add-field/--fill 的 key:value 解析收成 ops.parse_pairs, CLI 与 pipeline 共用; 同一 key 出现两次一律报错 (pipeline 此前静默取后者)
+- **view**: 改名框文字起点对齐原列头文字 (数值列右对齐: 变长先向左长), 右缘止于列分隔线; 被截断/藏在冻结列后的列先整列滚入视野再开框
+- **view**: 列头改名框与列头文字对齐 (同 padding/加粗/等宽, 边打边长到表格右缘); 矮终端慢双击也能改名; 连续改名 (b→c 再 a→b) 不再崩溃; 退出询问的 写回 改称 保存 (s)
+- **view**: 列头重命名 —— 输入框直接盖在列头格上; 双击慢于 0.15s 时值面板不再抢在前面 (面板收到落在列头格的连击即转改名, 大文件时取消进行中的值扫描)
+- **view**: QA 修复 —— 图多于 <image> 时照 ms-swift 补到首条非 system 消息 (图不再看不到, 警告分红/黄), file:// 路径, images=null 回退 image, sharegpt 多模态 value; 只在首窗口有图时探测终端且探测失败不影响启动; 解码失败文案; 删去点不到的框外关闭
+- **io**: JSONL 的 head/tail/sample 改用 orjson 逐行解析, 不再经 Polars ndjson 改写记录
+
+### Documentation
+
+- **view**: 看图 (VLM) —— view.md 新增 Images 一节与 i 键, imgs(x) 行函数, SKILL/README 同步
+- **README**: 设计一节改写为七条第一性原理 (样本为单位 / 一种语言 / 看与处理闭环 / Unix 契约 / 能流式就流式 / 不给静默错误答案 / 函数优于类)
+- README/SKILL 补上行函数、describe、group pct/--top、anti-join、目录/glob 输入、concat 转格式、终端表格预览; SKILL 加其他命令一览表
+
+### Features
+
+- **view**: 详情内缩略图 —— 每条带图消息下方 10 行缩略图条, 点击开大图; 仅 kitty/sixel 终端显示
+- **view**: 改名后 f/s/S/F/| 一律按新名写 —— 条件在入口译回磁盘原名存储 (expr.rename_fields 按 AST 位置改写 x.a/x['a']/x.get('a')/'a' in x/get(x,'a…'), 保留原写法), 显示再译回新名; 管道喂改过名的行; P 末段接 dt clean --rename, C 的 --pipe 前置改名段; 管道态不能改名
+- **view**: 图片弹窗 —— i 键/点 imgs 单元格/点详情 🖼 行打开, ←/→ 翻图, 线程读图不卡界面; 对话格式启动时探测终端图形协议; --image-root 指定相对路径基准; 依赖 textual-image
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.10.1...v0.10.2
+
+
 ## [0.10.1] - 2026-09-30
 
 ### Bug Fixes

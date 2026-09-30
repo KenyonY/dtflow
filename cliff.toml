@@ -30,6 +30,14 @@ footer = ""
 conventional_commits = true
 filter_unconventional = false
 split_commits = false
+# 解析前先规整提交信息:
+# - 去掉 Co-Authored-By 尾行 (不进 changelog / release 正文)
+# - 标题下一行直接接正文 (缺空行) 时补一个空行; 否则 conventional 解析失败,
+#   整段正文会原样进 changelog, 且丢掉 scope 分组
+commit_preprocessors = [
+    { pattern = '(?m)^Co-Authored-By:.*\n?', replace = "" },
+    { pattern = '\A([^\n]*)\n([^\n])', replace = "${1}\n\n${2}" },
+]
 commit_parsers = [
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
