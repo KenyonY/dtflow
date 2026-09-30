@@ -194,8 +194,8 @@ def _global_options(
         None,
         "--format",
         help=t(
-            "Output format: json|ndjson|csv|table (non-TTY default: ndjson; preview commands on a TTY default to one JSON per record, table = format-aware rendering)",
-            "输出格式: json|ndjson|csv|table (非 TTY 默认 ndjson; 预览命令 TTY 默认逐条 JSON, table=格式渲染)",
+            "Output format: json|ndjson|csv|table (non-TTY default: ndjson; on a TTY data commands default to a table of the first 50 rows, --format=table renders everything; preview commands default to one JSON per record, table = format-aware rendering)",
+            "输出格式: json|ndjson|csv|table (非 TTY 默认 ndjson; TTY 下数据命令默认表格且只看前 50 行, --format=table 全量; 预览命令默认逐条 JSON, table=格式渲染)",
         ),
     ),
     no_color: bool = typer.Option(
@@ -450,7 +450,8 @@ def tail(
         "Large files are browsed in windows via an offset index: only the current window is parsed; ] / [ page windows, : jumps to a row.\n"
         "A negative NUM opens at the end of the file; --follow keeps tailing as JSONL/NDJSON is appended or rotated.\n"
         "Filter / search / sort all scan the whole file and can be combined; press r to clear them and browse everything again;\n"
-        "press w to export the results to a file, C to copy a command that reproduces the current view.\n"
+        "press w to export the results to a file, C to copy a command that reproduces the current view,\n"
+        "P to copy the same conditions as a processing chain (dt filter FILE '…' | dt sort - --by '…').\n"
         "Full scans of JSONL run in parallel over byte ranges (tune with env var DTFLOW_VIEW_WORKERS,\n"
         "1 forces serial). Pipe mode dt view - reads NDJSON from stdin fully into memory.\n"
         "Requires an interactive terminal (TTY). Press ? for key bindings.\n\n"
@@ -471,7 +472,8 @@ def tail(
         "大文件靠偏移索引窗口化浏览：只 parse 当前窗口，TUI 内按 ] / [ 翻窗口、: 跳行。\n"
         "NUM 为负数时快速从文件尾部打开；--follow 在 JSONL/NDJSON 追加或轮转时持续追尾。\n"
         "筛选/搜索/排序都是全量的（扫整个文件），可叠加，按 r 一键清空回到全量浏览；\n"
-        'TUI 内按 w 把结果导出成文件，按 C 复制"复现当前视图"的命令。\n'
+        'TUI 内按 w 把结果导出成文件，按 C 复制"复现当前视图"的命令，\n'
+        "按 P 把同一套条件复制成处理链 (dt filter FILE '…' | dt sort - --by '…')。\n"
         "JSONL 的全量扫描按字节区间分片并行（环境变量 DTFLOW_VIEW_WORKERS 可调并行度，\n"
         "设为 1 强制串行）。管道模式 dt view - 从 stdin 读 NDJSON 全量入内存。\n"
         "需要交互式终端（TTY）。按 ? 查看快捷键。\n\n"
@@ -1211,13 +1213,13 @@ def shuffle_cmd(
     help=t(
         "Group by expression: streaming counts by default, custom aggregations with --agg\n\n"
         "Examples:\n"
-        '    dt group data.jsonl --by x.meta.source                 # {"key","count"} sorted by count desc\n'
-        '    dt group data.jsonl --by "len(x.messages)"\n'
+        '    dt group data.jsonl --by x.meta.source                 # {"key","count","pct"} sorted by count desc\n'
+        '    dt group data.jsonl --by "roles(x)" --top 10           # the 10 largest groups (--agg mode: by n)\n'
         '    dt group data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"',
         "按表达式分组: 默认流式计数, --agg 自定义聚合\n\n"
         "示例:\n"
-        '    dt group data.jsonl --by x.meta.source                 # {"key","count"} 按 count 降序\n'
-        '    dt group data.jsonl --by "len(x.messages)"\n'
+        '    dt group data.jsonl --by x.meta.source                 # {"key","count","pct"} 按 count 降序\n'
+        '    dt group data.jsonl --by "roles(x)" --top 10           # 只留最大的 10 组 (--agg 模式按 n)\n'
         '    dt group data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"',
     ),
 )

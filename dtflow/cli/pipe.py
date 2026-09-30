@@ -20,6 +20,8 @@ from ..i18n import t
 from ..streaming import StreamingTransformer, expand_inputs, open_stream
 from .common import _check_file_format, _require_file_exists
 from .output import (
+    ExitCode,
+    die,
     die_io_error,
     emit_action,
     emit_data,
@@ -51,7 +53,8 @@ def input_files(filename: str) -> List[str]:
     try:
         return expand_inputs(filename)
     except FileNotFoundError as e:
-        die_io_error(e, operation=t("Read", "读取"), path=filename)
+        # 用 expand_inputs 的措辞 ("目录下没有数据文件"), 别说成"文件不存在"
+        die("file_not_found", str(e), exit_code=ExitCode.NOT_FOUND)
 
 
 def open_input(filename: str) -> StreamingTransformer:

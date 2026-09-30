@@ -114,10 +114,18 @@ def sample(
     # type 未指定时：n=0 默认 head（保序），其他默认 random
     if type is None:
         type = "head" if num == 0 else "random"
-    filepath = Path(filename)
     stdin = is_stdin(filename)
+    multi = False
     if not stdin:
         open_input(filename)  # 只做存在/格式校验 (惰性, 不读数据)
+        # 目录 / glob: 只展开出一个文件就直接当那个文件 (否则无后缀的目录会被当成 flaxkv);
+        # 多个文件走流式路径 (与 stdin 相同), 没有单个文件可做快速采样
+        files = input_files(filename)
+        if len(files) == 1:
+            filename = files[0]
+        else:
+            multi = True
+    filepath = Path(filename)
 
     # uniform 必须配合 by 使用
     if uniform and not by:
@@ -165,9 +173,6 @@ def sample(
                     f"--dist 比例之和必须为 1.0，当前为 {total_ratio}",
                 )
             )
-
-    # 目录 / glob 输入: 没有单个文件可做快速采样, 走流式路径 (与 stdin 相同)
-    multi = not stdin and len(input_files(filename)) > 1
 
     # 处理 where 筛选
     where_conditions = where or []

@@ -191,8 +191,11 @@ class TestRowHelpers:
         assert compile_where("search(x.messages, '客服') and not search(x.meta, '客服')")(ROW)
         assert "退款怎么办" in compile_value("fulltext(x)")(ROW)
         assert rowfn.compile_search("a.b") is rowfn.compile_search("a.b")  # 缓存
-        with pytest.raises(re.error):
-            compile_where("search(x, 're:(')")(ROW)
+        # 字面量正则写错在编译期就报 (否则每行 re.error 被当求值失败, 静默 0 命中)
+        with pytest.raises(ExprSyntaxError, match="search"):
+            compile_where("search(x, 're:(')")
+        with pytest.raises(re.error):  # 非字面量只能运行期发现
+            compile_where("search(x, 're:' + '(')")(ROW)
 
     def test_bare_helper_name_is_syntax_error_with_hint(self):
         # 老 view 语法 turns>=6: 不能编译通过后每行 TypeError (CLI 报失败, view 静默 0 命中)

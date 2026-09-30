@@ -16,7 +16,16 @@ from rich.markup import escape
 from ..expr import ExprSyntaxError, compile_value
 from ..i18n import t
 from ..utils.stats import histogram, render_histogram_lines, summarize
-from .output import die, die_usage, emit_json, log, log_panel, log_table, resolve_format
+from .output import (
+    die,
+    die_usage,
+    emit_data,
+    get_state,
+    is_stdout_tty,
+    log,
+    log_panel,
+    log_table,
+)
 from .pipe import input_label, open_input
 
 
@@ -34,6 +43,8 @@ def describe(
         dt describe data.jsonl "x.score" "len(x.messages[-1].content)"
         dt --format=json describe data.jsonl "x.score" | jq '.[0].p99'
     """
+    if bins < 1:
+        die_usage(t("--bins must be at least 1", "--bins 至少为 1"))
     fns = []
     for e in exprs:
         try:
@@ -63,10 +74,15 @@ def describe(
     results: List[Dict[str, Any]] = [
         {"expr": e, "null": nulls[j], **summarize(values[j])} for j, e in enumerate(exprs)
     ]
-    if resolve_format(format, default_for_tty="table") != "table":
-        emit_json(results)
+    # 显式 --format 照办 (csv/ndjson 也行); 未指定时 TTY 画表, 非 TTY 输出 JSON 数组 (报告类约定)
+    fmt = format or get_state().fmt or ("table" if is_stdout_tty() else "json")
+    if fmt != "table":
+        emit_data(results, format=fmt)
         return
     _render(input_label(filename), total, results, values, bins)
+
+
+_STATS = ("n", "null", "min", "p25", "p50", "mean", "p75", "p90", "p99", "max", "std")
 
 
 def _fmt(v: Optional[float]) -> str:
@@ -86,30 +102,13 @@ def _render(label: str, total: int, results: List[Dict[str, Any]], values, bins:
         ),
         title=t("📐 describe", "📐 分布摘要"),
     )
+    # 统计量作行、表达式作列 (pandas describe 的形态): 列数只随表达式数增长, 80 列终端也放得下
     table = Table(show_header=True, header_style="bold cyan")
-    table.add_column(t("Expression", "表达式"), style="green")
-    for col in ("n", "null", "min", "p25", "p50", "mean", "p75", "p90", "p99", "max", "std"):
-        table.add_column(col, justify="right")
+    table.add_column("", style="cyan", no_wrap=True)
     for r in results:
-        table.add_row(
-            Text(r["expr"]),
-            *(
-                _fmt(r[k])
-                for k in (
-                    "n",
-                    "null",
-                    "min",
-                    "p25",
-                    "p50",
-                    "mean",
-                    "p75",
-                    "p90",
-                    "p99",
-                    "max",
-                    "std",
-                )
-            ),
-        )
+        table.add_column(Text(r["expr"]), justify="right", overflow="fold")
+    for k in _STATS:
+        table.add_row(k, *(_fmt(r[k]) for r in results))
     log_table(table)
     for r, vals in zip(results, values, strict=True):
         lines = render_histogram_lines(histogram(vals, bins))

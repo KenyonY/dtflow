@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable
 
 from .core import DictWrapper, unwrap
 from .i18n import t
-from .rowfn import HELPERS
+from .rowfn import HELPERS, compile_search
 from .utils.field_path import get_field_with_spec
 
 Row = Dict[str, Any]
@@ -97,6 +97,23 @@ def _check_helper_misuse(tree: ast.AST, expr: str) -> None:
         elif isinstance(node, ast.keyword):
             ok_ids.add(id(node.value))
     for node in ast.walk(tree):
+        # search(x, 're:[') 这种字面量正则写错, 每行 re.error 会被当"求值失败"静默成 0 命中
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "search"
+            and len(node.args) == 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            try:
+                compile_search(node.args[1].value)
+            except re.error as e:
+                raise ExprSyntaxError(
+                    expr,
+                    t(f"invalid regex in search(): {e}", f"search() 的正则无效: {e}"),
+                    node.args[1].col_offset + 1,
+                ) from None
         if (
             isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)

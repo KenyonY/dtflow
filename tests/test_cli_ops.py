@@ -146,6 +146,9 @@ class TestRowOps:
         assert sum(r["pct"] for r in rows) == 0.75 and sum(r["count"] for r in rows) == 3
         group_cmd(str(data_file), by="x.s", agg="n=len(g)", top=1)
         assert _out(capsys) == [{"key": "wiki", "n": 3}]
+        with pytest.raises(typer.Exit) as ei:
+            group_cmd(str(data_file), by="x.s", top=0)
+        assert ei.value.exit_code == 2
 
     def test_group_unhashable_key(self):
         rows = ops.group_rows(_st(), "x.tags").collect()

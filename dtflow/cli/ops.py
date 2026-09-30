@@ -150,6 +150,8 @@ def group_cmd(
         dt group data.jsonl --by "roles(x)" --top 10
         dt group data.jsonl --by x.label --agg "avg_len=mean(len(r.text) for r in g),ids=[r.id for r in g][:3]"
     """
+    if top is not None and top < 1:
+        die_usage(t("--top must be at least 1", "--top 至少为 1"))
     st = _guard("group", lambda: ops.group_rows(open_input(filename), by, agg, strict, top))
     _emit(st, output, "group", filename)
 

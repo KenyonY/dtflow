@@ -5,6 +5,7 @@ dt describe 与 token-stats 共用 (后者保留取整的输出), 不 import CLI
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Dict, List, Optional, Sequence, Tuple
 
 PERCENTILES = (25, 50, 75, 90, 99)
@@ -57,6 +58,10 @@ def histogram(vals: Sequence[float], bins: int = 10) -> List[Tuple[float, float,
     lo, hi = min(vals), max(vals)
     if lo == hi or bins < 1:
         return [(lo, hi, len(vals))]
+    if all(float(v).is_integer() for v in vals) and hi - lo < bins:
+        # 整数数据且取值不多: 一桶一个值 (lo == hi 的"值桶"), 免得等宽切出空桶
+        counts = Counter(int(v) for v in vals)
+        return [(v, v, counts[v]) for v in range(int(lo), int(hi) + 1)]
     width = (hi - lo) / bins
     counts = [0] * bins
     for v in vals:
@@ -76,7 +81,7 @@ def render_histogram_lines(hist: Sequence[Tuple[float, float, int]], width: int 
         return f"{int(v)}" if is_int else f"{v:.2f}"
 
     labels = [
-        f"[{num(lo)}, {num(hi)}{']' if i == len(hist) - 1 else ')'}"
+        num(lo) if lo == hi else f"[{num(lo)}, {num(hi)}{']' if i == len(hist) - 1 else ')'}"
         for i, (lo, hi, _) in enumerate(hist)
     ]
     lw = max(len(x) for x in labels)

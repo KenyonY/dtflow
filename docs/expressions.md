@@ -64,6 +64,8 @@ Training data is heterogeneous; `x.score > 0.5` on a row without `score` is norm
 | `map` | the row is kept unchanged |
 | `sort` | the row goes last |
 | `group --agg` | the failing aggregate becomes `null` |
+| `join` | a failing left key counts as unmatched (right keys must evaluate) |
+| `describe` | counted as `null` |
 | `view` | the row does not match |
 
 `--strict` makes the first failure exit with code 1. Nothing silently changes the row count of `select`, `map` or `group`.

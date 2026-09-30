@@ -56,6 +56,10 @@ class TestPureFunctions:
         h = histogram([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], bins=2)
         assert [c for _, _, c in h] == [5, 6]  # 最后一桶右闭, 10 落进去
         assert histogram([4, 4, 4]) == [(4, 4, 3)]
+        # 整数数据取值少于桶数: 一桶一个值, 没有空桶; 标签直接是值
+        h2 = histogram([2, 2, 3, 5], bins=10)
+        assert h2 == [(2, 2, 2), (3, 3, 1), (4, 4, 0), (5, 5, 1)]
+        assert render_histogram_lines(h2)[0].startswith("2  ")
         assert histogram([]) == []
         lines = render_histogram_lines(h, width=10)
         assert lines[0].startswith("[0, 5)") and lines[1].startswith("[5, 10]")
@@ -95,6 +99,14 @@ class TestDescribe:
             describe(str(data_file), ["turns(x)", "chars >"])
         assert ei.value.exit_code == 2
 
+    def test_bins_validation_and_csv(self, data_file, capsys, not_tty):
+        with pytest.raises(typer.Exit) as ei:
+            describe(str(data_file), ["turns(x)"], bins=0)
+        assert ei.value.exit_code == 2
+        describe(str(data_file), ["turns(x)"], format="csv")
+        lines = capsys.readouterr().out.splitlines()
+        assert lines[0].startswith("expr,") and lines[1].startswith("turns(x),")
+
     def test_empty_file(self, tmp_path, capsys, not_tty):
         f = tmp_path / "e.jsonl"
         f.write_bytes(b"")
@@ -103,7 +115,9 @@ class TestDescribe:
         assert ei.value.exit_code == 1
 
     def test_tty_renders_table_and_histogram(self, data_file, capsys, monkeypatch):
-        monkeypatch.setattr(output, "is_stdout_tty", lambda: True)
+        from dtflow.cli import describe as describe_mod
+
+        monkeypatch.setattr(describe_mod, "is_stdout_tty", lambda: True)
         describe(str(data_file), ["turns(x)"], bins=2)
         captured = capsys.readouterr()
         assert captured.out == ""  # 表格与直方图只走 stderr

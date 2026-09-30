@@ -121,6 +121,20 @@ class TestStdinStdout:
         assert payload["input"] == [str(d / "a.jsonl"), str(d / "b.jsonl")]
         assert payload["stats"]["output_rows"] == 2
 
+    def test_single_file_directory_or_glob_reads_that_file(self, tmp_path, capsys, not_tty):
+        from dtflow.cli.sample import sample, tail
+
+        d = tmp_path / "one"
+        d.mkdir()
+        (d / "labels.jsonl").write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in ROWS))
+        head(str(d), num=2)
+        assert [r["id"] for r in _stdout_rows(capsys)] == [1, 2]
+        tail(str(d), num=1)
+        assert [r["id"] for r in _stdout_rows(capsys)] == [2]
+        sample(str(d / "lab*.jsonl"), num=2, type="head")
+        assert [r["id"] for r in _stdout_rows(capsys)] == [1, 2]
+        assert sorted(p.name for p in d.iterdir()) == ["labels.jsonl"]  # 没被当成 flaxkv 建库
+
     def test_directory_without_data_files_is_not_found(self, tmp_path, not_tty):
         (tmp_path / "empty").mkdir()
         with pytest.raises(typer.Exit) as ei:
