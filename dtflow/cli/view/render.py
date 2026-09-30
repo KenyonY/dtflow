@@ -309,13 +309,17 @@ def _badge(label: str, style: str) -> Text:
     return Text.assemble((f" {label} ", f"bold reverse {color}"))
 
 
-def _turn_title(turn: Turn, style: str) -> Text:
-    """消息标题行: 角色徽章 + 调用/回执 (→ fn / ← call_id) + 暗色字数。"""
+def _turn_title(turn: Turn, style: str, highlight: Optional[Pattern] = None) -> Text:
+    """消息标题行: 角色徽章 + 调用/回执 (→ fn / ← call_id) + 暗色字数。
+
+    字数是算出来的, 不是数据, 追加在搜索高亮之后 —— 否则搜数字时每条标题都是假命中。
+    """
     title = _badge(turn.role, style)
     if turn.tool_calls:
         title.append(f" → {', '.join(c.name for c in turn.tool_calls)}", style=style)
     elif turn.call_id:
         title.append(f" ← {turn.call_id}", style=style)
+    _hl(title, highlight)
     if turn.content:
         n = len(turn.content)
         title.append(t(f"  {n} chars", f"  {n} 字"), style="dim")
@@ -342,7 +346,7 @@ def _render_turn(
     JSON 块用 Syntax 着色, 与代码块一样不叠加搜索高亮。
     """
     style = _ROLE_STYLE.get(turn.role, "bold white")
-    parts: List[RenderableType] = [_hl(_turn_title(turn, style), highlight)]
+    parts: List[RenderableType] = [_turn_title(turn, style, highlight)]
     if turn.reasoning:
         parts.append(Text("(reasoning)", style="dim italic"))
         parts.append(_hl(Text(turn.reasoning, style="dim"), highlight))
@@ -420,7 +424,7 @@ def render_detail_sections(
     hidden: 被折叠的字段, 详情里也不显示。
     split_turns: 对话格式下每条消息独立成段 (段名 ``msg0``/``msg1``…), 使 n/N 变成
         逐条消息导航。段名刻意不含 role —— 切样本时靠段名对齐位置, 而不同样本同一位置
-        的角色未必相同, 名字带 role 会对不齐。role 仍显示在段内容的 ``[user]`` 标题行。
+        的角色未必相同, 名字带 role 会对不齐。role 仍显示在段内容的标题徽章上。
         默认 False: dt head/sample 的静态打印走 render_detail, 不该被拆成一堆分隔块。
     highlight: 搜索命中的正则, 命中处叠加黄底。
     code_bg: 代码/JSON 块底色 (见 _syntax)。

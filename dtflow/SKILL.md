@@ -146,13 +146,14 @@ dt join   train.jsonl test.jsonl --on "first_user(x)" --anti           # 去掉�
 `dt view <file> [NUM]` —— 表格 + 详情联动的 TUI，人工探查训练数据高效（**需交互式终端，agent 场景改用 `dt head --pretty` 或 `dt --format=json head`**）。`NUM>0` 从开头浏览，`NUM<0` 快速从末尾窗口开始（如 `dt view data.jsonl -100`），首次访问更早历史时才按需建索引。
 
 - 表格区扫视（派生列 turns/roles/first_user/chars/calls + 元数据），详情区按格式渲染当前行（对话气泡/dpo对比/alpaca分段/通用全展开），无需逐层展开。默认左右布局，`z` 切上下
-- **agent 数据**：assistant 的 `tool_calls` 画成 `[assistant → 函数名]` + `⚙ 函数名 call_id` + 格式化参数（参数非法 JSON 标红），`reasoning_content`/`reasoning` 思维链暗色显示，`tool` 消息标 `[tool ← call_id]` 并格式化 JSON 返回；sharegpt 的 `function_call`/`observation` 同样处理。`calls` 列列出调用过的函数名（不叫 tools：顶层 `tools` 是存工具定义的标准字段），`roles` 里工具返回记 `t`（如 `u→a→t→a`）；`chars` 计入思维链与参数
+- **agent 数据**：每条消息以角色色反色徽章 + 字数开头（表格 `roles` 列同色），代码块/JSON 铺底色；assistant 的 `tool_calls` 标题为 `assistant → 函数名`，下接 `⚙ 函数名 call_id` + 格式化参数（参数非法 JSON 标红），`reasoning_content`/`reasoning` 思维链暗色显示，`tool` 消息标题为 `tool ← call_id` 并格式化 JSON 返回；sharegpt 的 `function_call`/`observation` 同样处理。`calls` 列列出调用过的函数名（不叫 tools：顶层 `tools` 是存工具定义的标准字段），`roles` 里工具返回记 `t`（如 `u→a→t→a`）；`chars` 计入思维链与参数
 - CSV/Parquet 等表格数据全部列展示；`--format` 可强制格式
 - **大文件窗口化浏览**：JSONL/NDJSON 普通打开只索引并加载当前窗口（`--cap`，默认 1 万行），不等待全文件扫描；`]`/`[` 翻下/上一窗口，正向索引按需延伸。总行数在尚未计数或读到文件末尾前显示为待定。`:` 正数跳行只扫描到目标窗口；`G` 和负数跳行使用 Polars 快速精确计数，再反向读取尾窗，显示绝对行号而不建全文件偏移索引。计数及前后两端索引复用，向前翻尾窗只补相邻窗口；全量操作才补全中间缺失的索引。后台操作可按 `Esc` 取消。`--offset=N` 从第 N 行打开（0-based，需要扫描之前的内容）。`#` 列显示全局行号；已索引区域通过字节偏移直接读取
 - **实时追尾**：`dt view app.jsonl -f`（`--follow`） 从最新尾窗开始，只提交已换行的完整记录，并自动跟随日志轮转。上移光标后界面暂停并累计新行，`G` 回到最新处；全量搜索/筛选对固定高水位扫描后继续增量应用到新行。可用 `-100 -f` 把尾窗限为 100 行
 - **非等字段列头**：当前窗口的全部记录参与列发现，翻页/跳转时按首次出现顺序增量补列（不为 schema 预先 parse 全文件）；generic 的顶层对象/数组也算列。训练格式只默认展开前 8 个元数据列，其余仍在 `c` 列面板中，详情不因自动收起而缺字段
 - **管道模式** `... | dt view -`：从 stdin 读 NDJSON 全量入内存（流不可 seek），适合看处理结果的一小撮，如 `dt sample data.jsonl 500 | dt view -`（大文件仍用 `dt view file` 走窗口化）
 - **启动即带条件**：`--where=<Python 表达式>`(可重复，多条为**与**关系)、`--search=<词>`、`--sort=[-]列名`；与 TUI 内按 `f`/`/`/`s` 完全同义（同一条扫描管线）。如 `dt view d.jsonl --where="turns(x)>=6 and x.source=='a'" --sort=-chars`
+- **长样本不卡**：几百条消息的样本先渲染前两屏、其余后台补齐，长按 `j` 只渲染停下的那一行
 - **详情字段定位**：切样本时详情自动停在同名字段位置（字段绑定，非绝对像素）；对话**按条拆段**(`msg0`/`msg1`…)，`n`/`N` 因此是逐条消息导航（底部字段滚动条到不了时也可达），亦可鼠标点击选中；详情边框右下角实时显示当前字段（表格边框：左上 文件·格式、右下 光标位置 N/总数）
 - **全量搜索/筛选/排序，三者可叠加**：`/` 搜索、`f` where、`F` 列值勾选、`s` 排序 —— 一律**扫描整个文件**(worker 线程，带进度，`Esc` 取消)，得到的全局行号序列即新浏览序列（翻窗口不失效）；状态栏显示「命中 M/N (占比%)」；`r` 清空全部。完整分布统计(直方图/分位数/value_counts)用 `dt stats`/`dt token-stats`
   - 三类约束各占独立槽位：`/` 一个(新搜索覆盖旧的)、`f` **可反复叠加**(多条之间 and)、`F` 按列独立记「保留值集」故可反复调整/加回

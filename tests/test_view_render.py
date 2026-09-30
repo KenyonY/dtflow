@@ -436,3 +436,14 @@ def test_turn_title_badge_and_char_count():
     assert title.plain[title.spans[0].start : title.spans[0].end] == " user "
     call = R._turn_title(Turn(role="assistant", content=""), "bold green")
     assert call.plain == " assistant "
+
+
+def test_turn_title_char_count_not_highlighted():
+    # 字数是算出来的: 搜数字不该在每条标题上出现假命中; 角色/函数名照常高亮
+    import re
+
+    from dtflow.rowfn import Turn
+
+    title = R._turn_title(Turn(role="user", content="x" * 16), "bold cyan", re.compile("16|user"))
+    hits = [title.plain[s.start : s.end] for s in title.spans if str(s.style) == R.HIGHLIGHT_STYLE]
+    assert hits == ["user"]

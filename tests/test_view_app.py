@@ -3740,3 +3740,44 @@ async def test_numeric_columns_right_aligned():
         cell = table.get_row_at(0)[vis.index("n")]
         assert cell.renderable.justify == "right"  # Padding 包着右对齐的 Text
         assert table.get_row_at(0)[vis.index("mixed")].justify != "right"
+
+
+@pytest.mark.asyncio
+async def test_empty_view_clears_detail_border_titles():
+    # 筛选 0 命中: 详情清空, 边框标题/副标题都不能残留上个样本的行号与字段名
+    app = _chat_app(5)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        detail = app.query_one("#detail")
+        assert detail.border_subtitle == "msg0"
+        app._apply_filter("turns(x)>99")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.view_indices == []
+        assert detail.border_title is None and detail.border_subtitle is None
+
+
+@pytest.mark.asyncio
+async def test_search_highlight_skips_generated_columns():
+    # 搜数字时, 行号/轮数/字数/roles 这些算出来的列不画命中, 数据列照画
+    import re
+
+    from rich.padding import Padding
+
+    rows = [{"messages": [{"role": "user", "content": "1"}], "score": 1} for _ in range(3)]
+    app = _make_app(rows)
+    async with app.run_test(size=(120, 20)) as pilot:
+        await pilot.pause()
+        app._search_re = re.compile("1")
+        app._populate()
+        await pilot.pause()
+        vis = app._visible_columns()
+        row = app.query_one("#table").get_row_at(0)
+
+        def spans(col):
+            cell = row[vis.index(col)]
+            text = cell.renderable if isinstance(cell, Padding) else cell
+            return text.spans
+
+        assert not spans("#") and not spans("turns") and not spans("chars")
+        assert spans("first_user") and spans("score")

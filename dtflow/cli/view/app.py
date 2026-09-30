@@ -958,7 +958,7 @@ class ViewApp(App):
     #prompt.active { display: block; }
     #statusbar { dock: bottom; height: 1; background: $panel; color: $text-muted; padding: 0 1; }
     #status { width: 1fr; height: 1; }
-    #hint { width: auto; height: 1; }
+    #hint { width: auto; height: 1; padding-left: 2; }
     /* Fixed width: width:auto collapses on VerticalScroll (scroll containers don't size to content).
        98 = longest help line + padding + border; max-* 100% scrolls instead of clipping on small terminals */
     #help-box { padding: 1 2; border: round $primary; background: $surface;
@@ -1717,17 +1717,28 @@ class ViewApp(App):
         逐格判断列类型要多花 10%+)。
 
         一律包成 Text 绕过 DataTable 的 markup 解析 (数据含 [/xxx] 会 MarkupError); 列宽装不下
-        以 … 收尾; 行号列暗色、数值列右对齐、roles 按角色着色; 有搜索时命中处画上黄底。
+        以 … 收尾; 行号列暗色、数值列右对齐、roles 按角色着色; 有搜索时命中处画上黄底 ——
+        只画数据列: 行号、轮数/字数、roles 签名这些是算出来的, 搜数字时画上去全是假命中。
         """
         hl = self._search_re
 
         def plain(s: str) -> Text:
             return render._hl(Text(s, no_wrap=True, overflow="ellipsis"), hl)
 
-        def roles(s: str) -> Text:
-            return render._hl(render.roles_text(s), hl)
+        def plain_nohl(s: str) -> Text:
+            return Text(s, no_wrap=True, overflow="ellipsis")
 
-        def right(style: str) -> Callable[[str], RenderableType]:
+        # roles 签名种类很少 (u→a、sys→u→a…), 按签名缓存着色结果: 无搜索时各行共用同一个
+        # Text (只读), 有搜索时复制一份再叠高亮
+        roles_cache: Dict[str, Text] = {}
+
+        def roles(s: str) -> Text:
+            text = roles_cache.get(s)
+            if text is None:
+                text = roles_cache[s] = render.roles_text(s)
+            return text
+
+        def right(style: str, hl) -> Callable[[str], RenderableType]:
             # 右侧留一格: 贴着列边的数字会和表头的列分隔线 │ 粘成一团。不能用尾随空格 ——
             # rich 右对齐时先 rstrip, 空格会被吃掉
             def fmt(s: str) -> Padding:
@@ -1736,11 +1747,17 @@ class ViewApp(App):
 
             return fmt
 
-        special = {"#": right("dim"), "roles": roles}
-        number = right("")
-        return [
-            special.get(name) or (number if name in self._numeric_cols else plain) for name in vis
-        ]
+        number, number_derived = right("", hl), right("", None)
+        special = {"#": right("dim", None), "roles": roles, "has_input": plain_nohl}
+
+        def pick(name: str) -> Callable[[str], RenderableType]:
+            if name in special:
+                return special[name]
+            if name in self._numeric_cols:
+                return number_derived if name in render.NUMERIC_DERIVED else number
+            return plain
+
+        return [pick(name) for name in vis]
 
     def _row_texts(
         self, idx: int, vis: List[str], fmts: List[Callable[[str], RenderableType]]
@@ -1759,7 +1776,6 @@ class ViewApp(App):
             self._row_key_seq += 1
             self._row_keys.append(key)
             table.add_row(*self._row_texts(idx, vis, fmts), key=key)
-        self._update_status()
         if self.view_indices:
             self._refresh_detail(0)
         else:  # 空视图 (0 命中): 清详情, 免残留上个样本
@@ -1774,6 +1790,7 @@ class ViewApp(App):
             self._field_texts = []
             self._cur_anchors = {}
             self._mount_gen += 1
+        self._update_status()  # 放在清详情之后: 边框副标题的当前字段要读到清空后的状态
         self._restore_scroll_x(table, scroll_x)
 
     def _field_names(self) -> List[str]:
@@ -2037,9 +2054,7 @@ class ViewApp(App):
             return
         # 压在可拖的线上时, 那条更贴当下的提示排最前, 右侧常驻提示让位
         contextual = self._edge_hint or self._split_hint
-        if (
-            self._edge_hint
-        ):  # 光是高亮那条线还不够, 直说一句它能拖  # 光是高亮那条线还不够, 直说一句它能拖
+        if self._edge_hint:  # 光是高亮那条线还不够, 直说一句它能拖
             hint = t(
                 "[reverse] drag to resize column · double-click to auto-fit [/reverse]",
                 "[reverse] 拖动调列宽 · 双击恢复自适应 [/reverse]",
