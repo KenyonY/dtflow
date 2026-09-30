@@ -1,0 +1,184 @@
+"""dt view 多模态图片: 引用抽取 (rowfn) / 详情与派生列 (render) / 读图 (image)。"""
+
+import base64
+import functools
+import http.server
+import io
+import threading
+
+import pytest
+from PIL import Image
+
+from dtflow.cli.view import image as vimg
+from dtflow.cli.view import render as R
+from dtflow.rowfn import _normalize_turns, image_mismatch, imgs
+
+
+def _png(w=4, h=3) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "red").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# --------------------------------------------------------------------------- #
+# 引用抽取
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "seg, ref",
+    [
+        ({"type": "image_url", "image_url": {"url": "a.png"}}, "a.png"),
+        ({"type": "image_url", "image_url": "b.png"}, "b.png"),
+        ({"type": "input_image", "image_url": "c.png"}, "c.png"),
+        ({"type": "image", "image": "d.png"}, "d.png"),
+        (
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "AA"},
+            },
+            "data:image/jpeg;base64,AA",
+        ),
+        ({"type": "image_url"}, ""),  # 引用缺失: 保留一张空引用, 渲染时报出来而不是悄悄丢掉
+    ],
+)
+def test_inline_image_segments(seg, ref):
+    row = {"messages": [{"role": "user", "content": [{"type": "text", "text": "看"}, seg]}]}
+    (turn,) = _normalize_turns(row)
+    assert turn.content == "看 <image>"  # 图的位置留在正文里, 不再是字面的 "image_url"
+    assert turn.images == (ref,)
+    assert image_mismatch(row, [turn]) is None
+
+
+def test_top_level_images_follow_placeholders():
+    row = {
+        "images": ["a.jpg", {"path": "b.jpg"}, "c.jpg"],
+        "messages": [
+            {"role": "user", "content": "<image><image>比较"},
+            {"role": "assistant", "content": "差不多"},
+            {"role": "user", "content": "再看 <image>"},
+        ],
+    }
+    turns = _normalize_turns(row)
+    assert [t.images for t in turns] == [("a.jpg", "b.jpg"), (), ("c.jpg",)]
+    assert image_mismatch(row, turns) is None
+    assert imgs(row) == 3
+
+
+def test_llava_single_image_field():
+    row = {"image": "coco/1.jpg", "conversations": [{"from": "human", "value": "<image>\n什么"}]}
+    assert _normalize_turns(row)[0].images == ("coco/1.jpg",)
+
+
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        ({"images": ["a", "b"], "messages": [{"role": "user", "content": "<image>"}]}, (1, 2)),
+        ({"images": ["a"], "messages": [{"role": "user", "content": "<image><image>"}]}, (2, 1)),
+        ({"messages": [{"role": "user", "content": "<image> 但没图"}]}, (1, 0)),
+        ({"messages": [{"role": "user", "content": "纯文本"}]}, None),
+    ],
+)
+def test_image_mismatch(row, expected):
+    assert image_mismatch(row, _normalize_turns(row)) == expected
+
+
+def test_text_only_rows_unchanged():
+    row = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
+    assert _normalize_turns(row)[0].content == "hi"
+    assert imgs(row) == 0
+
+
+# --------------------------------------------------------------------------- #
+# 渲染: 详情图片行 / 数量不匹配警告 / imgs 列
+# --------------------------------------------------------------------------- #
+def test_detail_shows_image_lines_and_is_searchable():
+    row = {"images": ["img/cat.png"], "messages": [{"role": "user", "content": "<image>猫?"}]}
+    secs = R.render_detail_sections(row, "openai_chat", split_turns=True)
+    plain = secs[0][2]
+    assert R.IMAGE_LINE_PREFIX + "img/cat.png" in plain  # 按路径搜得到
+
+
+def test_detail_warns_on_mismatch_at_top():
+    row = {"images": ["a", "b"], "messages": [{"role": "user", "content": "<image>"}]}
+    secs = R.render_detail_sections(row, "openai_chat", split_turns=True)
+    assert secs[0][2].startswith("⚠ 1 个 <image> 占位, 但有 2 张图")
+
+
+def test_data_uri_label_is_short():
+    ref = "data:image/png;base64," + "A" * 4096
+    assert R.image_label(ref) == "data:image/png;base64,… (3.0 KB)"
+
+
+def test_imgs_column_only_when_window_has_images():
+    text_row = {"messages": [{"role": "user", "content": "hi"}]}
+    img_row = {"images": ["a"], "messages": [{"role": "user", "content": "<image>"}]}
+    assert "imgs" not in R.build_columns([text_row], "openai_chat")
+    assert "imgs" not in R.default_visible_columns(
+        R.build_columns([text_row], "openai_chat"), "openai_chat"
+    )
+    cols = R.build_columns([text_row, img_row], "openai_chat")
+    assert "imgs" in cols and "imgs" in R.default_visible_columns(cols, "openai_chat")
+    cells = dict(zip(cols, R.row_cells(0, img_row, "openai_chat", cols), strict=False))
+    assert cells["imgs"] == "1"
+    assert R.DERIVED_EXPR["imgs"] == "imgs(x)"
+
+
+# --------------------------------------------------------------------------- #
+# 读图
+# --------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def _fresh_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(vimg, "CACHE_DIR", tmp_path / "cache")
+    vimg.load.cache_clear()
+
+
+def test_load_relative_and_absolute_path(tmp_path):
+    (tmp_path / "img").mkdir()
+    (tmp_path / "img" / "a.png").write_bytes(_png(8, 6))
+    got = vimg.load("img/a.png", str(tmp_path))
+    assert got.image.size == (8, 6)
+    assert got.describe().startswith("8×6 PNG ")
+    assert vimg.load(str(tmp_path / "img" / "a.png"), "/nowhere").image.size == (8, 6)
+
+
+def test_load_data_uri():
+    ref = "data:image/png;base64," + base64.b64encode(_png(2, 2)).decode()
+    assert vimg.load(ref, ".").image.size == (2, 2)
+
+
+@pytest.mark.parametrize(
+    "ref, reason",
+    [
+        ("", "图片引用为空"),
+        ("missing.png", "文件不存在"),
+        ("oss://bucket/a.png", "不支持的协议: oss://"),
+        ("data:image/png;base64,bm90IGFuIGltYWdl", "图片解码失败"),
+    ],
+)
+def test_load_errors(tmp_path, ref, reason):
+    with pytest.raises(vimg.ImageError, match=reason):
+        vimg.load(ref, str(tmp_path))
+
+
+@pytest.fixture
+def http_root(tmp_path):
+    (tmp_path / "a.png").write_bytes(_png(5, 5))
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(tmp_path))
+    handler.log_message = lambda *a, **k: None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}", tmp_path
+    server.shutdown()
+
+
+def test_load_url_downloads_once(http_root):
+    base, root = http_root
+    assert vimg.load(f"{base}/a.png", ".").image.size == (5, 5)
+    (root / "a.png").unlink()  # 源站没了也能从磁盘缓存读
+    vimg.load.cache_clear()
+    assert vimg.load(f"{base}/a.png", ".").image.size == (5, 5)
+
+
+def test_load_url_404(http_root):
+    base, _ = http_root
+    with pytest.raises(vimg.ImageError, match="HTTP 404"):
+        vimg.load(f"{base}/nope.png", ".")

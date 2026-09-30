@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, NamedTuple, Pattern, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Pattern, Tuple
 
 import orjson
 
@@ -32,6 +32,7 @@ class Turn(NamedTuple):
     reasoning: str = ""  # reasoning_content / reasoning (思维链)
     tool_calls: Tuple[ToolCall, ...] = ()
     call_id: str = ""  # tool 消息回应的 tool_call_id
+    images: Tuple[str, ...] = ()  # 这条消息引用的图片 (路径/URL/data URI), 顺序同正文里的 <image>
 
     @property
     def chars(self) -> int:
@@ -78,17 +79,20 @@ def _normalize_turns(row: Any) -> List[Turn]:
     if not isinstance(row, dict):
         return []
     if isinstance(row.get("messages"), list):
-        msgs = row["messages"]
-        return [
-            Turn(
-                role=str(m.get("role", "")),
-                content=_as_text(m.get("content")),
-                reasoning=_as_text(m.get("reasoning_content") or m.get("reasoning")),
-                tool_calls=_parse_tool_calls(m.get("tool_calls") or m.get("function_call")),
-                call_id=str(m.get("tool_call_id") or ""),
+        turns = []
+        for m in row["messages"]:
+            content, images = _split_content(m.get("content"))
+            turns.append(
+                Turn(
+                    role=str(m.get("role", "")),
+                    content=content,
+                    reasoning=_as_text(m.get("reasoning_content") or m.get("reasoning")),
+                    tool_calls=_parse_tool_calls(m.get("tool_calls") or m.get("function_call")),
+                    call_id=str(m.get("tool_call_id") or ""),
+                    images=images,
+                )
             )
-            for m in msgs
-        ]
+        return _attach_top_images(turns, row)
     if isinstance(row.get("conversations"), list):
         turns = []
         for m in row["conversations"]:
@@ -106,25 +110,111 @@ def _normalize_turns(row: Any) -> List[Turn]:
                     calls = (ToolCall("?", raw, ""),)
                 value = None
             turns.append(Turn(role=role, content=_as_text(value), tool_calls=calls))
-        return turns
+        return _attach_top_images(turns, row)
     return []
 
 
+IMAGE_TOKEN = "<image>"  # LLaMA-Factory/swift/LLaVA 的图片占位; 内联图片片段在正文里也写成它
+
+
 def _as_text(v: Any) -> str:
-    """content 可能是 str/None, 也可能是多模态 list, 统一成字符串。"""
+    """content 可能是 str/None, 也可能是多模态 list, 统一成字符串 (图片片段写成 <image>)。"""
     if v is None:
         return ""
     if isinstance(v, str):
         return v
     if isinstance(v, list):
-        parts = []
-        for seg in v:
-            if isinstance(seg, dict):
-                parts.append(seg.get("text") or seg.get("type") or "")
-            else:
-                parts.append(str(seg))
-        return " ".join(p for p in parts if p)
+        return _split_content(v)[0]
     return str(v)
+
+
+def _split_content(v: Any) -> Tuple[str, Tuple[str, ...]]:
+    """content → (正文, 内联图片引用)。多模态 list 里的图片片段在正文中留 <image> 占位,
+    引用单独取出 —— 看图文对齐要知道图在哪句话旁边, 光一个 "image_url" 字样没用。"""
+    if not isinstance(v, list):
+        return _as_text(v), ()
+    parts: List[str] = []
+    images: List[str] = []
+    for seg in v:
+        if not isinstance(seg, dict):
+            parts.append(str(seg))
+            continue
+        ref = _image_ref(seg)
+        if ref is None:
+            parts.append(seg.get("text") or seg.get("type") or "")
+        else:
+            images.append(ref)
+            parts.append(IMAGE_TOKEN)
+    return " ".join(p for p in parts if p), tuple(images)
+
+
+def _image_ref(seg: Dict) -> Optional[str]:
+    """多模态片段是图片则返回引用 (取不到为空串, 渲染时报缺失), 否则 None。
+
+    认: OpenAI ``image_url`` (str 或 {url}) / Responses ``input_image`` /
+    qwen·swift ``{"type":"image","image":...}`` / Anthropic ``source`` (base64 转 data URI)。
+    """
+    typ = seg.get("type")
+    if typ in ("image_url", "input_image"):
+        v = seg.get("image_url")
+        if isinstance(v, dict):
+            v = v.get("url")
+        return v if isinstance(v, str) else ""
+    if typ != "image":
+        return None
+    if isinstance(seg.get("image"), str):
+        return seg["image"]
+    src = seg.get("source")
+    if isinstance(src, dict):
+        if src.get("type") == "base64":
+            return f"data:{src.get('media_type') or 'image/png'};base64,{src.get('data') or ''}"
+        return str(src.get("url") or "")
+    return ""
+
+
+def _top_images(row: Dict) -> List[str]:
+    """样本级图片列表: LLaMA-Factory/swift 的 ``images``, LLaVA 的单个 ``image``。
+    元素是路径/URL 字符串, 或带 path/url 的 dict (HF datasets 导出的样子)。"""
+    v = row.get("images", row.get("image"))
+    if v is None:
+        return []
+    out = []
+    for x in v if isinstance(v, list) else [v]:
+        if isinstance(x, dict):
+            x = x.get("path") or x.get("url")
+        out.append(x if isinstance(x, str) else "")
+    return out
+
+
+def _attach_top_images(turns: List[Turn], row: Dict) -> List[Turn]:
+    """样本级图片按顺序对上正文里的 <image>, 分到各条消息。已有内联图片的样本不动
+    (占位是片段生成的, 再对一遍会重复)。对不上的由 image_mismatch 报出来。"""
+    refs = _top_images(row)
+    if not refs or any(t.images for t in turns):
+        return turns
+    it = iter(refs)
+    out = []
+    for turn in turns:
+        n = turn.content.count(IMAGE_TOKEN)
+        if n:  # zip 先耗尽 range 就停, 不会多吃 it 的元素
+            turn = turn._replace(images=tuple(r for _, r in zip(range(n), it, strict=False)))
+        out.append(turn)
+    return out
+
+
+def image_mismatch(row: Any, turns: List[Turn]) -> Optional[Tuple[int, int]]:
+    """<image> 占位数与样本级图片数不等时返回 (占位数, 图片数), 否则 None。
+
+    两者对不上是 VLM 数据最常见的坏样本 (训练框架会直接报错或错位)。内联图片片段
+    自带占位, 天然对齐, 不参与检查。
+    """
+    if not isinstance(row, dict):
+        return None
+    refs = _top_images(row)
+    if not refs and any(t.images for t in turns):
+        return None
+    n = sum(t.content.count(IMAGE_TOKEN) for t in turns)
+    return (n, len(refs)) if n != len(refs) else None
 
 
 def _roles_sig(turns: List[Turn]) -> str:
@@ -223,6 +313,11 @@ def calls(x: Any) -> str:
     return _calls_sig(_normalize_turns(_raw(x)))
 
 
+def imgs(x: Any) -> int:
+    """样本引用的图片数 (内联图片片段, 或按 <image> 占位对上的样本级 images/image)。"""
+    return sum(len(t.images) for t in _normalize_turns(_raw(x)))
+
+
 def fulltext(x: Any) -> str:
     """整条记录 (或传入的子结构) 所有标量值拼成的文本, 只取值不含键名。"""
     return row_text(_raw(x))
@@ -251,6 +346,7 @@ HELPERS: Dict[str, Callable[..., Any]] = {
     "first_user": first_user,
     "chars": chars,
     "calls": calls,
+    "imgs": imgs,
     "fulltext": fulltext,
     "search": search,
 }
@@ -282,6 +378,14 @@ HELPER_DOCS: List[Tuple[str, str, str]] = [
         t(
             "called function names, comma-joined; empty when none",
             "调用过的函数名, 逗号分隔; 无则空串",
+        ),
+    ),
+    (
+        "imgs",
+        "imgs(x) -> int",
+        t(
+            "number of images the conversation references (matched to <image> placeholders)",
+            "对话引用的图片数 (按 <image> 占位对上)",
         ),
     ),
     (

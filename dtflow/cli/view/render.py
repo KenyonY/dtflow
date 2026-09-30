@@ -22,7 +22,16 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from ...i18n import t
-from ...rowfn import Turn, _as_text, _calls_sig, _normalize_turns, _roles_sig
+from ...rowfn import (
+    Turn,
+    _as_text,
+    _calls_sig,
+    _image_ref,
+    _normalize_turns,
+    _roles_sig,
+    _top_images,
+    image_mismatch,
+)
 
 # 搜索命中的高亮样式 (表格单元格与详情共用; 黄底黑字在明暗主题下都醒目)
 HIGHLIGHT_STYLE = "black on yellow"
@@ -111,13 +120,15 @@ def _top_level_fields(rows: List[Dict], skip: set, reserved: set) -> List[str]:
 # 表达式里不注入这些名字: 对话列对应 rowfn 的同名行函数 (turns(x)), 其余是字段的简单变换,
 # 翻译规则见 DERIVED_EXPR。
 _DERIVED_COLUMNS = {
-    "openai_chat": ["turns", "roles", "first_user", "chars", "calls"],
-    "sharegpt": ["turns", "roles", "first_user", "chars", "calls"],
+    "openai_chat": ["turns", "roles", "first_user", "chars", "calls", "imgs"],
+    "sharegpt": ["turns", "roles", "first_user", "chars", "calls", "imgs"],
     "dpo": ["prompt", "chosen_chars", "rejected_chars"],
     "alpaca": ["instruction", "has_input", "out_chars"],
 }
 # 数值型派生列: 值筛选翻译回 --where 时直接比数, 其余按字符串
-NUMERIC_DERIVED = frozenset({"turns", "chars", "chosen_chars", "rejected_chars", "out_chars"})
+NUMERIC_DERIVED = frozenset(
+    {"turns", "chars", "imgs", "chosen_chars", "rejected_chars", "out_chars"}
+)
 # 派生列 → 取值表达式 (把表格上的列翻译成 dt filter / dt sort 能吃的 Python 表达式)。
 # 对话列是 rowfn 行函数; dpo/alpaca 的列只是字段的简单变换, 直接写出来。
 DERIVED_EXPR = {
@@ -126,6 +137,7 @@ DERIVED_EXPR = {
     "first_user": "first_user(x)",
     "chars": "chars(x)",
     "calls": "calls(x)",
+    "imgs": "imgs(x)",
     "prompt": "x.get('prompt')",
     "chosen_chars": "len(x.get('chosen') or '')",
     "rejected_chars": "len(x.get('rejected') or '')",
@@ -159,6 +171,7 @@ def derived_values(row: Dict, fmt: str) -> Dict[str, Any]:
             "first_user": first_user,
             "chars": sum(t.chars for t in turns),
             "calls": _calls_sig(turns),
+            "imgs": sum(len(t.images) for t in turns),
         }
     if fmt == "dpo":
         return {
@@ -179,6 +192,8 @@ def build_columns(rows: List[Dict], fmt: str) -> List[str]:
     """返回当前窗口发现的完整列目录 (派生列 + 顶层元数据列)。"""
     # base = "#" + 派生列 (单一来源 _DERIVED_COLUMNS, 与筛选的 derived_columns 一致, 不漂移)
     base = ["#"] + _DERIVED_COLUMNS.get(fmt, [])
+    if "imgs" in base and not any(_has_images(r) for r in rows):
+        base.remove("imgs")  # 纯文本对话不占这一列; 后续窗口出现图片时由列目录合并补上
     if fmt in ("openai_chat", "sharegpt"):
         skip = {"messages", "conversations"}
     elif fmt == "dpo":
@@ -190,6 +205,21 @@ def build_columns(rows: List[Dict], fmt: str) -> List[str]:
     return base + _top_level_fields(rows, skip, set(base))
 
 
+def _has_images(row: Any) -> bool:
+    """行里有没有图片 (只看结构, 不做完整归一化: 决定列目录时要扫整个窗口)。"""
+    if not isinstance(row, dict):
+        return False
+    if _top_images(row):
+        return True
+    msgs = row.get("messages")
+    return isinstance(msgs, list) and any(
+        isinstance(m, dict)
+        and isinstance(m.get("content"), list)
+        and any(isinstance(seg, dict) and _image_ref(seg) is not None for seg in m["content"])
+        for m in msgs
+    )
+
+
 def default_visible_columns(columns: List[str], fmt: str) -> List[str]:
     """给完整列目录套默认可见策略。
 
@@ -199,7 +229,7 @@ def default_visible_columns(columns: List[str], fmt: str) -> List[str]:
     if fmt not in _TRAINING_FORMATS:
         return list(columns)
 
-    base = ["#"] + _DERIVED_COLUMNS[fmt]
+    base = [c for c in ["#"] + _DERIVED_COLUMNS[fmt] if c in columns]
     metadata = [c for c in columns if c not in base]
     visible = base + metadata[:_TRAINING_META_LIMIT]
     for col in _DIAGNOSTIC_COLUMNS:
@@ -336,6 +366,24 @@ def _turn_header(turn: Turn) -> str:
     return f"[{turn.role}]"
 
 
+def image_label(ref: str) -> str:
+    """图片引用的显示形态: data URI 只留头部与大小 (base64 正文动辄几十万字符)。"""
+    if ref.startswith("data:"):
+        head, _, body = ref.partition(",")
+        return f"{head},… ({len(body) * 3 // 4 / 1024:.1f} KB)"
+    return ref or t("(empty image reference)", "(图片引用为空)")
+
+
+IMAGE_LINE_PREFIX = "🖼 "  # 详情里图片行的开头; app 靠它认出点击的是图片行
+
+
+def _image_lines(turn: Turn, highlight: Optional[Pattern]) -> List[Text]:
+    return [
+        _hl(Text(IMAGE_LINE_PREFIX + image_label(ref), style="magenta"), highlight)
+        for ref in turn.images
+    ]
+
+
 def _render_turn(
     turn: Turn, highlight: Optional[Pattern] = None, code_bg: Optional[str] = None
 ) -> RenderableType:
@@ -356,6 +404,7 @@ def _render_turn(
             parts.append(block or _hl(Text(turn.content), highlight))
         else:
             parts.extend(_render_content(turn.content, highlight, code_bg))
+    parts.extend(_image_lines(turn, highlight))
     for call in turn.tool_calls:
         title = Text(f"⚙ {call.name}", style="bold yellow")
         if call.call_id:
@@ -385,6 +434,7 @@ def _turn_plain(turn: Turn) -> str:
         lines.append(turn.reasoning)
     if turn.content:
         lines.append(turn.content)
+    lines.extend(IMAGE_LINE_PREFIX + image_label(ref) for ref in turn.images)
     for c in turn.tool_calls:
         lines.append(f"{c.name}({c.arguments}) {c.call_id}".rstrip())
     return "\n".join(lines)
@@ -440,6 +490,18 @@ def render_detail_sections(
         else:
             plain = "\n".join(_turn_plain(turn) for turn in turns)
             secs.append((t("conversation", "对话"), _render_conversation(turns, highlight), plain))
+        mismatch = image_mismatch(row, turns)
+        if mismatch and secs:  # 坏样本放最上面, 一打开就看到
+            n, m = mismatch
+            warn = Text(
+                t(
+                    f"⚠ {n} <image> placeholder(s) but {m} image(s)",
+                    f"⚠ {n} 个 <image> 占位, 但有 {m} 张图",
+                ),
+                style="bold red",
+            )
+            name, rend, plain = secs[0]
+            secs[0] = (name, Group(warn, rend), f"{warn.plain}\n{plain}")
         extra = {
             k: v
             for k, v in row.items()
