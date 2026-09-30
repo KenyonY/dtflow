@@ -80,11 +80,11 @@ Double-click a column header: an input box opens over the header cell; type the 
 
 Pressing `q` with pending renames asks:
 
-- **Write back** rewrites the file with the new field names (streamed through a temp file in the same directory and swapped in atomically, `.gz` included) and records a `view_rename` operation with the equivalent `dt clean FILE --rename old:new -i` command in `FILE.lineage.json`, then exits.
+- **Save** rewrites the file with the new field names (streamed through a temp file in the same directory and swapped in atomically, `.gz` included) and records a `view_rename` operation with the equivalent `dt clean FILE --rename old:new -i` command in `FILE.lineage.json`, then exits.
 - **Discard** exits without touching the file.
 - **Cancel** (Esc) returns to the browser.
 
-Write-back is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.15 s; a slower second click on the same header while the picker is up also counts as a double-click.
+Saving is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.15 s; a slower second click on the same header while the picker is up also counts as a double-click.
 
 ## Closing the loop
 

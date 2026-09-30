@@ -437,16 +437,21 @@ def _get_value_len(value: Any) -> int:
 
 
 def _rename_item(item: Row, rename_map: Dict[str, str]) -> Row:
-    """重命名字段, 保持字段顺序。目标名已是该行的另一个字段时报错: 静默覆盖等于丢数据。"""
-    for old, new in rename_map.items():
-        if old in item and new in item and old != new:
-            raise ValueError(
-                t(
-                    f"rename {old!r} -> {new!r}: the row already has a field {new!r}",
-                    f"重命名 {old!r} -> {new!r}: 该行已有字段 {new!r}",
-                )
+    """重命名字段, 保持字段顺序。
+
+    改完键数变少即两个字段落到同一名字 (目标名已是该行未被改走的字段, 或多对一), 报错而不是
+    静默覆盖丢数据; 交换 (a:b,b:a) 与链式 (b:c,a:b) 键数不变, 照常。
+    """
+    out = {rename_map.get(k, k): v for k, v in item.items()}
+    if len(out) != len(item):
+        clash = sorted(k for k in out if sum(1 for j in item if rename_map.get(j, j) == k) > 1)
+        raise ValueError(
+            t(
+                f"rename would merge several fields into {clash} and lose data",
+                f"重命名会把多个字段并成 {clash}, 丢数据",
             )
-    return {rename_map.get(k, k): v for k, v in item.items()}
+        )
+    return out
 
 
 def _promote_fields(item: Row, promote_list: List[tuple]) -> Row:

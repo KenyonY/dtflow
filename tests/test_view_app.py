@@ -3417,7 +3417,13 @@ async def test_header_double_click_opens_rename_prompt_single_click_delays_value
         inp = app.screen.query_one("#hdr-edit")
         assert inp.value == "source"
         # 输入框盖在列头格上: 与列头同一行, 左边缘对齐列头格左侧 (含 padding)
-        assert inp.region.y == 1 and inp.region.x == x - 1 - app.query_one("#table").cell_padding
+        # 列头格 = 文字起点往左一个 padding (Textual 的列区域含左右 padding), 宽度也含 padding
+        tbl = app.query_one("#table")
+        widths = app._column_widths(app._visible_columns())
+        ci = app._visible_columns().index("source")
+        assert inp.region.y == 1 and inp.region.x == x - tbl.cell_padding
+        assert inp.region.width == widths[ci] + 2 * tbl.cell_padding  # 与列头格等宽
+        assert inp.region.right <= tbl.content_region.right
         await pilot.pause(0.4)  # 定时器已被取消, 值面板不会再弹
         assert isinstance(app.screen, HeaderEditScreen)
         inp.value = "src"
@@ -4045,3 +4051,47 @@ async def test_init_pipe_then_initial_constraints():
         assert app._pipe is not None and app.fmt == "generic"
         assert app._wheres == ["x.n >= 2"] and app._sort_spec == ("n", True)
         assert app._seq_total() == 20
+
+
+@pytest.mark.asyncio
+async def test_slow_double_click_renames_on_short_terminal():
+    """矮终端 (24 行): 值面板不能上移盖住列头, 否则第二击落进面板, 双击改名到不了列头。"""
+    from dtflow.cli.view.app import HeaderEditScreen, ValueFilterScreen
+
+    for height in (24, 20, 16):
+        app = _chat_app(40)
+        async with app.run_test(size=(120, height)) as pilot:
+            x = _header_x(app, "source")
+            await pilot.click("#table", offset=(x, 1))
+            await pilot.pause(0.25)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, ValueFilterScreen)
+            box = app.screen.query_one("#vf-box").region
+            assert box.bottom <= height, (height, box)
+            if height >= 20:  # 放得下时贴在列头下方, 不盖住列头行
+                assert box.y >= 2, (height, box)
+            _click_at(app, x, 1, chain=2)
+            await pilot.pause()
+            assert isinstance(app.screen, HeaderEditScreen), height
+            await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_rename_chain_does_not_crash_render(tmp_path):
+    """先 b→c 再 a→b (链式) 合法; 渲染路径绝不因改名冲突抛错。"""
+    p = tmp_path / "ab.jsonl"
+    p.write_text('{"a":1,"b":2}\n{"a":3,"b":4}\n')
+    from dtflow.cli.view.source import open_source
+
+    src = open_source(p, initial_size=2)
+    app = ViewApp(src, src.window(0, 2), 0, 2, "generic", p.name, filepath=str(p))
+    async with app.run_test() as pilot:
+        app._rename_column("b", "c")
+        app._rename_column("a", "b")
+        await pilot.pause()
+        assert app._renames == {"b": "c", "a": "b"} and app.return_code is None
+        assert [app._header_plain(c) for c in app._visible_columns() if c != "#"] == ["b", "c"]
+        assert app._apply_renames({"a": 1, "b": 2}) == {"b": 1, "c": 2}
+        # 显示路径遇到窗口外才会有的冲突行也不抛
+        assert app._apply_renames({"a": 1, "b": 2, "c": 9}) == {"b": 1, "c": 9}

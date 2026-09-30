@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Pattern, Set, Tuple
 
 import orjson
+from rich.cells import cell_len
 from rich.console import RenderableType
 from rich.markup import escape
 from rich.padding import Padding
@@ -368,7 +369,7 @@ _HELP = t(
   Esc          cancel a running scan
   Enter        zoom into the current sample (Esc to return)
   dbl-click hdr  rename the column: shows at once, the file is untouched until you quit,
-                 then q asks write back (dt clean --rename, lineage recorded) / discard
+                 then q asks save (dt clean --rename, lineage recorded) / discard
   drag hdr │   resize columns (Excel-style): the │ right of each header is the divider;
                  hover turns it ┃, drag left/right to resize, double-click to auto-fit;
                  widths stick to the column name across windows and filters
@@ -428,7 +429,7 @@ _HELP = t(
                  点面板外或按 Esc 取消; 被筛的列头带 ▾ 标记; 再次打开可加回已去掉的值
   Esc          (扫描时) 取消扫描
   Enter        放大当前样本 (Esc 返回)
-  双击列头     重命名该列: 界面立即改, 文件退出前不动; q 时询问 写回 (等价 dt clean
+  双击列头     重命名该列: 界面立即改, 文件退出前不动; q 时询问 保存 (等价 dt clean
                  --rename, 记血缘) / 丢弃
   拖表头的 │   改列宽 (Excel 式): 表头每列右侧那道 │ 即分隔线, 鼠标压上去变 ┃
                  按住左右拖即改宽, 双击恢复自适应; 列宽记在列名上, 翻窗口/改筛选后仍在
@@ -810,22 +811,34 @@ class HeaderEditScreen(ModalScreen):
 
     BINDINGS = [Binding("escape", "cancel", t("Cancel", "取消"), show=False)]
 
-    def __init__(self, value: str, cell: Region):
+    def __init__(self, value: str, cell: Region, padding: int = 1, right: Optional[int] = None):
         super().__init__()
         self._value = value
-        self._cell = cell  # 列头格的屏幕区域
+        self._cell = cell  # 列头格的屏幕区域 (含左右 padding)
+        self._padding = padding  # 表格的 cell padding: 输入文字与列头文字落在同一列
+        self._right = right  # 表格内容区右缘: 加宽时不越过它压到详情区
 
     def compose(self) -> ComposeResult:
         yield Input(value=self._value, id="hdr-edit")
 
     def on_mount(self) -> None:
         inp = self.query_one("#hdr-edit", Input)
-        width = max(self._cell.width, 16)  # 短列名也留出打字的余地
-        x = max(0, min(self._cell.x, self.app.size.width - width))
-        inp.styles.offset = (x, self._cell.y)
-        inp.styles.width = width
+        # 就是列头格那么宽 (看起来是列头本身变成可编辑); 只在装不下当前文字 + 光标时向右加宽,
+        # 且不越过表格右缘。更长的名字在框内横向滚动。
+        inp.styles.offset = (self._cell.x, self._cell.y)
+        inp.styles.padding = (0, self._padding)
+        self._fit(self._value)
         inp.focus()
         inp.action_end()
+
+    def _fit(self, text: str) -> None:
+        right = self._right if self._right is not None else self.app.size.width
+        need = cell_len(text) + 2 * self._padding + 1  # +1 给行尾光标
+        width = max(1, min(max(self._cell.width, need), right - self._cell.x))
+        self.query_one("#hdr-edit", Input).styles.width = width
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._fit(event.value)  # 边打边长, 不把开头滚出框外
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
@@ -863,7 +876,7 @@ class SaveScreen(ModalScreen):
 
     BINDINGS = [
         Binding("escape", "cancel", t("Cancel", "取消"), priority=True),
-        Binding("w", "write", t("Write back", "写回"), priority=True),
+        Binding("s", "write", t("Save", "保存"), priority=True),
         Binding("d", "discard", t("Discard", "丢弃"), priority=True),
     ]
 
@@ -886,7 +899,7 @@ class SaveScreen(ModalScreen):
                 yield Static(f"[yellow]{escape(self._why_not)}[/yellow]")
             with Horizontal(classes="panel-btns"):
                 if self._can_write:
-                    yield Button(t("Write back (w)", "写回 (w)"), id="sv-write", variant="primary")
+                    yield Button(t("Save (s)", "保存 (s)"), id="sv-write", variant="primary")
                 yield Button(t("Discard (d)", "丢弃 (d)"), id="sv-discard")
                 yield Button(t("Cancel (Esc)", "取消 (Esc)"), id="sv-cancel")
 
@@ -985,8 +998,13 @@ class ValueFilterScreen(ModalScreen):
     def on_mount(self) -> None:
         self._rebuild()
         self.query_one("#vf-search", Input).focus()  # 打开即可打字过滤; ↓ 进列表勾选
-        list_h = _fit_panel(self, self.query_one(SelectionList), _VF_CHROME, hard_max=14)
-        if self._anchor is not None:  # 贴列头下方弹出; 右/下溢出则左移上移, 保证整块可见
+        below = None
+        if self._anchor is not None:
+            # 列头下方放得下 (列表至少 3 行) 就压缩列表贴在下方, 不上移盖住列头行
+            below = self.app.size.height - self._anchor[1] - _VF_CHROME
+        hard_max = min(14, below) if below is not None and below >= 3 else 14
+        list_h = _fit_panel(self, self.query_one(SelectionList), _VF_CHROME, hard_max=hard_max)
+        if self._anchor is not None:  # 贴列头下方弹出; 溢出则左移/上移, 保证整块可见
             x, y = self._anchor
             x = max(0, min(x, self.app.size.width - self._BOX_W))
             y = min(y, max(0, self.app.size.height - (list_h + _VF_CHROME)))
@@ -999,11 +1017,12 @@ class ValueFilterScreen(ModalScreen):
 
         单击列头开本面板只延后 0.15s, 人手双击常慢于这个间隔, 第二击就落到了本面板上:
         它落在同一列头格里且 textual 判为连击 (0.5s 内同位置) 时, 按双击处理 → 交回 app 改名。
+        这个判断先于"点在面板内": 极矮的终端里面板只能上移盖住列头行, 双击仍要能改名。
         """
-        if event.screen_offset in self.query_one("#vf-box", Vertical).region:
-            return
         if event.chain >= 2 and self._header is not None and event.screen_offset in self._header:
             self.dismiss("rename")
+        elif event.screen_offset in self.query_one("#vf-box", Vertical).region:
+            return
         else:
             self.dismiss(None)
         event.stop()
@@ -1181,7 +1200,7 @@ class ViewApp(App):
                 border: round $warning; background: $surface; padding: 1 2; }
     #save-box Static { width: 1fr; }
     HeaderEditScreen { background: transparent; align: left top; }
-    #hdr-edit { border: none; height: 1; padding: 0; background: $boost; }
+    #hdr-edit { border: none; height: 1; padding: 0; background: $boost; text-style: bold; }
     ValueFilterScreen { align: center middle; }
     #vf-box { width: 56; max-width: 100%; height: auto; max-height: 100%;
               border: round $primary;
@@ -1621,11 +1640,10 @@ class ViewApp(App):
         return shown
 
     def _apply_renames(self, row: Dict) -> Dict:
-        if not self._renames:
+        """显示用的改名: 不做冲突检查 (校验在输入时按列目录做, 写回时按每一行做), 渲染绝不抛错。"""
+        if not self._renames or not isinstance(row, dict):
             return row
-        from ...ops import _rename_item
-
-        return _rename_item(row, self._renames)
+        return {self._renames.get(k, k): v for k, v in row.items()}
 
     def _rename_column(self, col: str, new: str) -> None:
         """把原始列 col 显示为 new。校验在此刻报错, 不留到保存。"""
@@ -1655,7 +1673,7 @@ class ViewApp(App):
         self._rebuild_columns()
         self._refresh_detail(self.query_one("#table", DataTable).cursor_row)
         self._update_status()
-        self.notify(escape(t(f"{col} → {new} (q to write back)", f"{col} → {new} (q 时写回)")))
+        self.notify(escape(t(f"{col} → {new} (q to save)", f"{col} → {new} (q 时保存)")))
 
     def _rename_summary(self) -> str:
         return ", ".join(f"{k} → {v}" for k, v in self._renames.items())
@@ -1694,7 +1712,7 @@ class ViewApp(App):
         except Exception as e:
             if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
-            self.notify(escape(t(f"Write back failed: {e}", f"写回失败: {e}")), severity="error")
+            self.notify(escape(t(f"Save failed: {e}", f"保存失败: {e}")), severity="error")
             return False
         try:
             _append_lineage(
@@ -1723,12 +1741,12 @@ class ViewApp(App):
         elif self._pipe is not None:
             why_not = t(
                 "a pipe result can't be written back to the source file; press r first, or w to export",
-                "管道结果不能写回原文件; 先按 r 回到原文件, 或用 w 导出",
+                "管道结果不能保存回原文件; 先按 r 回到原文件, 或用 w 导出",
             )
         else:
             why_not = t(
-                "stdin / follow mode can't write back; use w to export with the new names",
-                "stdin / follow 模式不能写回原文件; 用 w 导出即得到新列名",
+                "stdin / follow mode can't save; use w to export with the new names",
+                "stdin / follow 模式不能保存回原文件; 用 w 导出即得到新列名",
             )
 
         def done(choice: Optional[str]) -> None:
@@ -2588,7 +2606,9 @@ class ViewApp(App):
             if value is not None:
                 self._rename_column(col, value)
 
-        self.push_screen(HeaderEditScreen(self._shown(col), cell), done)
+        table = self.query_one("#table", DataTable)
+        right = table.content_region.right
+        self.push_screen(HeaderEditScreen(self._shown(col), cell, table.cell_padding, right), done)
 
     # ------------------------------------------------------------------ #
     # 动作
@@ -4197,10 +4217,12 @@ class ViewApp(App):
             table = self.query_one("#table", DataTable)
             vis = self._visible_columns()
             ci = vis.index(col)
-            region = table._get_column_region(ci)
-            x = table.content_region.x + region.x - table.scroll_offset.x - table.cell_padding
-            y = table.content_region.y
-            return Region(max(0, x), y, region.width + 2 * table.cell_padding, 1)
+            region = table._get_column_region(ci)  # x/width 已含左右 padding
+            x = table.content_region.x + region.x - table.scroll_offset.x
+            if ci >= table.fixed_columns:  # 横向滚动时冻结列 (#) 始终在最左, 别盖到它
+                fixed_w = sum(table._get_column_region(j).width for j in range(table.fixed_columns))
+                x = max(x, table.content_region.x + fixed_w)
+            return Region(x, table.content_region.y, region.width, 1)
         except Exception:  # noqa: BLE001  定位失败退回居中, 不影响功能
             return None
 

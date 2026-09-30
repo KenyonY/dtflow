@@ -580,3 +580,18 @@ def test_markup_like_user_inputs_do_not_crash(tmp_path):
             "key[/b]": "v[/quote]",
         }
     )
+
+
+def test_rename_item_swap_chain_and_merge():
+    import pytest
+
+    from dtflow.ops import _rename_item
+
+    row = {"a": 1, "b": 2}
+    assert _rename_item(row, {"a": "b", "b": "a"}) == {"b": 1, "a": 2}  # 交换
+    assert _rename_item(row, {"b": "c", "a": "b"}) == {"b": 1, "c": 2}  # 链式
+    assert _rename_item({"a": 1}, {"a": "b"}) == {"b": 1}
+    with pytest.raises(ValueError):
+        _rename_item(row, {"a": "b"})  # 目标已存在且未被改走
+    with pytest.raises(ValueError):
+        _rename_item(row, {"a": "c", "b": "c"})  # 多对一
