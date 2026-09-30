@@ -17,6 +17,7 @@ dt view data.jsonl --format=dpo                   # force the detail format
 dt view big.jsonl --cap=50000                     # raise the window size (default 10k rows)
 dt view data.jsonl -S -chars                      # start sorted (longest first)
 dt view data.jsonl -w "turns(x)>=6" -s error      # start filtered + searched (-w repeatable, -s = --search)
+dt view data.jsonl --pipe 'dt filter - "turns(x)>=6" | dt head - 200'   # run a pipe over the file first, browse its output
 dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memory)
 ```
 
@@ -35,6 +36,7 @@ dt sample data.jsonl 500 | dt view -              # stdin (NDJSON, held in memor
 | `w` | **Export** the current subset (or the `v` selection) to a file, format by extension; a lineage sidecar is written alongside |
 | `C` | Copy a `dt view` command that reproduces the current view |
 | `P` | Copy the same conditions as a **processing chain**: `dt filter FILE '…' \| dt sort - --by '…'`; append `-o out.jsonl` or more pipes to process what you are looking at |
+| `\|` | **Run a shell pipe** over the whole file and browse its output (see below); `r` returns to the file |
 | `S` | Column snapshot: `n·min·max·mean·non-null rate` of one column over the current sequence (full distributions: `dt stats`) |
 | `c` | Choose columns (a tick panel that applies to both table columns and detail fields) |
 | Drag a header `│` | **Resize columns** (Excel style): the `│` to the right of every header (last column included) is a handle, it turns into `┃` under the mouse with a status-bar hint, drag to resize; double-click restores auto width. Widths are remembered per column name across windows, filters and column sets |
@@ -85,9 +87,26 @@ Write-back is not offered for stdin input or in follow mode (the file is still b
 
 ## Closing the loop
 
-Export the filtered subset with `w` (`.jsonl` streams, so hundreds of thousands of rows do not touch memory; other extensions go through the normal writers). A lineage sidecar is written automatically, so `dt history <out>` shows the source file and every condition in effect. `C` translates the current view back into a `dt view ... --where=... --search=... --sort=...` command that restores it when pasted (value-picker filters become expressions like `str(x.get('col')) in (...)`; when a truncated table value cannot be restored the command says so and the lineage file is authoritative). `P` translates the same conditions into the processing form, `dt filter FILE '…' | dt sort - --by '…'`: paste it, append `-o out.jsonl` or another pipe, and the subset you were looking at goes through the rest of the toolkit. That works because the browser and the CLI share one expression language (see [expressions.md](expressions.md#row-helpers)).
+Export the filtered subset with `w` (`.jsonl` streams, so hundreds of thousands of rows do not touch memory; other extensions go through the normal writers). A lineage sidecar is written automatically, so `dt history <out>` shows the source file and every condition in effect. `C` translates the current view back into a `dt view ... --where=... --search=... --sort=...` command that restores it when pasted (value-picker filters become expressions like `str(x.get('col')) in (...)`; when a truncated table value cannot be restored the command says so and the lineage file is authoritative). `P` translates the same conditions into the processing form, `dt filter FILE '…' | dt sort - --by '…'`: paste it, append `-o out.jsonl` or another pipe, and the subset you were looking at goes through the rest of the toolkit. That works because the browser and the CLI share one expression language (see [expressions.md](expressions.md#row-helpers)). The other direction is `|`: run a pipeline over the file and browse its output without leaving view (see [Run a pipeline inside view](#run-a-pipeline-inside-view)).
 
 Instant filtering while browsing belongs to view; full distributions (histograms, quantiles, value counts, tokens) belong to `dt stats` / `dt token-stats`.
+
+## Run a pipeline inside view
+
+`|` opens a prompt for a shell pipeline. Every row of the **whole file** (never the current subset) is written to its stdin as NDJSON, its stdout is read back as NDJSON, and the result replaces what you are browsing: format re-detected, columns rebuilt, filters cleared.
+
+```
+dt filter - "turns(x)>=6" | dt sort - --by "chars(x)" --desc | dt head - 200
+dt select - "id,n=chars(x),last=x.messages[-1].content" | dt sort - --by x.n --desc
+dt join - labels.jsonl --on x.id --anti
+dt filter - "search(x, 'refund')" | jq -c '{id, n: (.messages | length)}'
+```
+
+It is the exact line you would type after `dt concat FILE |` in a shell: `dt`, `jq`, `grep`, `python` all work, and new `dt` options are available without any view change. Each run starts from the original file and replaces the previous result (there is no stack); `r` leaves the pipe and returns to the file. Pressing `|` again pre-fills the last command so it can be edited. `Esc` cancels a running pipe (the process is killed). A non-zero exit shows the command's error (dt's structured message) and keeps the current data; an empty result shows an empty table.
+
+The pipe travels with everything else: `C` produces `dt view FILE --pipe '…' --where …`, `P` produces the pipe rerun against the file (`dt filter FILE … | …`) followed by the current filter/sort, and `w` records `pipe`, `pipe_command` and `pipe_rows` in the lineage sidecar. `--pipe CMD` on the command line runs the pipe before applying `--where/--search/--sort`. Column renames cannot be written back while a pipe result is shown (`r` first, or `w`).
+
+The result lives in memory (like `dt view -`), so later `/` `f` `s` scans run serially rather than in parallel; for very large outputs put a `dt filter` or `dt head` before `dt sort`. `--follow` and `|` are mutually exclusive.
 
 ## Large files
 

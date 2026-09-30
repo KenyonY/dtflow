@@ -86,6 +86,7 @@ dt sample data.jsonl 500 | dt view -        # pipe: inspect sampled / processed 
 | `/` `f` `F` `s` | Full-file search · expression filter (`turns(x)>=6 and x.source=='alpaca'`, the same Python as `dt filter`) · column value picker · sort. They stack; `r` clears all |
 | `Enter` `n/N` `*` | Zoom into the sample · jump field by field · jump only between search hits |
 | `w` `C` `P` | Export the filtered subset to a file (lineage written automatically) · copy a `dt view` command that reproduces the current view · copy the same conditions as `dt filter … \| dt sort …` to process them |
+| `\|` | Run a shell pipe (`dt filter - … \| dt sort - …`, jq works too) over the whole file and browse its output right there; `r` returns to the file |
 | `y` / drag + `Ctrl+c` | Copy the whole sample as JSON / copy any text you drag-select in the detail pane (works over SSH and inside tmux) |
 | double-click a header | Rename the column; shows at once, `q` then asks to write the file back (with lineage) or discard |
 

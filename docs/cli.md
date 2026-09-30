@@ -85,6 +85,7 @@ dt view big.jsonl --cap=50000                     # raise the window size (defau
 dt view data.jsonl -S -chars                      # start sorted (longest first)
 dt view data.jsonl -w "turns(x)>=6" -s error      # start filtered + searched
 dt sample data.jsonl 500 | dt view -              # browse the output of a pipeline
+dt view data.jsonl --pipe 'dt filter - "turns(x)>=6" | dt head - 200'   # run a pipe over the file first (| inside the TUI does the same)
 ```
 
 Everything about the viewer: [view.md](view.md).
