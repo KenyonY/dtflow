@@ -1537,6 +1537,7 @@ class ViewApp(App):
         self._renames: Dict[str, str] = {}
         self._value_scan_gen = -1  # 单击列头起的值扫描代次: 双击到来时只取消它, 不误伤别的扫描
         self._header_timer = None  # 单击列头延后 0.15s 开值面板, 双击到来则取消
+        self._mouse_held = False  # 鼠标键按下未松: 此时不开值面板, 见 _header_click_fire
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
         """取窗口内第 idx 行的单元格, ``#`` 列显示真实全局行号 (两种浏览模式统一)。"""
@@ -2132,6 +2133,12 @@ class ViewApp(App):
     def switch_screen(self, screen):
         self.screen_epoch += 1
         return super().switch_screen(screen)
+
+    async def on_event(self, event: events.Event) -> None:
+        # 驱动来的原始鼠标事件先经 App 再转发: 在这里记按键状态, 不受控件 stop() 影响
+        if isinstance(event, (events.MouseDown, events.MouseUp)) and not event.is_forwarded:
+            self._mouse_held = isinstance(event, events.MouseDown)
+        await super().on_event(event)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if not self._on_split_edge(event.screen_x, event.screen_y):
@@ -2889,6 +2896,12 @@ class ViewApp(App):
         self._header_timer = self.set_timer(0.15, lambda: self._header_click_fire(col))
 
     def _header_click_fire(self, col: str) -> None:
+        # 第二击按下未松时不开面板: 否则 MouseDown 落在表格、MouseUp 落在面板, textual
+        # 判为不同控件不合成 Click, 双击整个丢失 (两击间隔 ≈0.1~0.15s 时必中, 正是人手速度)。
+        # 等松手: 若成了双击, HeaderDoubleClicked 会先到并取消本定时器
+        if self._mouse_held:
+            self._header_timer = self.set_timer(0.05, lambda: self._header_click_fire(col))
+            return
         self._header_timer = None
         self._start_value_scan(col)
 
