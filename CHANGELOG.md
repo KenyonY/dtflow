@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.4] - 2026-10-02
+
+### Bug Fixes
+
+- **view**: 双击列头改名在人手常见节奏下丢失
+
+### Features
+
+- **view**: 单击列头开值面板的延迟 0.15s → 0.2s, 提为常量 _HEADER_CLICK_DELAY
+
+**Full Changelog**: https://github.com/KenyonY/dtflow/compare/v0.10.3...v0.10.4
+
+
 ## [0.10.3] - 2026-09-30
 
 ### Bug Fixes
