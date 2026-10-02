@@ -100,7 +100,7 @@ async def test_value_filter_opens_on_header_click():
         ci = vis.index("source")
         x = sum(widths[j] + 2 * t.cell_padding for j in range(ci)) + t.cell_padding
         await pilot.click("#table", offset=(x + 1, 1))  # +1/+1 越过表格边框, y=1 表头行
-        await pilot.pause(0.3)  # 单击延后 0.15s 开面板 (给双击重命名让路)
+        await pilot.pause(0.35)  # 单击延后 0.2s 开面板 (给双击重命名让路)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert isinstance(app.screen, ValueFilterScreen)
@@ -3438,7 +3438,7 @@ async def test_header_double_click_opens_rename_prompt_single_click_delays_value
         await pilot.press("enter")
         await pilot.pause()
         assert app._renames == {"source": "src"} and not isinstance(app.screen, HeaderEditScreen)
-        # 单击: 0.15s 后才开值面板
+        # 单击: 0.2s 后才开值面板
         await pilot.click("#table", offset=(_header_x(app, "source"), 1))
         await pilot.pause(0.02)
         assert not isinstance(app.screen, ValueFilterScreen)
@@ -3462,14 +3462,14 @@ async def test_double_click_derived_header_does_not_rename():
 
 @pytest.mark.asyncio
 async def test_slow_double_click_on_header_still_renames():
-    """两击间隔超过 0.15s: 值面板已弹出, 第二击落在面板外的列头格上 → 面板让位给改名框。"""
+    """两击间隔超过 0.2s: 值面板已弹出, 第二击落在面板外的列头格上 → 面板让位给改名框。"""
     from dtflow.cli.view.app import HeaderEditScreen, ValueFilterScreen
 
     app = _chat_app(10)
     async with app.run_test(size=(120, 30)) as pilot:
         x = _header_x(app, "source")
         await pilot.click("#table", offset=(x, 1))
-        await pilot.pause(0.25)
+        await pilot.pause(0.3)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert isinstance(app.screen, ValueFilterScreen)
@@ -3481,7 +3481,7 @@ async def test_slow_double_click_on_header_still_renames():
         assert not isinstance(app.screen, HeaderEditScreen) and app._renames == {}
         # 面板外的单击仍只是取消
         await pilot.click("#table", offset=(x, 1))
-        await pilot.pause(0.25)
+        await pilot.pause(0.3)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert isinstance(app.screen, ValueFilterScreen)
@@ -3490,7 +3490,7 @@ async def test_slow_double_click_on_header_still_renames():
         assert not isinstance(app.screen, (ValueFilterScreen, HeaderEditScreen))
         # 连击落在列头格之外 (面板外的别处) 也只是取消
         await pilot.click("#table", offset=(x, 1))
-        await pilot.pause(0.25)
+        await pilot.pause(0.3)
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert isinstance(app.screen, ValueFilterScreen)
@@ -3501,7 +3501,7 @@ async def test_slow_double_click_on_header_still_renames():
 
 @pytest.mark.asyncio
 async def test_header_double_click_survives_timer_firing_mid_press():
-    """值面板定时器 (0.15s) 恰在第二击按下未松时到点: 不能此刻开面板。
+    """值面板定时器 (0.2s) 恰在第二击按下未松时到点: 不能此刻开面板。
 
     否则 MouseDown 落在表格、MouseUp 落在面板, textual 不合成 Click, 双击丢失。
     按驱动的真实顺序向 App 投 MouseDown/MouseUp (pilot.click 绕过了这条合成路径)。
@@ -3519,7 +3519,7 @@ async def test_header_double_click_survives_timer_firing_mid_press():
     async with app.run_test(size=(120, 30)) as pilot:
         x = _header_x(app, "source")
         await pilot.pause()
-        for gap in (0.12, 0.0):  # 第一击松开后 0.12s 再按, 按住 0.1s: 定时器在按住期间到点
+        for gap in (0.15, 0.0):  # 第一击松开后 0.15s 再按, 按住 0.1s: 定时器在按住期间到点
             app.post_message(ev(events.MouseDown, x, 1))
             await asyncio.sleep(0.1)
             app.post_message(ev(events.MouseUp, x, 1))
@@ -3537,7 +3537,7 @@ async def test_double_click_header_cancels_pending_value_scan():
     async with app.run_test(size=(120, 30)) as pilot:
         x = _header_x(app, "source")
         await pilot.click("#table", offset=(x, 1))
-        await pilot.pause(0.2)  # 定时器已触发, 扫描起了 (worker 未必已完成)
+        await pilot.pause(0.25)  # 定时器已触发, 扫描起了 (worker 未必已完成)
         if isinstance(app.screen, ValueFilterScreen):
             _click_at(app, x, 1, chain=2)
         else:
@@ -4100,7 +4100,7 @@ async def test_slow_double_click_renames_on_short_terminal():
         async with app.run_test(size=(120, height)) as pilot:
             x = _header_x(app, "source")
             await pilot.click("#table", offset=(x, 1))
-            await pilot.pause(0.25)
+            await pilot.pause(0.3)
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert isinstance(app.screen, ValueFilterScreen)

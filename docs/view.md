@@ -84,7 +84,7 @@ Pressing `q` with pending renames asks:
 - **Discard** exits without touching the file.
 - **Cancel** (Esc) returns to the browser.
 
-Saving is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.15 s; a slower second click on the same header while the picker is up also counts as a double-click.
+Saving is not offered for stdin input or in follow mode (the file is still being written); use `w` to export with the new names instead. A single click on a header still opens the value picker, delayed by 0.2 s; a slower second click on the same header while the picker is up also counts as a double-click.
 
 ## Closing the loop
 

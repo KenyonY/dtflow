@@ -287,7 +287,7 @@ class FastDataTable(DataTable):
 
     def _on_click(self, event: events.Click) -> None:
         # 双击列头文字 → 重命名。拦下第二击, 原生 _on_click 就不会再发一次 HeaderSelected
-        # (第一击已经发过, app 侧用 0.15s 定时器延后开值面板, 收到本消息就取消它)。
+        # (第一击已经发过, app 侧用 _HEADER_CLICK_DELAY 定时器延后开值面板, 收到本消息就取消它)。
         meta = event.style.meta
         if (
             event.chain >= 2
@@ -1160,7 +1160,7 @@ class ValueFilterScreen(ModalScreen):
     def on_click(self, event: events.Click) -> None:
         """点击值筛选卡片外的模态背景时按“取消”语义关闭。
 
-        单击列头开本面板只延后 0.15s, 人手双击常慢于这个间隔, 第二击就落到了本面板上:
+        单击列头开本面板只延后 0.2s, 慢一些的双击会晚于这个间隔, 第二击就落到了本面板上:
         它落在同一列头格里且 textual 判为连击 (0.5s 内同位置) 时, 按双击处理 → 交回 app 改名。
         这个判断先于"点在面板内": 极矮的终端里面板只能上移盖住列头行, 双击仍要能改名。
         """
@@ -1536,7 +1536,7 @@ class ViewApp(App):
         # 列重命名 {原始列名: 新名}: 只改显示, 文件到退出时按用户选择才写回 (见 action_quit)
         self._renames: Dict[str, str] = {}
         self._value_scan_gen = -1  # 单击列头起的值扫描代次: 双击到来时只取消它, 不误伤别的扫描
-        self._header_timer = None  # 单击列头延后 0.15s 开值面板, 双击到来则取消
+        self._header_timer = None  # 单击列头延后 _HEADER_CLICK_DELAY 开值面板, 双击到来则取消
         self._mouse_held = False  # 鼠标键按下未松: 此时不开值面板, 见 _header_click_fire
 
     def _cells(self, idx: int, vis: List[str]) -> List[str]:
@@ -2881,10 +2881,13 @@ class ViewApp(App):
         if self._visual_anchor is not None:  # 多选态下移动光标, 实时更新选区范围
             self._update_status()
 
+    # 单击列头到开值面板的延迟: 留给双击改名; 再长单击会显得迟钝, 再短慢一点的双击会先闪出面板
+    _HEADER_CLICK_DELAY = 0.2
+
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """点列头 → 打开该列的值勾选筛选 (Excel AutoFilter)。
 
-        延后 0.15s: 同一位置的双击是重命名, 第二击到来时取消定时器。小文件的值扫描是瞬间的,
+        延后 _HEADER_CLICK_DELAY: 同一位置的双击是重命名, 第二击到来时取消定时器。小文件的值扫描是瞬间的,
         不延后的话面板已经弹出, 第二击落在面板上, 双击永远到不了表格。
         """
         vis = self._visible_columns()
@@ -2893,11 +2896,13 @@ class ViewApp(App):
         col = vis[event.column_index]
         if self._header_timer is not None:
             self._header_timer.stop()
-        self._header_timer = self.set_timer(0.15, lambda: self._header_click_fire(col))
+        self._header_timer = self.set_timer(
+            self._HEADER_CLICK_DELAY, lambda: self._header_click_fire(col)
+        )
 
     def _header_click_fire(self, col: str) -> None:
         # 第二击按下未松时不开面板: 否则 MouseDown 落在表格、MouseUp 落在面板, textual
-        # 判为不同控件不合成 Click, 双击整个丢失 (两击间隔 ≈0.1~0.15s 时必中, 正是人手速度)。
+        # 判为不同控件不合成 Click, 双击整个丢失 (第二击恰在到点前按下时必中, 正是人手双击的节奏)。
         # 等松手: 若成了双击, HeaderDoubleClicked 会先到并取消本定时器
         if self._mouse_held:
             self._header_timer = self.set_timer(0.05, lambda: self._header_click_fire(col))
