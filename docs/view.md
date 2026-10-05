@@ -136,3 +136,22 @@ Invalid JSON does not block browsing: `dt view` shows such lines as placeholder 
 ## Static previews
 
 `dt head/sample/tail/slice --pretty` reuse the same rendering for a one-shot preview, and degrade to NDJSON when piped.
+
+## How it compares
+
+VisiData and tabiew are general table tools, jless and fx are JSON tree viewers, csvlens only reads CSV. None of them has the concept of "this row is a training sample": `messages` shows up as `{3}` or a string, and reading a conversation means expanding it level by level, one record at a time. dt view goes the other way: detect the format first, then draw the screen, so one screen is one complete sample.
+
+| | dt view | VisiData 3.4 | tabiew 0.15 | jless 0.9 / fx 39 | csvlens 0.15 |
+|---|---|---|---|---|---|
+| Positioning | LLM training-data browser | general table Swiss army knife | general table (Polars) | JSON tree viewer | minimal CSV viewer |
+| Chat / dpo / alpaca / tool_calls rendered by format | chat turns colored by role, code highlighted, tool-call arguments formatted with bad JSON flagged | no, nested fields show as `{3}`, expand with `(` | no, nested fields show as strings | generic tree, one record at a time | no JSONL support |
+| Mouse | click a header to filter, drag column widths, drag the split, drag-select text to copy, multi-click to select word / line / block, wheel | click a cell, wheel | none (mouse events discarded) | click a row, wheel | none |
+| Peak RSS opening a 155 MB / 910k-line JSONL | **91 MB** (windowed, does not grow with the file) | 550 MB | 565 MB | 824 MB / 2.3 GB | not supported |
+| Search scope | every value of every record (assistant replies included), parallel full-file scan | regex in current or all columns | fuzzy search, SQL | regex within the tree | row regex |
+| After filtering | `w` exports the subset with lineage, `C` copies a reproducible command | export | export | none | none |
+| Follow a growing JSONL (`-f`) | yes | no | no | no | no |
+| Where they are stronger | — | pivot, frequency tables, joins, plots, dozens of formats | SQL queries, single Rust binary | deep JSON folding, jq paths | zero dependencies, instant start |
+
+**When not to use dt view**: for joins, pivots or per-column plots use VisiData; to run SQL over a table use tabiew; to inspect the structure of a single JSON document use jless. dt view only wins at "this is a batch of training samples and I need to scan, find, filter and export", which is exactly what you do with training data every day.
+
+<sub>Memory is peak RSS after opening the file on the same Linux machine (2026-09). Other rows were checked against each tool's README and source; versions as in the header.</sub>

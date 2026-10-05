@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "dtflow"
 dynamic = ["version"]
-description = "Terminal browser for LLM training data (dt view) plus a CLI toolbox to filter, clean, convert and export SFT/RLHF/DPO datasets"
+description = "The workbench for LLM training data: a terminal browser (dt view) plus pipeable commands that filter, clean, convert and export SFT/RLHF/DPO datasets in plain Python — by hand or by agent"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

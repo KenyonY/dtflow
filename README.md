@@ -20,14 +20,14 @@
 
 <p align="left">English | <a href="README_zh.md">中文</a></p>
 
-**A terminal browser for LLM training data, plus a CLI toolbox to filter, clean, convert and export it.**
+**The workbench for LLM training data.** Browse it, query it in plain Python, fix it, ship it — by hand or by agent.
 
-`dt view` opens an SFT / DPO / agent JSONL file as a table-plus-detail browser: conversations rendered as colored chat turns, tool calls formatted with bad JSON flagged, full-file search across every field, mouse support, and windowed loading that keeps a 900k-line file under 100 MB of RAM. The rest of `dt` is a pipeable Unix-style toolkit for the same data, where every condition is plain Python.
+A training file's row is not a row: it is a conversation, a preference pair, an instruction. Most tools see opaque JSON; dtflow sees the sample, and everything follows from that — a terminal browser that renders samples by their detected format, ~30 pipeable commands that filter on conversation structure, conversion and framework export with lineage, and an agent that can drive all of it.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/KenyonY/dtflow/main/docs/images/view/demo.gif" alt="dt view: table + detail terminal browser with full-file search, filters, value picker, zoom and dpo comparison" width="900">
 </p>
-<p align="center"><sub><code>dt view data.jsonl</code> — one command turns a training set into a searchable, filterable terminal browser</sub></p>
+<p align="center"><sub><code>dt view data.jsonl</code> — one screen, one complete sample. Press <code>P</code> and what you just did becomes a <code>dt filter … \| dt sort …</code> pipeline.</sub></p>
 
 ## Try it in 30 seconds
 
@@ -46,14 +46,49 @@ Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every 
 
 ## Why dtflow
 
-- **It knows what a training sample is.** Generic table tools show `messages` as `{3}` or a truncated string. `dt view` detects `openai_chat` / `sharegpt` / `dpo` / `alpaca` and renders one complete sample per screen: turns colored by role, code highlighted, `tool_calls` and `reasoning_content` unpacked, malformed tool arguments flagged, images of VLM samples one key away (`i`) with `<image>` count mismatches flagged.
-- **Conditions are Python, not a DSL.** `x.score > 0.8 and 'wiki' in x.meta.source`, `any('refund' in m.content for m in x.messages)`, plus row helpers that know what a conversation is: `turns(x)`, `roles(x)`, `calls(x)`, `search(x, 'refund')`. One expression language across `filter`, `select`, `map`, `sort`, `group`, `join`, the viewer and YAML pipelines.
-- **Built for agents as much as humans.** stdout carries only data, stderr carries messages, exit codes are contractual, `dt schema` prints the machine-readable command tree, and `dt install-skill` teaches Claude Code or Codex the whole tool in one command.
-- **Streams by default.** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` never load the file; the viewer opens a 910k-row JSONL at ~90 MB RSS with parallel full-file scans.
+- **It knows what a training sample is.** Generic table tools show `messages` as `{3}` or a truncated string. dtflow detects `openai_chat` / `sharegpt` / `dpo` / `alpaca` and works on the sample everywhere: the viewer renders one complete sample per screen (turns colored by role, tool calls formatted with bad JSON flagged, VLM images one key away), the row helpers `turns(x)` / `roles(x)` / `calls(x)` / `search(x, 'refund')` filter on conversation structure, presets convert between layouts, `token-stats` splits tokens by role.
+- **Looking and processing are one loop, in one language.** Conditions everywhere are Python with the current row as `x` — no DSL, and the viewer compiles the same string as `dt filter`. The loop closes: `P` in the viewer turns what you did into `dt filter … | dt sort …`; `|` runs a shell pipe over the whole file with its output browsable right there; `w` exports the filtered subset with lineage. What you did while browsing becomes a script; a script's output comes back to the viewer with `dt … | dt view -`.
+- **An agent can drive all of it.** stdout carries only data, exit codes are contractual, errors are structured JSON when stdout is not a terminal, `--dry-run` previews side effects, `dt schema` prints the command tree as JSON. `dt install-skill` installs the full reference into Claude Code or Codex — one command, and "clean this dataset" becomes a task your agent can actually do.
 
-## dt view: browse training data in the terminal
+Underneath: `filter` / `select` / `map` / `clean` / `dedupe` / `transform` stream and never load the file; a bare field name or an unknown helper is a compile-time error, not an empty result with exit code 0.
 
-`dt view <file>` opens a master-detail browser. The **table** summarizes each sample (derived columns `turns/roles/first_user/chars/calls` plus your metadata); the **detail** pane renders the current row by format. JSONL, CSV and Parquet all open, and files with hundreds of thousands of lines open instantly.
+## The workbench in practice
+
+**Decontaminate — drop training rows that overlap your test set.** The join key is a Python expression, so it matches on the first user turn rather than the whole JSON line; rows that differ only in metadata still get caught.
+
+```bash
+dt join train.jsonl test.jsonl --on "first_user(x)" --anti -o clean.jsonl
+dt view clean.jsonl                    # eyeball what survived before training on it
+```
+
+**Browse until you understand the data, then turn what you did into a pipeline.**
+
+```bash
+dt view data.jsonl        # / search every value · F tick values to keep · f filter by expression
+                          # P copies what you did as:  dt filter … | dt sort …
+dt filter data.jsonl "turns(x) >= 4 and x.score > 0.7" | dt view -    # process, then look again
+```
+
+**Convert and ship to a training framework.**
+
+```bash
+dt transform shards/ --preset=openai_chat -o sft.jsonl   # a directory works too; sharegpt/alpaca/dpo → messages
+dt validate sft.jsonl --preset=openai_chat               # schema check; --filter keeps valid rows only
+dt token-stats sft.jsonl --model=gpt-4                   # token distribution per role
+dt export sft.jsonl -f llama-factory                     # data + ready-to-use config (ms-swift, Axolotl too)
+```
+
+**Or hand the whole job to your agent.**
+
+```bash
+dt install-skill        # teaches Claude Code (or Codex) the full reference
+```
+
+Then: *"drop rows whose last turn isn't the assistant, dedupe by first user message, export for LLaMA-Factory."* The agent reads `dt schema`, previews with `--dry-run`, and runs the same commands above.
+
+## dt view: the eye of the loop
+
+`dt view <file>` opens a master-detail browser: the **table** summarizes each sample (derived columns `turns/roles/first_user/chars/calls` plus your metadata), the **detail** pane renders the current row by format. JSONL, CSV and Parquet open; a 910k-row file opens instantly at ~90 MB RAM.
 
 <table>
   <tr>
@@ -76,80 +111,49 @@ Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every 
 
 ```bash
 dt view data.jsonl                          # open, press ? for keys
-dt view app.jsonl -100 -f                   # follow the last 100 lines (log mode)
+dt view app.jsonl -100 -f                   # follow a growing JSONL (log mode)
 dt view data.jsonl -w "turns(x)>=6" -s error   # start filtered + searched
 dt sample data.jsonl 500 | dt view -        # pipe: inspect sampled / processed output
 ```
 
 | Keys | What they do |
 |------|------|
-| `/` `f` `F` `s` | Full-file search · expression filter (`turns(x)>=6 and x.source=='alpaca'`, the same Python as `dt filter`) · column value picker · sort. They stack; `r` clears all |
+| `/` `f` `F` | Full-file search · expression filter (the same Python as `dt filter`) · Excel-style column value picker. They stack; `r` clears all |
 | `Enter` `n/N` `*` | Zoom into the sample · jump field by field · jump only between search hits |
-| `w` `C` `P` | Export the filtered subset to a file (lineage written automatically) · copy a `dt view` command that reproduces the current view · copy the same conditions as `dt filter … \| dt sort …` to process them |
+| `w` `C` `P` | Export the filtered subset (lineage written) · copy a reproducible `dt view` command · copy the same conditions as `dt filter … \| dt sort …` |
 | `\|` | Run a shell pipe (`dt filter - … \| dt sort - …`, jq works too) over the whole file and browse its output right there; `r` returns to the file |
-| `y` / drag + `Ctrl+c` | Copy the whole sample as JSON / copy any text you drag-select in the detail pane (works over SSH and inside tmux) |
-| double-click a header | Rename the column; shows at once, `q` then asks to save it into the file (with lineage) or discard |
+| mouse | Click a header to open its value picker, drag column widths and the split, drag-select text to copy (over SSH and inside tmux too) |
 
-Full key list, filter syntax, large-file and follow-mode details: [docs/view.md](docs/view.md).
+Against other terminal viewers: VisiData, tabiew, jless, fx and csvlens are generic table/JSON tools — none of them knows what a training sample is, none has mouse filtering, and opening a 155 MB / 910k-line JSONL costs them 550 MB–2.3 GB of RAM against dt view's 91 MB. Where they win (pivots, SQL, deep JSON folding) and the full comparison table: [docs/view.md](docs/view.md).
 
-### How it compares to other terminal viewers
+## The commands
 
-VisiData and tabiew are general table tools, jless and fx are JSON tree viewers, csvlens only reads CSV. None of them has the concept of "this row is a training sample": `messages` shows up as `{3}` or a string, and reading a conversation means expanding it level by level, one record at a time. dt view goes the other way: detect the format first, then draw the screen, so one screen is one complete sample.
-
-| | dt view | VisiData 3.4 | tabiew 0.15 | jless 0.9 / fx 39 | csvlens 0.15 |
-|---|---|---|---|---|---|
-| Positioning | LLM training-data browser | general table Swiss army knife | general table (Polars) | JSON tree viewer | minimal CSV viewer |
-| Chat / dpo / alpaca / tool_calls rendered by format | chat turns colored by role, code highlighted, tool-call arguments formatted with bad JSON flagged | no, nested fields show as `{3}`, expand with `(` | no, nested fields show as strings | generic tree, one record at a time | no JSONL support |
-| Mouse | click a header to filter, drag column widths, drag the split, drag-select text to copy, multi-click to select word / line / block, wheel | click a cell, wheel | none (mouse events discarded) | click a row, wheel | none |
-| Peak RSS opening a 155 MB / 910k-line JSONL | **91 MB** (windowed, does not grow with the file) | 550 MB | 565 MB | 824 MB / 2.3 GB | not supported |
-| Search scope | every value of every record (assistant replies included), parallel full-file scan | regex in current or all columns | fuzzy search, SQL | regex within the tree | row regex |
-| After filtering | `w` exports the subset with lineage, `C` copies a reproducible command | export | export | none | none |
-| Follow a growing JSONL (`-f`) | yes | no | no | no | no |
-| Where they are stronger | — | pivot, frequency tables, joins, plots, dozens of formats | SQL queries, single Rust binary | deep JSON folding, jq paths | zero dependencies, instant start |
-
-**When not to use dt view**: for joins, pivots or per-column plots use VisiData; to run SQL over a table use tabiew; to inspect the structure of a single JSON document use jless. dt view only wins at "this is a batch of training samples and I need to scan, find, filter and export", which is exactly what you do with training data every day.
-
-<sub>Memory is peak RSS after opening the file on the same Linux machine (2026-09). Other rows were checked against each tool's README and source; versions as in the header.</sub>
-
-## The CLI: a Swiss army knife for training data
-
-Every data command follows one contract: `FILE` may be `-` (NDJSON from stdin), a directory, or a quoted glob; without `-o` data goes to stdout while progress and summaries go to stderr. Conditions, derived fields, sort keys, group keys and join keys are **Python expressions with the current row as `x`**.
+Every data command follows one contract: `FILE` may be `-` (stdin), a directory or a quoted glob; without `-o` data goes to stdout while progress goes to stderr; output format follows the extension. Conditions, keys and derived fields are Python expressions with the current row as `x`.
 
 ```bash
-# primitives
-dt filter  data.jsonl "x.score > 0.5 and 'wiki' in x.meta.source"
-dt filter  data.jsonl "turns(x) >= 6 and 'get_weather' in calls(x)"    # row helpers: turns/roles/first_user/chars/calls/search
-dt select  data.jsonl "id,text,n=len(x.messages),src=x.meta.source"     # project / rename / derive
-dt map     data.jsonl "x.text = x.text.strip(); del x.debug"            # edit in place
-dt explode data.jsonl --field messages --index-as turn                  # one row per list element
+# look before you touch
+dt stats   data.jsonl --schema                        # nested schema: types, null rates, sample values
+dt describe data.jsonl "turns(x)" "x.score"           # quantiles + histogram per expression
+dt token-stats data.jsonl --model=gpt-4               # token distribution per role
+dt diff    a.jsonl b.jsonl --key=id                   # what changed between two versions
+
+# shape
+dt select  data.jsonl "id,n=len(x.messages)"          # project / rename / derive
+dt map     data.jsonl "x.text = x.text.strip(); del x.debug"   # edit in place
+dt explode data.jsonl --field messages --index-as turn         # one row per list element
+dt group   data.jsonl --by "roles(x)" --top 10        # {"key","count","pct"}
 dt sort    data.jsonl --by "len(x.messages)" --desc
-dt group   data.jsonl --by "roles(x)" --top 10                         # {"key","count","pct"}, ten largest groups
-dt group   data.jsonl --by x.label --agg "avg=mean(len(r.text) for r in g)"
-dt describe data.jsonl "turns(x)" "chars(x)" "x.score"                  # quantiles + histogram per expression
-dt join    data.jsonl meta.jsonl --on x.id --prefix m_                  # left join, right side in memory
-dt join    train.jsonl test.jsonl --on "first_user(x)" --anti           # drop rows that overlap the test set
-dt dedupe  data.jsonl --key=messages[0].content -i                      # exact dedupe, in place
-dt clean   data.jsonl --drop-empty=text --min-len=messages.#:2 -o clean.jsonl
-dt split   data.jsonl --ratio=0.9 --seed=42                             # train/test files
-dt concat  data.jsonl -o data.parquet                                   # one file in = format conversion
-dt filter  shards/ "x.lang == 'zh'" -o zh.jsonl                         # a directory or 'shards/*.jsonl' reads every file
-dt stats   data.jsonl --schema                                          # look before you write expressions
+dt sample  data.jsonl 1000 --by=meta.source           # stratified sampling
+dt split   data.jsonl --ratio=0.9 --seed=42           # train/test files
 
-# pipes
-dt filter d.jsonl "x.score>0.5" | dt select - "id,n=len(x.messages)" | dt sort - --by x.n --desc | dt head - 5
-cat big.jsonl.gz | dt filter - "x.lang=='zh'" | dt transform - --preset=openai_chat | dt view -
-dt group d.jsonl --by x.label | dt sort - --by x.count --desc
-
-# and the rest
-dt sample data.jsonl 1000 --by=meta.source      # stratified sampling
-dt token-stats data.jsonl --model=gpt-4         # token distribution per role
-dt validate data.jsonl --preset=openai_chat     # schema check, --filter to keep valid rows
-dt diff a.jsonl b.jsonl --key=id                # what changed between two versions
-dt export data.jsonl -f llama-factory           # data + config for LLaMA-Factory / ms-swift / Axolotl
-dt run pipeline.yaml                            # reproducible pipeline, steps = CLI commands
+# combine & clean
+dt dedupe  data.jsonl --key=messages[0].content -i    # exact dedupe, in place
+dt clean   data.jsonl --drop-empty=text --min-len=messages.#:2
+dt concat  a.jsonl b.jsonl -o merged.parquet          # one file in = format conversion
+dt run     pipeline.yaml                              # reproducible pipeline, steps = CLI commands
 ```
 
-Rows whose expression fails (missing field, `None > 0.5`) don't abort the run: `filter` drops them, `select` sets the item to `null`, `map` keeps the row, and stderr prints one summary at the end. `--strict` turns the first failure into exit code 1. A bare field name without `x.` is rejected at compile time instead of silently matching nothing. In a terminal, data commands preview the first 50 rows as a table with the same columns as `dt view`; piped, they emit NDJSON.
+Rows whose expression fails (missing field, `None > 0.5`) don't abort the run — `filter` drops them, `select` sets the item to `null`, `map` keeps the row, and stderr prints one summary at the end; `--strict` turns the first failure into exit code 1. In a terminal, results preview as a 50-row table with the same columns as `dt view`; piped, they emit NDJSON.
 
 Command reference: [docs/cli.md](docs/cli.md) · expressions and field paths: [docs/expressions.md](docs/expressions.md) · pipelines: [docs/pipeline.md](docs/pipeline.md).
 
@@ -180,7 +184,7 @@ dt install-skill                         # Claude Code (default)
 dt install-skill --target codex          # Codex
 ```
 
-After installing, `/dtflow` in Claude Code or `$dtflow` in Codex gives the agent the full reference. The CLI itself is designed to be driven by an agent: `dt schema` prints the command tree as JSON, `dt <cmd> --help` carries examples, `--dry-run` previews every side-effecting command with exit code 10, and errors are structured JSON on stderr when stdout is not a terminal.
+After installing, `/dtflow` in Claude Code or `$dtflow` in Codex gives the agent the full reference.
 
 ## Documentation
 
@@ -191,18 +195,6 @@ After installing, `/dtflow` in Claude Code or `$dtflow` in Codex gives the agent
 - [Pipelines](docs/pipeline.md)
 - [Python API](docs/python-api.md)
 - [Changelog](CHANGELOG.md)
-
-## Design
-
-dtflow is built on a few decisions that everything else follows from.
-
-- **The unit is a training sample, not a row.** A sample is a conversation, a preference pair or an instruction; formats are detected, not declared. That one piece of knowledge lives in a single place, the row helpers `turns(x)` / `roles(x)` / `calls(x)` / `search(x, …)`, and the viewer's columns, the CLI's filters and the pipeline's steps all read from it.
-- **One language.** Conditions, keys and derived fields are Python with the current row as `x`. There is no DSL to learn and no second dialect: the viewer compiles the same string as `dt filter`, so what you typed while browsing is what you paste into a script.
-- **Looking and processing are one loop.** Every viewer state translates into a command (`C` reproduces the view, `P` reproduces it as `dt filter … | dt sort …`), and every command's output can be viewed again (`dt … | dt view -`, or `|` inside the viewer). Exports carry lineage, so a file can always say where it came from.
-- **The Unix contract, kept strictly.** stdout is data, stderr is messages, exit codes mean things, `-` is stdin, no `-o` means stdout, output format follows the extension. That is what lets 30 small commands compose, and what lets an agent drive them: `dt schema`, structured JSON errors, `--dry-run`.
-- **Stream unless the operation cannot.** `filter` / `select` / `map` / `clean` / `dedupe` / `transform` never load the file; the viewer parses one window and scans the rest in parallel. Only `sort`, `shuffle`, `group --agg` and the right side of `join` materialize, and the docs say so.
-- **No silent wrong answers.** A bare field name, a bad regex or an unknown helper is a compile-time error, not an empty result with exit code 0. Rows that fail at runtime are counted and summarized; `--strict` turns the first one into a failure.
-- **Functions over class hierarchies.** `dt.to(lambda x: {...})` instead of `class MyFormatter(BaseFormatter)`. Presets are conveniences, not the core abstraction.
 
 ## License
 

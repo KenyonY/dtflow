@@ -1,6 +1,6 @@
 # dtflow documentation
 
-> A terminal browser for LLM training data, plus a CLI toolbox to filter, clean, convert and export it.
+> The workbench for LLM training data. Browse it, query it in plain Python, fix it, ship it — by hand or by agent.
 
 ```
 docs/
