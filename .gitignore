@@ -70,3 +70,6 @@ next-gen-designer/
 
 # 传播文案草稿 (本地, 不入库)
 .launch-drafts/
+
+# Local growth snapshots and generated demo evidence
+.growth/

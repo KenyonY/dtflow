@@ -326,7 +326,7 @@ async def shoot_chat(path: Path, shots: Shots):
         shots.take(app, "search", 3.0)
 
         # f 全量筛选: 表达式叠加在搜索之上
-        await _prompt(app, pilot, "f", "turns>=4 and source~=support", shots, "filter")
+        await _prompt(app, pilot, "f", "turns(x)>=4 and x.source=='support_log'", shots, "filter")
         shots.take(app, "filter", 3.0)
 
         # r 清空条件
