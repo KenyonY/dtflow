@@ -8,13 +8,18 @@
 
 - [X 三条线程和完整工作流后续帖](x-draft.md)
 - [V2EX 实战帖](v2ex-draft.md)
+- [Textual 社区已发布更新](textual-update.md) / [公开帖子](https://github.com/Textualize/textual/discussions/6722#discussioncomment-18839713)
 - [回复与反馈记录](feedback.md)
 - [入口视频](../images/growth/entry.mp4) / [截图](../images/growth/entry.png)
 - [工作流视频](../images/growth/workflow.mp4) / [截图](../images/growth/workflow.png)
 
 两段视频由真实 TUI 操作、真实 CLI 返回生成，是离散操作帧的演示；停留时间供阅读，
 不表示执行耗时或吞吐量。全部数据为仓库生成器产生的 synthetic 数据。
-发布由项目维护者审阅、使用自己的账号完成。这个执行包不代发 X/V2EX，不请求点赞或 Star。
+2026-10-10，维护者授权代为发布和注册项目账号。已使用维护者的 GitHub 账号，在
+Textual 原有 Show and tell 主题发布一次实测更新，并同步工作台定位，避免重复投稿。
+X 注册页在当前浏览器返回 HTTP 403；V2EX 的 Google 新账号需要邀请码，
+现阶段没有可用登录或注册验证条件。账号条件具备后继续发布准备好的 X/V2EX 文案。
+[实际发布记录与 72 小时复盘时间](feedback.md)。
 
 ## 复现
 
@@ -82,7 +87,7 @@ PyPI last_day 21 / last_week 213 / last_month 1923。原始快照保存在本地
 |---|---|---|
 | 第 1–3 天 | 修复承接链，隔离安装、测试、QA、发布 | 导出映射与机器输出能真实使用 |
 | 第 4–7 天 | 核对两段演示、截图和一条命令入口 | 第 7 天 25 Stars |
-| 第 8–14 天 | 维护者审阅后发 X + V2EX；每天回复技术问题、记录链接、修正文档 | 第 14 天 60 Stars；首帖发布后 72 小时判断 |
+| 第 8–14 天 | 账号条件具备后发 X + V2EX；每天回复技术问题、记录链接、修正文档 | 第 14 天 60 Stars；首帖发布后 72 小时判断 |
 | 第 15–21 天 | 按反馈修激活路径；用一个真实问题写第二个案例 | 第 21 天 150 Stars |
 | 第 22–30 天 | 发布解决真实反馈的小版本；仅在访问不足时考虑新渠道 | 第 30 天 300 Stars |
 
