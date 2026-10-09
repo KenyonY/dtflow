@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.5] - 2026-10-09
+
+### Bug Fixes
+
+- **export**: Preserve OpenAI messages/role/content with matching LLaMA-Factory column and role tags.
+- **cli**: Keep export stdout as one JSON summary; send success messages and paths to stderr and honor --quiet.
+- **streaming**: Use Polars collect_batches for CSV/TSV, including Polars 2.0.
+- **examples**: Emit valid ShareGPT tool results; keep the invalid observation in a separate fixture.
+
+### Documentation
+
+- Align the training-data workbench positioning, clarify dry-run limits, and provide reproducible launch demos.
+
 ## [0.10.4] - 2026-10-02
 
 ### Bug Fixes
