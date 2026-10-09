@@ -21,8 +21,11 @@
 | UTC 时间 | 渠道 / URL | 可见访问或互动 | 具体使用问题 | issue / 修复 | 72h 后动作 |
 |---|---|---|---|---|---|
 | 2026-10-09T17:26:28Z | [Textual Show and tell](https://github.com/Textualize/textual/discussions/6722#discussioncomment-18839713) | 已回读验证发布成功；尚无新的使用反馈 | 待反馈 | 发布 0.10.6 工作流、演示与缩略图锚点修复说明 | 2026-10-12 17:26:28 UTC 后检查反馈和流量 |
-| 未发布 | X | 注册页 HTTP 403；Metricool 连接尚未确认 | 缺可用发布账号 | 文案和媒体已准备 | 账号条件具备后发布 |
+| 未发布 | X | 注册页 HTTP 403；Metricool X 通道需付费，本轮不采用 | 缺可用发布账号 | 文案和媒体已准备 | 账号条件具备后发布 |
 | 未发布 | V2EX | Google 新账号需邀请码，缺可用登录 | 缺账号或邀请码 | 实战文案已准备 | 账号条件具备后发布 |
 
 GitHub issue/PR 与帖子中的真实问题要分别记下。不要把平台浏览次数、clone unique 或 PyPI
 下载次数直接叫“用户数”；不能跨平台去重时不要汇总成唯一用户数。
+
+Metricool 的 X 通道需要付费套餐和附加项，不符合本轮零预算约束：
+[官方说明](https://help.metricool.com/x-twitter-access-in-metricool-2bt66)。
