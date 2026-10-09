@@ -89,7 +89,7 @@ class TestCheckCompatibility:
 class TestExportFor:
     """导出功能测试"""
 
-    def test_export_llama_factory(self):
+    def test_export_llama_factory(self, capsys):
         data = [
             {
                 "messages": [
@@ -120,6 +120,37 @@ class TestExportFor:
             with open(files["dataset_info"]) as f:
                 config = json.load(f)
             assert "test_data" in config
+            entry = config["test_data"]
+            assert entry["columns"] == {"messages": "messages"}
+            assert entry["tags"] == {
+                "role_tag": "role",
+                "content_tag": "content",
+                "user_tag": "user",
+                "assistant_tag": "assistant",
+                "system_tag": "system",
+            }
+            assert all(
+                message[entry["tags"]["role_tag"]] in {"user", "assistant"}
+                and entry["tags"]["content_tag"] in message
+                for row in saved_data
+                for message in row[entry["columns"]["messages"]]
+            )
+
+            captured = capsys.readouterr()
+            assert captured.out == ""
+            assert captured.err == ""
+
+    def test_export_llama_factory_preserves_sharegpt_mapping(self):
+        data = [{"conversations": [{"from": "human", "value": "hi"}]}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files = export_for(data, "llama-factory", tmpdir, "sharegpt_data")
+            with open(files["dataset_info"]) as f:
+                config = json.load(f)["sharegpt_data"]
+
+            assert config["columns"] == {"messages": "conversations"}
+            assert config["tags"]["role_tag"] == "from"
+            assert config["tags"]["content_tag"] == "value"
 
     def test_export_swift(self):
         data = [{"messages": [{"role": "user", "content": "hi"}]}]

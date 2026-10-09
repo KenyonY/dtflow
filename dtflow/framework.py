@@ -181,13 +181,8 @@ def _check_llama_factory_compatibility(data: List[dict]) -> CompatibilityResult:
     sample = data[0] if data else {}
 
     if format_type == "openai_chat":
-        # 需要转换为 sharegpt 格式
-        suggestions.append(
-            t(
-                "Convert with to_llama_factory_sharegpt()",
-                "建议使用 to_llama_factory_sharegpt() 转换",
-            )
-        )
+        # LLaMA-Factory can consume OpenAI messages with the generated tags.
+        pass
 
     elif format_type == "alpaca":
         # 直接兼容
@@ -402,18 +397,31 @@ def _export_llama_factory(
         f.write(train_args)
     files["train_args"] = str(args_file)
 
-    print(t("✅ LLaMA-Factory export done:", "✅ LLaMA-Factory 导出完成:"))
-    print(t(f"   Data file: {data_file}", f"   数据文件: {data_file}"))
-    print(t(f"   Dataset info: {info_file}", f"   配置文件: {info_file}"))
-    print(t(f"   Train args: {args_file}", f"   训练参数: {args_file}"))
-
     return files
 
 
 def _generate_llama_factory_dataset_info(dataset_name: str, format_type: str) -> dict:
     """生成 LLaMA-Factory dataset_info.json"""
-    if format_type in ("openai_chat", "sharegpt"):
-        # ShareGPT/对话格式
+    if format_type == "openai_chat":
+        # OpenAI messages 格式：保留 messages/role/content 字段，不要求用户先改数据。
+        return {
+            dataset_name: {
+                "file_name": f"{dataset_name}.json",
+                "formatting": "sharegpt",
+                "columns": {
+                    "messages": "messages",
+                },
+                "tags": {
+                    "role_tag": "role",
+                    "content_tag": "content",
+                    "user_tag": "user",
+                    "assistant_tag": "assistant",
+                    "system_tag": "system",
+                },
+            }
+        }
+    elif format_type == "sharegpt":
+        # ShareGPT 对话格式
         return {
             dataset_name: {
                 "file_name": f"{dataset_name}.json",
@@ -539,10 +547,6 @@ def _export_swift(
         f.write(train_script)
     files["train_script"] = str(script_file)
 
-    print(t("✅ ms-swift export done:", "✅ ms-swift 导出完成:"))
-    print(t(f"   Data file: {data_file}", f"   数据文件: {data_file}"))
-    print(t(f"   Train script: {script_file}", f"   训练脚本: {script_file}"))
-
     return files
 
 
@@ -598,10 +602,6 @@ def _export_axolotl(
     with open(config_file, "w", encoding="utf-8") as f:
         f.write(config)
     files["config"] = str(config_file)
-
-    print(t("✅ Axolotl export done:", "✅ Axolotl 导出完成:"))
-    print(t(f"   Data file: {data_file}", f"   数据文件: {data_file}"))
-    print(t(f"   Config file: {config_file}", f"   配置文件: {config_file}"))
 
     return files
 

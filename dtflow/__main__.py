@@ -1,5 +1,5 @@
 """
-Datatron CLI (dt) — Agent 友好的数据转换工具
+dtflow CLI (dt) — Agent 友好的数据转换工具
 
 基本用法:
     dt <command> [options]
@@ -153,11 +153,11 @@ except Exception:  # noqa: BLE001  源码树以外的异常安装方式
 app = typer.Typer(
     name="dt",
     help=t(
-        f"Datatron CLI v{_VERSION} - data transformation toolkit (agent friendly)\n\n"
+        f"dtflow CLI v{_VERSION} - data transformation toolkit (agent friendly)\n\n"
         "stdout=data, stderr=messages, exit codes in --help.\n"
         "Agents should start with: dt schema | dt --help | dt <cmd> --help\n\n"
         "Language: English. Switch to Chinese: dt lang zh (one-off: DT_LANG=zh dt ...)",
-        f"Datatron CLI v{_VERSION} - 数据转换工具 (Agent 友好)\n\n"
+        f"dtflow CLI v{_VERSION} - 数据转换工具 (Agent 友好)\n\n"
         "stdout=数据, stderr=消息, 退出码见 --help.\n"
         "Agent 建议先运行: dt schema | dt --help | dt <cmd> --help\n\n"
         "界面语言: 中文。切换英文: dt lang en (临时: DT_LANG=en dt ...)",

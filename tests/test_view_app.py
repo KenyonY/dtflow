@@ -3156,12 +3156,15 @@ async def test_drag_onto_blank_line_stays_within_drag():
 
 
 @pytest.mark.asyncio
-async def test_drag_select_tracks_mouse_across_steps():
+async def test_drag_select_tracks_mouse_across_steps(monkeypatch):
     # 真实拖动是一连串 MouseMove, textual 每次都按"当前帧渲染出的 segment"反查坐标:
     # 高亮会把 segment 切成三段, 若沿用切之前的 offset, 后两段都自称从原 segment 起点开始,
     # 选区就会越拖越短 (用户看到的"高亮从鼠标位置一路涂到行首")
     from rich.cells import cell_len
 
+    # This assertion compares RGB component styles with compositor output.
+    # NO_COLOR desaturates only the latter, so use color for this visual test.
+    monkeypatch.delenv("NO_COLOR", raising=False)
     text = "abcdefghijklmnopqrstuvwxyz0123456789"
     app = _make_app([{"messages": [{"role": "user", "content": text}]}])
     async with app.run_test(size=(100, 40)) as pilot:
@@ -3169,13 +3172,12 @@ async def test_drag_select_tracks_mouse_across_steps():
         f = _first_field(app)
         y = f.content_region.y + 1
         base = f.content_region.x
-        sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
-
         for x1, x2 in ((2, 20), (25, 8)):  # 正向 / 反向拖
             app.screen.clear_selection()
             await pilot.pause()
             await _drag_select(pilot, app, base + x1, y, base + x2, y, steps=10)
 
+            sel_bg = app.screen.get_component_rich_style("screen--selection").bgcolor
             strip = app.screen._compositor.render_strips()[y]
             cells, start, end = 0, None, None
             for seg in strip:  # 屏幕上真正被涂上选区底色的 cell 区间

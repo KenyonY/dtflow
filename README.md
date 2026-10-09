@@ -20,7 +20,7 @@
 
 <p align="left">English | <a href="README_zh.md">中文</a></p>
 
-**The workbench for LLM training data.** Browse it, query it in plain Python, fix it, ship it — by hand or by agent.
+**Inspect, clean, transform and ship LLM training data from one CLI; `dt view` is the interactive entry point.**
 
 A training file's row is not a row: it is a conversation, a preference pair, an instruction. Most tools see opaque JSON; dtflow sees the sample, and everything follows from that — a terminal browser that renders samples by their detected format, ~30 pipeable commands that filter on conversation structure, conversion and framework export with lineage, and an agent that can drive all of it.
 
@@ -48,7 +48,7 @@ Reads JSONL/NDJSON (also `.gz`), JSON, CSV/TSV, Parquet, Arrow and Excel. Every 
 
 - **It knows what a training sample is.** Generic table tools show `messages` as `{3}` or a truncated string. dtflow detects `openai_chat` / `sharegpt` / `dpo` / `alpaca` and works on the sample everywhere: the viewer renders one complete sample per screen (turns colored by role, tool calls formatted with bad JSON flagged, VLM images one key away), the row helpers `turns(x)` / `roles(x)` / `calls(x)` / `search(x, 'refund')` filter on conversation structure, presets convert between layouts, `token-stats` splits tokens by role.
 - **Looking and processing are one loop, in one language.** Conditions everywhere are Python with the current row as `x` — no DSL, and the viewer compiles the same string as `dt filter`. The loop closes: `P` in the viewer turns what you did into `dt filter … | dt sort …`; `|` runs a shell pipe over the whole file with its output browsable right there; `w` exports the filtered subset with lineage. What you did while browsing becomes a script; a script's output comes back to the viewer with `dt … | dt view -`.
-- **An agent can drive all of it.** stdout carries only data, exit codes are contractual, errors are structured JSON when stdout is not a terminal, `--dry-run` previews side effects, `dt schema` prints the command tree as JSON. `dt install-skill` installs the full reference into Claude Code or Codex — one command, and "clean this dataset" becomes a task your agent can actually do.
+- **An agent can drive all of it.** stdout carries only data, exit codes are contractual, errors are structured JSON when stderr is not a terminal, `--dry-run` previews side effects, `dt schema` prints the command tree as JSON. `dt install-skill` installs the full reference into Claude Code or Codex — one command, and "clean this dataset" becomes a task your agent can actually do.
 
 Underneath: `filter` / `select` / `map` / `clean` / `dedupe` / `transform` stream and never load the file; a bare field name or an unknown helper is a compile-time error, not an empty result with exit code 0.
 
@@ -75,7 +75,7 @@ dt filter data.jsonl "turns(x) >= 4 and x.score > 0.7" | dt view -    # process,
 dt transform shards/ --preset=openai_chat -o sft.jsonl   # a directory works too; sharegpt/alpaca/dpo → messages
 dt validate sft.jsonl --preset=openai_chat               # schema check; --filter keeps valid rows only
 dt token-stats sft.jsonl --model=gpt-4                   # token distribution per role
-dt export sft.jsonl -f llama-factory                     # data + ready-to-use config (ms-swift, Axolotl too)
+dt export sft.jsonl -f llama-factory                     # data + training config template (ms-swift, Axolotl too)
 ```
 
 **Or hand the whole job to your agent.**

@@ -1289,14 +1289,12 @@ def _iter_jsonl(fileobj, name: str) -> Generator[Dict[str, Any], None, None]:
 def _stream_csv(
     filepath: str, batch_size: int = 10000, separator: str = ","
 ) -> Generator[Dict[str, Any], None, None]:
-    """CSV/TSV 流式读取（使用 Polars BatchedCsvReader）。separator 决定 csv 还是 tsv。"""
-    reader = pl.read_csv_batched(filepath, batch_size=batch_size, separator=separator)
-    while True:
-        batches = reader.next_batches(1)
-        if not batches:
-            break
-        for row in batches[0].to_dicts():
-            yield row
+    """CSV/TSV 流式读取（separator 决定 csv 还是 tsv）。"""
+    batches = pl.scan_csv(filepath, separator=separator).collect_batches(
+        chunk_size=batch_size, lazy=True, engine="streaming"
+    )
+    for batch in batches:
+        yield from batch.iter_rows(named=True)
 
 
 def _stream_parquet(

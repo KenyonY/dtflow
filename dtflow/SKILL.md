@@ -2,6 +2,7 @@
 name: dtflow
 description: >
   处理结构化数据文件 (JSONL/NDJSON/JSON/CSV/TSV/Parquet/Arrow/Excel) 时使用此 skill。
+  从一个 CLI 检查、清洗、转换并交付 LLM 训练数据；`dt view` 是交互式入口。
   提供 CLI 工具 `dt` 和 Python API `DataTransformer`。
   典型场景：数据预览/交互式浏览 (dt view，含全量搜索筛选排序/导出子集/view 内跑管道)/统计与分布
   (stats/describe/token-stats)/清洗/去重/Schema 验证、filter/select/map/sort/group/join(含 --anti)
@@ -61,19 +62,20 @@ dt <cmd> --help          # 具体命令的参数/示例/退出码
 - **TTY** → 数据命令（filter/select/map/sort/group/join/clean/dedupe…）默认画**表格**（列与 `dt view` 同源：对话数据出 turns/roles/first_user/chars/calls），只看前 50 行，`--format=table` 全量；预览命令（head/sample/tail/slice）默认逐条 pretty JSON；加 `--pretty` 或 `--format=table` 走格式感知渲染
 - 任意时候可用 `dt --format=json <cmd>` 强制指定
 
-## 副作用命令都有 --dry-run
+## 支持 --dry-run 的命令
 
-修改数据前先预演，所有副作用命令都支持：
+修改数据前先预演，以下命令支持（`transform` 需指定预设或已有配置，首次生成配置不支持）：
 
 ```
 clean / transform / concat / dedupe / split / export / run / eval
 ```
 
-Dry-run 会：
-1. 完整执行所有读/过滤/计算
-2. **不写出**到 output
-3. 输出结构化 `action` 摘要到 stdout（`action`, `input_rows`, `output_rows`, `removed_rows`, …）
-4. **退出码 10**（区别于 0 的实际执行成功）
+Dry-run 的行为取决于命令：
+
+- `clean` / `dedupe` / `transform` / `concat` / `split` / `eval` 会执行相应的读取、过滤或计算，但不写出结果。
+- `export` 只检查输入格式和目标框架兼容性，不生成导出文件。
+- `run` 只验证 YAML、表达式和步骤链，不读取或处理输入数据。
+- 都输出结构化 `action` 摘要到 stdout，并以 **退出码 10** 结束（区别于 0 的实际执行成功）。
 
 Agent 工作流：`dry-run → 看摘要 → 确认无误 → 去掉 --dry-run 再执行`。
 

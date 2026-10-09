@@ -5,6 +5,8 @@ CLI 训练框架导出命令
 from pathlib import Path
 from typing import Optional
 
+from rich.markup import escape
+
 from ..core import DataTransformer
 from ..framework import check_compatibility, detect_format, export_for
 from ..i18n import t
@@ -98,7 +100,7 @@ def export(
     # 执行导出
     log(t(f"[bold]📦 Exporting to {framework}...[/bold]", f"[bold]📦 导出到 {framework}...[/bold]"))
     try:
-        export_for(data, framework, output, dataset_name=dataset_name)
+        files = export_for(data, framework, output, dataset_name=dataset_name)
     except (PermissionError, FileExistsError, IsADirectoryError, FileNotFoundError) as e:
         die_io_error(e, operation=t("Export", "导出"), path=output)
     except Exception as e:
@@ -112,6 +114,10 @@ def export(
             ),
             exit_code=1,
         )
+
+    log(t("Export complete:", "导出完成:"))
+    for path in files.values():
+        log(f"   {escape(path)}")
 
     emit_action(
         "export",

@@ -10,7 +10,7 @@
 - **`-o FILE`** writes the file (atomically, via a temp file in the same directory) and prints an action summary: a panel on stderr in a terminal, a JSON object on stdout otherwise. This holds for `sample`/`head`/`tail`/`slice`/`split` too.
 - **`-o -`** is the same as no `-o`.
 - **`-i` / `--in-place`** (clean, dedupe) writes back to the input file. Nothing overwrites your input unless you ask.
-- **`--dry-run`** on every side-effecting command runs the whole computation, writes nothing, prints the summary and exits with code 10.
+- **`--dry-run`** is available on `clean`, `dedupe`, `transform` (preset or an existing config), `concat`, `split`, `export`, `run`, and `eval`. These commands write nothing and exit with code 10. `dt run --dry-run` only validates the YAML, expressions, and step plan; it does not read or process the input data. `dt export --dry-run`/`--check` only loads the input and checks framework compatibility.
 - **Formats**: JSONL/NDJSON (also `.gz`), JSON (also `.gz`), CSV/TSV, Parquet, Arrow/Feather, Excel, FlaxKV. Output format follows the extension. Only `.jsonl.gz` / `.json.gz` support compressed output.
 - **Exit codes**: 0 ok · 1 runtime error · 2 usage error · 3 not found · 4 permission · 5 conflict · 10 dry-run ok. Errors are JSON on stderr (`{error, message, suggestion, exit_code, context}`) when stderr is not a terminal.
 - **Language**: messages, help and `dt view` are in English by default. `dt lang zh` switches everything to Chinese and `dt lang en` switches back. The choice is saved in `~/.config/dtflow/config.json`; the `DT_LANG` environment variable overrides it for one run. Machine-readable output (JSON keys, error codes) is the same in both languages.

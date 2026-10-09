@@ -1,5 +1,7 @@
 # Quickstart
 
+Inspect, clean, transform and ship LLM training data from one CLI; `dt view` is the interactive entry point.
+
 ## Install
 
 ```bash
@@ -40,6 +42,27 @@ dt split clean.jsonl --ratio=0.9 --seed=42          # clean_train.jsonl / clean_
 dt transform data.jsonl --preset=openai_chat -o train.jsonl   # sharegpt / alpaca / dpo → messages
 dt export train.jsonl -f llama-factory                        # data + dataset_info.json + train_args.yaml
 ```
+
+## Complete workflow
+
+The interactive browser is one entry point; the same dataset can run through the full
+workbench from the shell:
+
+```bash
+python examples/make_examples.py
+dt stats examples/chat.jsonl --schema
+dt filter examples/chat.jsonl "not calls(x) and bool(x.messages[-1].content)" \
+  | dt dedupe - --key=id -o /tmp/dtflow-clean.jsonl
+dt validate /tmp/dtflow-clean.jsonl --preset=openai_chat
+dt transform /tmp/dtflow-clean.jsonl --preset=sharegpt -o /tmp/dtflow-sharegpt.jsonl
+dt transform /tmp/dtflow-sharegpt.jsonl --preset=openai_chat -o /tmp/dtflow-sft.jsonl
+dt validate /tmp/dtflow-sft.jsonl --preset=openai_chat
+dt export /tmp/dtflow-sft.jsonl -f llama-factory -o /tmp/dtflow-llama
+```
+
+Use VisiData for joins, pivots, or per-column plots; use tabiew for SQL over tabular data;
+use jless for inspecting one JSON document. Use `dt view` when the unit you need to inspect,
+search, filter, and export is a batch of training samples.
 
 ## Same thing in Python
 

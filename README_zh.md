@@ -20,7 +20,7 @@
 
 <p align="left"><a href="README.md">English</a> | 中文</p>
 
-**LLM 训练数据的工作台。** 浏览它、用纯 Python 查询它、修好它、交付它——人能干，agent 也能干。
+**用一个 CLI 检查、清洗、转换并交付 LLM 训练数据；`dt view` 是交互式入口。**
 
 训练文件里的一行不是一行：它是一段对话、一对偏好、一条指令。多数工具看到的是不透明的 JSON；dtflow 看到的是样本，其余一切都从这个事实长出来——一个按识别出的格式渲染样本的终端浏览器，约 30 个可管道拼接、按对话结构筛选的命令，带血缘的格式转换与训练框架导出，以及一个能把整件事干完的 agent。
 
@@ -48,7 +48,7 @@ dt transform data.jsonl --preset=openai_chat -o train.jsonl     # sharegpt / alp
 
 - **它知道什么是一条训练样本。** 通用表格工具把 `messages` 显示成 `{3}` 或截断的字符串。dtflow 识别 `openai_chat` / `sharegpt` / `dpo` / `alpaca`，并且在每个环节都以样本为单位工作：viewer 一屏渲染一条完整样本（按 role 上色、工具调用格式化并标出坏 JSON、VLM 图片一键查看），行函数 `turns(x)` / `roles(x)` / `calls(x)` / `search(x, '退款')` 按对话结构筛选，预设转换在格式之间搬运，`token-stats` 按角色拆分 token。
 - **看和处理是同一个闭环、同一种语言。** 所有条件都是 Python，当前行叫 `x`——没有 DSL，viewer 编译的和 `dt filter` 编译的是同一个字符串。闭环是真实存在的：viewer 里按 `P`，刚才的操作变成 `dt filter … | dt sort …`；按 `|`，对整个文件跑一段 shell 管道，结果就地浏览；按 `w`，筛出的子集导出并自动记血缘。浏览时做的事变成脚本，脚本的输出用 `dt … | dt view -` 再拿回来看。
-- **agent 能驱动它的全部。** stdout 只有数据，退出码有契约，stdout 非终端时报错是结构化 JSON，`--dry-run` 预览副作用，`dt schema` 输出 JSON 命令树。`dt install-skill` 一条命令把完整参考装进 Claude Code 或 Codex——然后"把这个数据集清洗一下"才真正是 agent 能接的活。
+- **agent 能驱动它的全部。** stdout 只有数据，退出码有契约，stderr 非终端时报错是结构化 JSON，`--dry-run` 预览副作用，`dt schema` 输出 JSON 命令树。`dt install-skill` 一条命令把完整参考装进 Claude Code 或 Codex——然后"把这个数据集清洗一下"才真正是 agent 能接的活。
 
 底下还有两条底线：`filter` / `select` / `map` / `clean` / `dedupe` / `transform` 流式处理、从不整文件加载；裸字段名或不存在的行函数在编译期就报错，而不是退出码 0 的空结果。
 
@@ -75,7 +75,7 @@ dt filter data.jsonl "turns(x) >= 4 and x.score > 0.7" | dt view -    # 处理�
 dt transform shards/ --preset=openai_chat -o sft.jsonl   # 目录也行；sharegpt/alpaca/dpo → messages
 dt validate sft.jsonl --preset=openai_chat               # schema 校验；--filter 只留有效行
 dt token-stats sft.jsonl --model=gpt-4                   # 分角色 token 分布
-dt export sft.jsonl -f llama-factory                     # 数据 + 可直接用的配置（也支持 ms-swift、Axolotl）
+dt export sft.jsonl -f llama-factory                     # 数据 + 训练配置模板（也支持 ms-swift、Axolotl）
 ```
 
 **或者把整件事交给 agent。**

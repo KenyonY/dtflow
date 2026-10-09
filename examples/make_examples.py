@@ -452,9 +452,11 @@ def make_chat(rng: random.Random, n: int = 300) -> List[Dict]:
                 turns = [
                     (
                         "system",
-                        "你是一名耐心、专业的助手。"
-                        if lang == "zh"
-                        else "You are a patient, precise assistant.",
+                        (
+                            "你是一名耐心、专业的助手。"
+                            if lang == "zh"
+                            else "You are a patient, precise assistant."
+                        ),
                     )
                 ] + turns
             msgs = [{"role": r, "content": c} for r, c in turns]
@@ -506,17 +508,42 @@ def make_sharegpt(rng: random.Random, n: int = 100) -> List[Dict]:
     for i in range(0, n, 12):
         spec = AGENT[(i // 12) % len(AGENT)]
         q, tool, args, result, answer, _ = spec
-        rows[i]["conversations"] = [
-            {"from": "human", "value": q},
-            {
-                "from": "function_call",
-                "value": json.dumps({"name": tool, "arguments": args}, ensure_ascii=False),
-            },
-            {"from": "observation", "value": result},
-            {"from": "gpt", "value": answer},
-        ]
+        calls = tool if isinstance(tool, list) else [(tool, args, result)]
+        conversations = [{"from": "human", "value": q}]
+        for name, call_args, call_result in calls:
+            conversations.append(
+                {
+                    "from": "function_call",
+                    "value": json.dumps({"name": name, "arguments": call_args}, ensure_ascii=False),
+                }
+            )
+            conversations.append({"from": "observation", "value": call_result})
+        conversations.append({"from": "gpt", "value": answer})
+        rows[i]["conversations"] = conversations
         rows[i]["source"] = "agent_traces"
     return rows
+
+
+def make_invalid_sharegpt() -> List[Dict]:
+    """返回一个明确失败的示例，供演示校验错误时使用。"""
+    return [
+        {
+            "id": "invalid-null-observation",
+            "conversations": [
+                {"from": "human", "value": "北京明天天气怎么样？"},
+                {
+                    "from": "function_call",
+                    "value": json.dumps(
+                        {"name": "get_weather", "arguments": {"city": "北京"}},
+                        ensure_ascii=False,
+                    ),
+                },
+                {"from": "observation", "value": None},
+                {"from": "gpt", "value": "无法读取工具结果。"},
+            ],
+            "source": "invalid_fixture",
+        }
+    ]
 
 
 def make_alpaca(rng: random.Random, n: int = 120) -> List[Dict]:
@@ -640,6 +667,8 @@ def main() -> None:
     chat = make_chat(rng)
     write_jsonl(HERE / "chat.jsonl", chat)
     write_jsonl(HERE / "sharegpt.jsonl", make_sharegpt(rng))
+    (HERE / "invalid").mkdir(exist_ok=True)
+    write_jsonl(HERE / "invalid" / "sharegpt.jsonl", make_invalid_sharegpt())
     write_jsonl(HERE / "alpaca.jsonl", make_alpaca(rng))
     write_jsonl(HERE / "dpo.jsonl", make_dpo(rng))
     write_jsonl(HERE / "labels.jsonl", make_labels(rng, chat))

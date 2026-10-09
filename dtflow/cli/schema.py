@@ -174,8 +174,8 @@ def schema(
         "name": "dt",
         "version": version,
         "description": t(
-            "Datatron CLI - agent-friendly data transformation tool",
-            "Datatron CLI - Agent 友好的数据转换工具",
+            "dtflow CLI - agent-friendly data transformation tool",
+            "dtflow CLI - Agent 友好的数据转换工具",
         ),
         "exit_codes": ExitCode.as_dict(),
         "output_contract": {
