@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.6] - 2026-10-09
+
+### Bug Fixes
+
+- **view**: Wait for both text fields and thumbnail strips to finish layout before computing detail navigation anchors.
+
 ## [0.10.5] - 2026-10-09
 
 ### Bug Fixes

@@ -20,10 +20,10 @@
 所以排除工具轨迹与空回复，再按 id 去重。过滤后剩 259 条，去重后 252 条。
 
 ```bash
-pip install dtflow==0.10.5 uv
+pip install dtflow==0.10.6 uv
 git clone --depth 1 https://github.com/KenyonY/dtflow.git
 cd dtflow
-python scripts/growth_demo.py --from dtflow==0.10.5 --output .growth/try
+python scripts/growth_demo.py --from dtflow==0.10.6 --output .growth/try
 ```
 
 脚本在独立安装环境跑真实 CLI，并保存每条命令的 stdout、stderr 和退出码。

@@ -22,8 +22,8 @@
 输出目录必须是新目录，避免覆盖上一轮证据。
 
 ```bash
-pip install dtflow==0.10.5
-python scripts/growth_demo.py --from dtflow==0.10.5 --output .growth/reproduce
+pip install dtflow==0.10.6
+python scripts/growth_demo.py --from dtflow==0.10.6 --output .growth/reproduce
 ```
 
 `--from` 使用 `uv tool run --isolated`。每条命令的输入数据、完整 stdout/stderr 和退出码保存在
