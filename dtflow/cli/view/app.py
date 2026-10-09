@@ -2243,6 +2243,11 @@ class ViewApp(App):
         self._cur_anchors = anchors
         return y
 
+    def _detail_layout_pending(self) -> bool:
+        return any(
+            widget.size.height == 0 for widget in [*self._field_widgets, *self._thumbs.values()]
+        )
+
     def _top_field(self, anchors: Dict[str, int], y: int) -> Optional[str]:
         """滚动位置 y 之上最近的字段名 (顶部可见字段)。"""
         top = None
@@ -2484,7 +2489,7 @@ class ViewApp(App):
     def _after_mount_more(self, gen: int) -> None:
         if gen != self._mount_gen or not self.is_running:
             return
-        if self._field_widgets and self._field_widgets[-1].size.height == 0:
+        if self._detail_layout_pending():
             self.call_after_refresh(self._after_mount_more, gen)  # 布局还没轮到, 再等一帧
             return
         self._recompute_anchors()
@@ -2503,11 +2508,11 @@ class ViewApp(App):
         if not self.is_running or not self.screen_stack:
             self._nav_lock = False  # 确保解锁, 否则后续滚动无响应
             return  # app/screen 卸载中 (call_after_refresh 在 teardown 后触发)
-        total = self._recompute_anchors()  # 锚点无论如何都要更新: 滚动反查靠它
-        if self._field_widgets and total == 0:
-            # 新版 textual 中 mount 后一帧布局可能尚未完成 (size 全 0), 再等一帧重算
+        if self._detail_layout_pending():
+            # Fields and thumbnail strips can finish layout in different frames.
             self.call_after_refresh(self._after_detail_render, prev_field, gen)
             return
+        self._recompute_anchors()  # 锚点无论如何都要更新: 滚动反查靠它
         # 本次回调已被更新的渲染或用户导航取代 → 只更锚点, 不再把当前字段拽回对齐位置。
         # 否则 "扫描刚完成就按 * / n" 会被这个迟到的回调静默撤销 (回调比按键晚一帧)。
         if gen == self._detail_gen:

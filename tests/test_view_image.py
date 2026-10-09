@@ -441,6 +441,39 @@ async def test_thumbnails_follow_their_message(tmp_path, graphics):
 
 
 @pytest.mark.asyncio
+async def test_anchors_wait_for_thumbnail_layout(tmp_path, graphics, monkeypatch):
+    from textual.geometry import Size
+
+    from dtflow.cli.view.app import _Thumbs
+
+    app = _vlm_app(tmp_path)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await _settle(app, pilot)
+        anchors = dict(app._cur_anchors)
+        size = _Thumbs.size
+        outer_size = _Thumbs.outer_size
+        pending = True
+        monkeypatch.setattr(
+            _Thumbs,
+            "size",
+            property(lambda w: Size(0, 0) if pending else size.__get__(w)),
+        )
+        monkeypatch.setattr(
+            _Thumbs,
+            "outer_size",
+            property(lambda w: Size(0, 0) if pending else outer_size.__get__(w)),
+        )
+        # Text fields are laid out, but the thumbnail strips aren't ready yet.
+        app._after_detail_render(None, app._detail_gen)
+        assert app._cur_anchors == anchors
+        app._after_mount_more(app._mount_gen)
+        assert app._cur_anchors == anchors
+        pending = False
+        await pilot.pause()
+        assert app._cur_anchors == anchors
+
+
+@pytest.mark.asyncio
 async def test_no_thumbnails_without_graphics(tmp_path):
     from dtflow.cli.view.app import _Thumbs
 
